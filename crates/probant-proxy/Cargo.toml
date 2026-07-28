@@ -1,0 +1,36 @@
+[package]
+name = "probant-proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MCP proxy enforcing a signed policy and logging every act."
+
+[dependencies]
+audit-core = { path = "../audit-core" }
+policy = { path = "../policy" }
+wal = { path = "../wal" }
+identity = { path = "../identity" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+ed25519-dalek = { workspace = true }
+hex = { workspace = true }
+
+# Token minting for tests only. Deliberately in dev-dependencies rather than
+# behind a feature of the `identity` crate: a feature would be unified by cargo
+# and would ship the means to forge tokens inside the delivered binary.
+[dev-dependencies]
+jsonwebtoken = "9"
+base64 = "0.22"
+policy = { path = "../policy" }
+
+[[bin]]
+name = "probant-proxy"
+path = "src/main.rs"
+
+# Demo MCP server. Declared as a binary rather than an example so integration
+# tests can locate it via CARGO_BIN_EXE.
+[[bin]]
+name = "mock-mcp-server"
+path = "src/bin/mock_mcp_server.rs"

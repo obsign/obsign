@@ -1,0 +1,18 @@
+[package]
+name = "probant"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Offline verifier for evidence packs. Meant to be run by the auditor, with no access to the infrastructure."
+
+# Deliberately tiny dependency tree: this is the binary the auditor compiles
+# or runs themselves. Every dependency added here is one they have to accept.
+[dependencies]
+audit-core = { path = "../audit-core" }
+clap = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+[[bin]]
+name = "probant"
+path = "src/main.rs"

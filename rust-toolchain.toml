@@ -1,0 +1,10 @@
+# Project-pinned toolchain.
+#
+# Two reasons: Cedar's dependencies require rustc >= 1.89, and more
+# importantly a proof product needs reproducible builds -- the compiler
+# version is part of what will be audited.
+#
+# Scoped locally: does not affect the machine's default toolchain.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]

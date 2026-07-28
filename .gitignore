@@ -1,0 +1,10 @@
+# Rust build artifacts
+/target
+
+# macOS
+.DS_Store
+
+# Local demo output (evidence packs, WAL, tokens) — never commit these:
+# they can contain real subjects, real issuers and real signing seeds.
+/tmp-demo
+*.jwt

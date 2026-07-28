@@ -1,0 +1,10 @@
+[package]
+name = "wal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+audit-core = { path = "../audit-core" }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
