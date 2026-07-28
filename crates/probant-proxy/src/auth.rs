@@ -11,6 +11,10 @@ use std::path::{Path, PathBuf};
 pub struct Auth {
     source: Option<BundleSource>,
     token_path: Option<PathBuf>,
+    /// Last token accepted via `present` (HTTP transport). Kept so that the
+    /// common case — the same token on every request — costs a string
+    /// comparison, not a signature verification.
+    presented: Option<String>,
     current: Delegation,
     /// Incremented on every renewal, to number the delegation records.
     generation: u64,
@@ -35,6 +39,7 @@ impl Auth {
         Auth {
             source: None,
             token_path: None,
+            presented: None,
             current: Delegation {
                 subject: principal.to_string(),
                 // Deliberately conspicuous marker: an auditor reading
@@ -64,6 +69,27 @@ impl Auth {
         Ok(Auth {
             source: Some(source),
             token_path: Some(token_path),
+            presented: None,
+            current,
+            generation: 1,
+        })
+    }
+
+    /// Identity proven by a token presented with the request (HTTP transport).
+    ///
+    /// Same verification as `oidc`, different plumbing: over stdio the token
+    /// lives in a file the gateway re-reads; over HTTP each request carries
+    /// its own `Authorization` header and renewal shows up as a new value
+    /// there. There is no file to fall back on.
+    pub fn oidc_presented(mut source: BundleSource, token: &str) -> Result<Self, String> {
+        let current = verify_token(&mut source, token, 0)?;
+        if current.is_expired(crate::session::now_ms()) {
+            return Err("presented token is expired".to_string());
+        }
+        Ok(Auth {
+            source: Some(source),
+            token_path: None,
+            presented: Some(token.to_string()),
             current,
             generation: 1,
         })
@@ -130,6 +156,55 @@ impl Auth {
             ))),
         }
     }
+
+    /// Takes the token presented with the current request into account.
+    ///
+    /// The HTTP counterpart of `refresh`: same contract, same per-act
+    /// re-evaluation, but the fresh token arrives in the request instead of a
+    /// file. Returns `true` when the delegation changed — the caller must
+    /// then record it in the log.
+    ///
+    /// A rejected token does not touch the delegation in force: expiry keeps
+    /// doing its work, and the refusal reason names the token, not the
+    /// session.
+    pub fn present(&mut self, token: &str, now_ms: i64) -> Result<bool, AuthDenied> {
+        if self.presented.as_deref() == Some(token) {
+            // Same token as last time: only its expiry can have changed.
+            return if self.current.is_expired(now_ms) {
+                Err(AuthDenied(format!(
+                    "delegation expired {} s ago and the presented token is the same",
+                    -self.current.remaining_secs(now_ms)
+                )))
+            } else {
+                Ok(false)
+            };
+        }
+
+        let Some(source) = &mut self.source else {
+            // Declared mode: nothing was ever verified, presenting a token
+            // does not change that. Refusing would be wrong (the mode is
+            // explicitly unverified); accepting it as proof would be worse.
+            return self.refresh(now_ms);
+        };
+
+        match verify_token(source, token, now_ms) {
+            Ok(fresh) if !fresh.is_expired(now_ms) => {
+                self.presented = Some(token.to_string());
+                let changed = fresh.subject != self.current.subject
+                    || fresh.scopes != self.current.scopes
+                    || fresh.groups != self.current.groups
+                    || fresh.expires_at_ms != self.current.expires_at_ms;
+                self.current = fresh;
+                if changed {
+                    self.generation += 1;
+                    return Ok(true);
+                }
+                Ok(false)
+            }
+            Ok(_) => Err(AuthDenied("presented token is expired".to_string())),
+            Err(e) => Err(AuthDenied(format!("presented token rejected: {e}"))),
+        }
+    }
 }
 
 /// Verifies the token, recovering from a key rotation on the provider side.
@@ -149,8 +224,14 @@ fn read_and_verify(
 ) -> Result<Delegation, String> {
     let raw = std::fs::read_to_string(path)
         .map_err(|e| format!("reading {}: {e}", path.display()))?;
-    let token = raw.trim();
+    verify_token(source, raw.trim(), now_ms)
+}
 
+fn verify_token(
+    source: &mut BundleSource,
+    token: &str,
+    now_ms: i64,
+) -> Result<Delegation, String> {
     match source.verifier().verify(token) {
         Ok(d) => Ok(d),
         Err(identity::Error::UnknownKid(kid)) => {

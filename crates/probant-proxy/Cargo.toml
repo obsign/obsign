@@ -16,6 +16,9 @@ clap = { workspace = true }
 anyhow = { workspace = true }
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }
+# Session identifiers for the Streamable HTTP transport. Already in the tree
+# through ed25519-dalek, so declaring it adds no crate.
+getrandom = { workspace = true }
 
 # Token minting for tests only. Deliberately in dev-dependencies rather than
 # behind a feature of the `identity` crate: a feature would be unified by cargo

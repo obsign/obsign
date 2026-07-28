@@ -21,7 +21,7 @@ policy decides, the log is sealed, and the auditor verifies offline.
 | `policy` | Signed bundles, Cedar evaluation, tool catalogue | done |
 | `identity` | Signed identity bundle, claim mapping, RFC 8693 actor chain, hot rotation | done |
 | `wal` | Durable local log, replay on startup | done |
-| `probant-proxy` | MCP stdio proxy, `tools/list` filtering, `tools/call` arbitration | done |
+| `probant-proxy` | MCP proxy (stdio and Streamable HTTP), `tools/list` filtering, `tools/call` arbitration | done |
 | `ledger` | Sealing away from the gateway, checkpoint store, RFC 3161 anchoring, evidence export | done |
 | `control-plane` | Compiling policies from git, console, exports | to come |
 
@@ -74,6 +74,48 @@ seq=8   eff-2    effect         ok
 
 With an expired token (`mint_demo_token -- /tmp/demo -3600`), the gateway
 refuses to start and no call is relayed.
+
+## Streamable HTTP — the enterprise transport
+
+The same gateway serves MCP over Streamable HTTP: one shared network service
+instead of one process per agent. Each `initialize` opens a session — its own
+instance of the wrapped server, its own audit chain, its own identity — and the
+token arrives per request in the `Authorization` header, where enterprise SSO
+puts it. Deleting the session seals its chain and writes its evidence pack.
+
+```bash
+cargo run -p probant-proxy -- \
+    --http 127.0.0.1:8080 \
+    --policy /tmp/demo/policy-bundle.json \
+    --trusted-keys /tmp/demo/trusted-keys.json \
+    --identity-bundle /tmp/demo/identity-bundle.json \
+    --wal /tmp/demo/wal --chain-id demo --env prod \
+    --evidence-out /tmp/demo/evidence \
+    -- ./target/debug/mock-mcp-server
+
+TOKEN=$(cat /tmp/demo/token.jwt)
+SID=$(curl -si http://127.0.0.1:8080/mcp \
+        -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+        -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+      | tr -d '\r' | awk 'tolower($1)=="mcp-session-id:" {print $2}')
+
+curl -s http://127.0.0.1:8080/mcp \
+     -H "Authorization: Bearer $TOKEN" -H "Mcp-Session-Id: $SID" \
+     -H 'Content-Type: application/json' \
+     -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"delete_production_db","arguments":{}}}'
+# → isError: refused by policy, recorded, never reached the server
+
+curl -s -X DELETE http://127.0.0.1:8080/mcp \
+     -H "Mcp-Session-Id: $SID"
+# → the session's chain is sealed, /tmp/demo/evidence/<session>.json is written
+```
+
+The HTTP layer is written by hand on `std::net` — no async runtime, no web
+framework. The dependency list is part of the product, and the subset of
+HTTP/1.1 this transport needs is smaller than any framework's tree. Inbound
+HTTP does not touch the "no network calls" invariant, which bans *outbound*
+dependencies (JWKS fetches, ledger round trips): identity and policy still
+arrive as signed files.
 
 ## Identity: proven or declared
 
@@ -382,9 +424,6 @@ invalidated".
 
 ## Known debt
 
-**One transport only.** The proxy speaks stdio. Streamable HTTP, the one that
-matters for enterprise deployment, is still to write.
-
 **The gateway still seals on shutdown.** The production path is the `ledger`
 (separate process, separate key), but the gateway's `--evidence-out`
 convenience path still signs with a local key — fine for demos, and its
@@ -406,7 +445,7 @@ parsing in the verifier. Not a priority before the first design partner.
 ## Tests
 
 ```bash
-cargo test --workspace     # 112 tests
+cargo test --workspace     # 120 tests
 ```
 
 Five families, each with a distinct role:
@@ -434,7 +473,11 @@ Five families, each with a distinct role:
   front of an MCP server and checks that the refused call **never reaches the
   server**. Two of those tests are regressions found by a manual demo, not by
   unit tests: duplicated effect identifiers when two calls are in flight, and
-  unstable Cedar rule identifiers.
+  unstable Cedar rule identifiers. `tests/http.rs` covers the Streamable HTTP
+  transport with a hand-written HTTP client — deliberately not a client
+  library, so the tests share no assumptions with the hand-written server —
+  and checks session isolation, per-request bearer identity, the SSE stream,
+  and that each session's evidence pack seals and verifies independently.
 
 ## Toolchain
 

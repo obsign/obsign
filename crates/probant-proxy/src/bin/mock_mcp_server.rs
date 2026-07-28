@@ -55,6 +55,19 @@ fn main() {
                     .unwrap_or("");
                 // The server obeys without question. If it gets the call, it acts.
                 eprintln!("[server] EXECUTING {name}");
+                if name == "ticket_update" {
+                    // Server-initiated notification, emitted before the
+                    // response: transport tests use it to check the
+                    // downstream channel (SSE stream over HTTP).
+                    let notif = json!({
+                        "jsonrpc": "2.0",
+                        "method": "notifications/resources/updated",
+                        "params": { "uri": "ticket://T-8821" }
+                    });
+                    let mut lock = stdout.lock();
+                    let _ = writeln!(lock, "{notif}");
+                    let _ = lock.flush();
+                }
                 json!({
                     "content": [{
                         "type": "text",
