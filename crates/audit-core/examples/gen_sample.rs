@@ -183,6 +183,7 @@ fn main() {
         records,
         checkpoints: vec![signed],
         keys: vec![pubkey.clone()],
+        anchors: Vec::new(),
     };
 
     let ev_path = out.join("evidence.json");

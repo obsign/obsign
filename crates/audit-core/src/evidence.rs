@@ -2,6 +2,7 @@ use crate::checkpoint::{PublicKeyEntry, SignedCheckpoint};
 use crate::hash::{Hash, GENESIS};
 use crate::merkle::merkle_root;
 use crate::record::Record;
+use crate::rfc3161::{parse_timestamp_response, Anchor};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -24,6 +25,11 @@ pub struct Evidence {
     /// another channel (--trusted-keys), otherwise a forged pack signed with a
     /// made-up key would validate itself.
     pub keys: Vec<PublicKeyEntry>,
+    /// RFC 3161 timestamp tokens over checkpoint hashes. Optional (`default`):
+    /// packs produced before anchoring existed stay readable, and an absent
+    /// field is an absent proof, not a format break.
+    #[serde(default)]
+    pub anchors: Vec<Anchor>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +72,13 @@ pub struct Report {
     pub records_sealed: usize,
     pub checkpoints_total: usize,
     pub checkpoints_valid: usize,
+    #[serde(default)]
+    pub anchors_total: usize,
+    /// Anchors that are structurally consistent: granted by the TSA and
+    /// imprinting the hash of a checkpoint present in the pack. The CMS
+    /// signature itself is validated out of band (see `anchor_not_validated`).
+    #[serde(default)]
+    pub anchors_ok: usize,
     pub first_seq: Option<u64>,
     pub last_seq: Option<u64>,
     pub findings: Vec<Finding>,
@@ -351,6 +364,92 @@ pub fn verify(ev: &Evidence, trusted: &[PublicKeyEntry]) -> Report {
         }
     }
 
+    // --- Anchors -------------------------------------------------------
+    // A checkpoint signature proves who sealed, not when: the key holder
+    // could backdate ts_ms. An RFC 3161 token makes the date enforceable.
+    // The check here is structural — granted status, imprint equal to the
+    // checkpoint hash — and says so; presenting it as cryptographic
+    // validation of the token would be a lie in the one place lying is
+    // fatal.
+    let checkpoint_labels: BTreeMap<Hash, String> = ev
+        .checkpoints
+        .iter()
+        .map(|sc| {
+            let cp = &sc.checkpoint;
+            (cp.hash(), format!("[{}..{}]", cp.from_seq, cp.to_seq))
+        })
+        .collect();
+
+    let mut anchors_ok = 0usize;
+    for anchor in &ev.anchors {
+        let Some(label) = checkpoint_labels.get(&anchor.checkpoint_hash) else {
+            findings.push(Finding::error(
+                "anchor_orphan",
+                format!(
+                    "timestamp token for checkpoint {} which is absent from \
+                     the pack: it anchors nothing",
+                    anchor.checkpoint_hash
+                ),
+            ));
+            continue;
+        };
+
+        let der = match hex::decode(&anchor.token_hex) {
+            Ok(d) => d,
+            Err(_) => {
+                findings.push(Finding::error(
+                    "anchor_bad_encoding",
+                    format!("anchor of checkpoint {label}: token is not valid hex"),
+                ));
+                continue;
+            }
+        };
+
+        match parse_timestamp_response(&der) {
+            Err(crate::Error::TimestampRejected(status)) => {
+                findings.push(Finding::error(
+                    "anchor_rejected",
+                    format!(
+                        "anchor of checkpoint {label}: the TSA refused the \
+                         request (status {status}); a rejection is not an anchor"
+                    ),
+                ));
+            }
+            Err(e) => {
+                findings.push(Finding::error(
+                    "anchor_unreadable",
+                    format!("anchor of checkpoint {label}: {e}"),
+                ));
+            }
+            Ok(info) => {
+                if info.hashed_message != anchor.checkpoint_hash.as_bytes() {
+                    findings.push(Finding::error(
+                        "anchor_mismatch",
+                        format!(
+                            "anchor of checkpoint {label}: the token imprints \
+                             different bytes than the checkpoint hash. It \
+                             timestamps something else."
+                        ),
+                    ));
+                } else {
+                    anchors_ok += 1;
+                }
+            }
+        }
+    }
+
+    if anchors_ok > 0 {
+        findings.push(Finding::warning(
+            "anchor_not_validated",
+            format!(
+                "{anchors_ok} timestamp token(s) are structurally consistent \
+                 (granted, imprint matches the checkpoint). This tool does not \
+                 validate the TSA's CMS signature: check the token against the \
+                 TSA certificate, e.g. `openssl ts -verify`."
+            ),
+        ));
+    }
+
     // --- Coverage ------------------------------------------------------
     // Frequently overlooked property: a record that is present and consistent
     // but covered by no valid seal is not proven. It may have been appended
@@ -377,6 +476,8 @@ pub fn verify(ev: &Evidence, trusted: &[PublicKeyEntry]) -> Report {
         records_sealed: sealed_count,
         checkpoints_total: ev.checkpoints.len(),
         checkpoints_valid,
+        anchors_total: ev.anchors.len(),
+        anchors_ok,
         first_seq: records_by_seq.keys().next().copied(),
         last_seq: records_by_seq.keys().next_back().copied(),
         findings,
@@ -386,4 +487,122 @@ pub fn verify(ev: &Evidence, trusted: &[PublicKeyEntry]) -> Report {
 /// Expected hash for the first record of a chain.
 pub fn genesis() -> Hash {
     GENESIS
+}
+
+#[cfg(test)]
+mod tests {
+    //! Anchor verification lives here rather than in `tests/tamper.rs`
+    //! because the DER synthesizer is `#[cfg(test)]` — a helper able to forge
+    //! TSA responses must never be reachable from shipped code.
+
+    use super::*;
+    use crate::record::{Effect, EffectStatus, Payload};
+    use crate::rfc3161::testutil::granted_response;
+    use crate::ChainWriter;
+    use ed25519_dalek::SigningKey;
+
+    fn sealed_pack() -> (Evidence, PublicKeyEntry) {
+        let key = SigningKey::from_bytes(&[7u8; 32]);
+        let entry = PublicKeyEntry {
+            key_id: "k1".into(),
+            algo: "ed25519".into(),
+            public_key: hex::encode(key.verifying_key().to_bytes()),
+        };
+        let mut chain = ChainWriter::new("c1");
+        let records: Vec<Record> = (0..3)
+            .map(|i| {
+                chain.append(
+                    i,
+                    format!("r{i}"),
+                    None,
+                    "s",
+                    Payload::Effect(Effect {
+                        status: EffectStatus::Ok,
+                        result_hash: None,
+                        latency_ms: i as u64,
+                    }),
+                )
+            })
+            .collect();
+        let cp = chain.seal(99, "k1").unwrap().sign(&key);
+        (
+            Evidence {
+                format: FORMAT.to_string(),
+                chain_id: "c1".into(),
+                records,
+                checkpoints: vec![cp],
+                keys: vec![entry.clone()],
+                anchors: Vec::new(),
+            },
+            entry,
+        )
+    }
+
+    fn anchor_over(ev: &Evidence, imprint: &[u8]) -> Anchor {
+        Anchor {
+            checkpoint_hash: ev.checkpoints[0].checkpoint.hash(),
+            token_hex: hex::encode(granted_response(imprint, b"20260728120000Z")),
+            tsa: Some("demo-tsa".into()),
+        }
+    }
+
+    #[test]
+    fn consistent_anchor_is_counted_and_flagged_unvalidated() {
+        let (mut ev, entry) = sealed_pack();
+        let hash = ev.checkpoints[0].checkpoint.hash();
+        ev.anchors.push(anchor_over(&ev, hash.as_bytes()));
+
+        let r = verify(&ev, &[entry]);
+        assert!(r.is_valid());
+        assert_eq!((r.anchors_total, r.anchors_ok), (1, 1));
+        // The degradation must stay visible: structural consistency is not
+        // cryptographic validation of the token.
+        assert!(r.warnings().any(|f| f.code == "anchor_not_validated"));
+    }
+
+    #[test]
+    fn anchor_imprinting_other_bytes_is_an_error() {
+        let (mut ev, entry) = sealed_pack();
+        ev.anchors.push(anchor_over(&ev, &[0xEE; 32]));
+
+        let r = verify(&ev, &[entry]);
+        assert!(!r.is_valid(), "a token over foreign bytes anchors nothing");
+        assert!(r.errors().any(|f| f.code == "anchor_mismatch"));
+        assert_eq!(r.anchors_ok, 0);
+    }
+
+    #[test]
+    fn anchor_without_its_checkpoint_is_an_error() {
+        let (mut ev, entry) = sealed_pack();
+        let mut a = anchor_over(&ev, &[0u8; 32]);
+        a.checkpoint_hash = Hash([0x42; 32]);
+        ev.anchors.push(a);
+
+        let r = verify(&ev, &[entry]);
+        assert!(!r.is_valid());
+        assert!(r.errors().any(|f| f.code == "anchor_orphan"));
+    }
+
+    #[test]
+    fn rejected_tsa_response_is_an_error() {
+        let (mut ev, entry) = sealed_pack();
+        let mut a = anchor_over(&ev, &[0u8; 32]);
+        a.token_hex = hex::encode(crate::rfc3161::testutil::rejected_response());
+        ev.anchors.push(a);
+
+        let r = verify(&ev, &[entry]);
+        assert!(!r.is_valid(), "a TSA rejection must not pass as an anchor");
+        assert!(r.errors().any(|f| f.code == "anchor_rejected"));
+    }
+
+    #[test]
+    fn pack_without_anchors_stays_valid_and_silent() {
+        // The paired counter-check: adding the anchor pass must not degrade
+        // packs that never claimed to be anchored.
+        let (ev, entry) = sealed_pack();
+        let r = verify(&ev, &[entry]);
+        assert!(r.is_valid());
+        assert_eq!((r.anchors_total, r.anchors_ok), (0, 0));
+        assert!(r.findings.iter().all(|f| !f.code.starts_with("anchor")));
+    }
 }

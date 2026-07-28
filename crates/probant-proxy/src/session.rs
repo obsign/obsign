@@ -85,6 +85,7 @@ impl Session {
                 algo: "ed25519".to_string(),
                 public_key: hex::encode(key.verifying_key().to_bytes()),
             }],
+            anchors: Vec::new(),
         })
     }
 }

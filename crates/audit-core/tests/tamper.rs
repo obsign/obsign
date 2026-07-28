@@ -76,6 +76,7 @@ fn sample() -> (Evidence, Vec<PublicKeyEntry>) {
             records,
             checkpoints: vec![cp],
             keys: vec![entry.clone()],
+            anchors: Vec::new(),
         },
         vec![entry],
     )
@@ -170,6 +171,7 @@ fn rewriting_the_whole_chain_is_stopped_by_the_signature() {
         records,
         checkpoints: vec![cp],
         keys: vec![pubkey_entry(&attacker)], // the forger supplies their key
+        anchors: Vec::new(),
     };
 
     // Verified against the REAL trusted keys: the forgery collapses.
@@ -211,6 +213,7 @@ fn removing_a_checkpoint_is_visible() {
         records,
         checkpoints: cps,
         keys: vec![entry.clone()],
+        anchors: Vec::new(),
     };
     assert!(evidence::verify(&ev, std::slice::from_ref(&entry)).is_valid());
 
@@ -244,6 +247,7 @@ fn records_appended_after_sealing_are_reported() {
         records,
         checkpoints: vec![cp],
         keys: vec![entry.clone()],
+        anchors: Vec::new(),
     };
 
     let r = evidence::verify(&ev, &[entry]);

@@ -278,6 +278,7 @@ fn run(name: &str, cedar: &str, ident: Ident, traffic: &[&str]) -> Fixture {
             records: Vec::new(),
             checkpoints: Vec::new(),
             keys: Vec::new(),
+            anchors: Vec::new(),
         }
     };
 

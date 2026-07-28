@@ -27,6 +27,18 @@ pub enum Error {
     #[error("unknown format version: {0}")]
     UnknownFormat(String),
 
+    #[error("empty interval: a seal with no content has no probative value")]
+    EmptySeal,
+
+    #[error("broken interval: {0}")]
+    BrokenInterval(String),
+
+    #[error("unreadable DER structure: {0}")]
+    BadDer(String),
+
+    #[error("timestamp request rejected by the TSA (status {0})")]
+    TimestampRejected(u64),
+
     #[error("invalid json: {0}")]
     Json(#[from] serde_json::Error),
 }

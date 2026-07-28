@@ -22,7 +22,7 @@ policy decides, the log is sealed, and the auditor verifies offline.
 | `identity` | Signed identity bundle, claim mapping, RFC 8693 actor chain, hot rotation | done |
 | `wal` | Durable local log, replay on startup | done |
 | `probant-proxy` | MCP stdio proxy, `tools/list` filtering, `tools/call` arbitration | done |
-| `ledger` | Periodic sealing, RFC 3161 anchoring | to come |
+| `ledger` | Sealing away from the gateway, checkpoint store, RFC 3161 anchoring, evidence export | done |
 | `control-plane` | Compiling policies from git, console, exports | to come |
 
 ## Demo — the gateway at work
@@ -229,6 +229,68 @@ Detection uses the content hash rather than the modification time: mtime
 granularity goes up to one second on some filesystems, enough to miss two
 writes close together.
 
+## The ledger: sealing away from the gateway
+
+As long as sealing happens inside the gateway, the signing key and the log
+cohabit on one host: whoever compromises it can rewrite the log *and* re-seal
+it, and the checkpoints then certify the attacker's version of history.
+`probant-ledger` runs elsewhere — another machine, or a cron under another
+identity — reads the WAL without ever writing to it, and seals with a key the
+gateway never holds:
+
+```bash
+openssl rand -hex 32 > /tmp/demo/seal-seed.hex
+
+./target/debug/probant-ledger seal \
+    --wal /tmp/demo/wal --chain-id demo \
+    --store /tmp/demo/ledger \
+    --key /tmp/demo/seal-seed.hex --key-id seal-prod
+
+./target/debug/probant-ledger export \
+    --wal /tmp/demo/wal --chain-id demo \
+    --store /tmp/demo/ledger --out /tmp/demo/evidence.json
+
+./target/debug/probant verify /tmp/demo/evidence.json \
+    --trusted-keys /tmp/demo/ledger/keys.json
+```
+
+Before sealing anything new, the ledger re-hashes the record at the sealed
+boundary and compares it to the sealed head. A rewritten WAL — even one whose
+chain was entirely recomputed and is internally consistent — is refused with
+`DivergedLog`, and `run` mode exits non-zero on it: divergence never
+self-heals, and looping over it would turn an incident into a heartbeat.
+
+The key file is development-grade by construction. Signing goes through the
+`Sealer` trait, which is the KMS/HSM boundary: a production implementation
+forwards signatures to the HSM and the key material never enters this process
+either. The trait also self-verifies every signature before it is persisted —
+a misconfigured HSM key slot fails at sealing time, not twenty-four months
+later in front of an auditor.
+
+### RFC 3161 anchoring
+
+A checkpoint signature proves *who* sealed, not *when*: the key holder could
+backdate `ts_ms`. Anchoring the checkpoint hash at a timestamping authority
+makes the date enforceable against a third party. The exchange is by file —
+no HTTP client anywhere, air-gapped deployments come first:
+
+```bash
+./target/debug/probant-ledger anchor request \
+    --store /tmp/demo/ledger --chain-id demo --out /tmp/demo/checkpoint.tsq
+# carry the .tsq to your TSA (openssl ts reads and produces these), then:
+./target/debug/probant-ledger anchor attach \
+    --store /tmp/demo/ledger --chain-id demo \
+    --response /tmp/demo/checkpoint.tsr --tsa "tsa.internal.acme.fr"
+```
+
+The response is only attached if the TSA granted it and the token imprints
+exactly the checkpoint hash — the token names its own checkpoint, there is no
+flag to get wrong. In the evidence pack, `probant verify` re-checks both
+structurally and reports the anchors; the CMS signature of the token itself is
+validated against the TSA certificate with standard tooling (`openssl ts
+-verify`), and the report says so rather than passing a structural check off
+as a cryptographic one.
+
 ## Demo — verification
 
 ```bash
@@ -323,10 +385,12 @@ invalidated".
 **One transport only.** The proxy speaks stdio. Streamable HTTP, the one that
 matters for enterprise deployment, is still to write.
 
-**Sealing inside the gateway.** Eventually this belongs to the `ledger`, with a
-key in a KMS/HSM. Today the gateway seals on shutdown: convenient for the demo,
-but the key and the log live together, which weakens precisely the property the
-checkpoints are meant to provide.
+**The gateway still seals on shutdown.** The production path is the `ledger`
+(separate process, separate key), but the gateway's `--evidence-out`
+convenience path still signs with a local key — fine for demos, and its
+warning says so, but it should eventually be reduced to an unsealed export or
+removed. The other half of the same debt: the only `Sealer` implementation is
+a seed file; the KMS/HSM implementation behind the trait is still to write.
 
 **Configuration reloads are not recorded.** An auditor asking "which keys were
 trusted when this action happened?" gets only an indirect answer: the bundle
@@ -342,10 +406,10 @@ parsing in the verifier. Not a priority before the first design partner.
 ## Tests
 
 ```bash
-cargo test --workspace     # 86 tests
+cargo test --workspace     # 112 tests
 ```
 
-Four families, each with a distinct role:
+Five families, each with a distinct role:
 
 - `audit-core/tests/tamper.rs` — does not check that the code works but that it
   **detects**: modified verdict, deleted record, permuted order, wholly
@@ -359,6 +423,12 @@ Four families, each with a distinct role:
   file survived, bounded frequency).
 - `policy/tests/delegation.rs` — a service account cannot destroy, a delegated
   human can, and a chain that is too deep is refused.
+- `ledger/tests/ledger.rs` — the rewritten-WAL attack (internally consistent
+  chain, diverging from sealed history) is refused before any new seal;
+  truncated logs, edited or spirited-away checkpoints and rebound key ids are
+  detected; a torn final store line survives a crash; anchors round-trip into
+  the evidence pack and foreign tokens do not attach. Each control has its
+  paired legitimate-path test.
 - `probant-proxy` — unit tests on expiry, delegation renewal and rotation recovery (at
   startup and mid-session), plus `tests/e2e.rs` which runs the real binary in
   front of an MCP server and checks that the refused call **never reaches the

@@ -20,6 +20,7 @@ pub mod evidence;
 pub mod hash;
 pub mod merkle;
 pub mod record;
+pub mod rfc3161;
 
 pub use error::Error;
 pub use hash::{Hash, GENESIS};

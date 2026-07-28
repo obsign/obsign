@@ -112,6 +112,12 @@ fn print_report(r: &evidence::Report) {
         "  checkpoints : {} valid / {}",
         r.checkpoints_valid, r.checkpoints_total
     );
+    if r.anchors_total > 0 {
+        println!(
+            "  anchors     : {} consistent / {} (RFC 3161)",
+            r.anchors_ok, r.anchors_total
+        );
+    }
     println!();
 
     if r.findings.is_empty() {

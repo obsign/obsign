@@ -103,6 +103,17 @@ impl Wal {
     }
 }
 
+/// Read-only replay, for a process that does not own the log (the ledger,
+/// an exporter).
+///
+/// Unlike `Wal::open`, this neither opens the file for append nor trims a
+/// truncated tail: a reader must not mutate another process's log. A
+/// truncated final line is simply not returned — the gateway never
+/// acknowledged that record, so the act it would describe did not happen.
+pub fn read(dir: &Path, chain_id: &str) -> Result<Vec<Record>, Error> {
+    Ok(replay(&dir.join(format!("{chain_id}.jsonl")))?.0)
+}
+
 /// Re-reads the log and returns the valid records plus the length of the
 /// healthy prefix of the file.
 fn replay(path: &Path) -> Result<(Vec<Record>, u64), Error> {
@@ -231,6 +242,38 @@ mod tests {
         let r = chain2.append(9, "r2", None, "s", payload(9));
         wal2.append(&r).unwrap();
         assert_eq!(wal2.read_all().unwrap().len(), 3);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_only_access_sees_the_log_without_touching_it() {
+        let dir = tmpdir("readonly");
+        let (mut wal, mut chain) = Wal::open(&dir, "c1").unwrap();
+        for i in 0..2 {
+            let r = chain.append(i as i64, format!("r{i}"), None, "s", payload(i));
+            wal.append(&r).unwrap();
+        }
+        let path = wal.path().to_path_buf();
+        drop(wal);
+
+        // Simulated crash mid-write by the owning process.
+        let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(b"{\"seq\":2,\"ts_m").unwrap();
+        drop(f);
+        let len_before = std::fs::metadata(&path).unwrap().len();
+
+        let records = read(&dir, "c1").unwrap();
+        assert_eq!(records.len(), 2, "the unacknowledged tail is not returned");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            len_before,
+            "a reader must not trim a log it does not own"
+        );
+
+        // And a missing chain reads as empty, without creating the file.
+        assert!(read(&dir, "absent").unwrap().is_empty());
+        assert!(!dir.join("absent.jsonl").exists());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
