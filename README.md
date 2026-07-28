@@ -438,9 +438,10 @@ is traceable only if a delegation was recorded after the reload. Doing it
 properly needs a dedicated record type (tag 8).
 
 **Dependency tree.** `audit-core` pulls in 36 transitive crates, `probant`
-52 — 12 of them for `clap`. The stated goal is a tree an auditor reads end to
-end. To get closer: manual `serde` implementations and hand-rolled argument
-parsing in the verifier. Not a priority before the first design partner.
+39 — argument parsing in the verifier is hand-rolled, so `clap` and its
+subtree are gone from the auditor's build. The stated goal is a tree an
+auditor reads end to end; the remaining lever is manual `serde`
+implementations. Not a priority before the first design partner.
 
 ## Tests
 

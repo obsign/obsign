@@ -9,7 +9,6 @@ description = "Offline verifier for evidence packs. Meant to be run by the audit
 # or runs themselves. Every dependency added here is one they have to accept.
 [dependencies]
 audit-core = { path = "../audit-core" }
-clap = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 
