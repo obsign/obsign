@@ -148,6 +148,47 @@ impl ClaimMap {
 /// no legitimate use.
 const MAX_ACT_DEPTH: usize = 8;
 
+/// Whether the token belongs to a machine (no human at the root of the chain).
+///
+/// The old test — `sub` == `client_id` — is only one of the shapes a service
+/// token takes, and NOT the one the IdPs this product targets actually emit: a
+/// Keycloak or Entra `client_credentials` token has `sub` set to the service
+/// principal's own id, distinct from the client id, so that test alone let a
+/// keyless robot classify as `Human` and satisfy a "requires a human" Cedar
+/// rule. Detection is therefore the union of the markers each target IdP does
+/// emit. Every branch only ever *adds* a Machine verdict — a genuine user
+/// token matches none of them — so broadening this can never downgrade a real
+/// human to a robot, only the reverse, which is the safe direction.
+///
+/// These live as built-in defaults (like `MAX_ACT_DEPTH` and the Keycloak
+/// paths in `ClaimMap::default`). Making them overridable belongs to a future
+/// signed-bundle revision: the claim map is part of the signed identity bundle
+/// because it changes authorization outcomes, and so would this.
+fn is_machine(claims: &Value, subject: &str, client_id: Option<&str>) -> bool {
+    // 1. `sub` == `client_id`: the textbook client_credentials shape, and what
+    //    a Keycloak "sub == clientId" protocol mapper produces when configured.
+    if client_id.is_some_and(|c| c == subject) {
+        return true;
+    }
+    // 2. Entra ID app-only token. `idtyp` is "app" for an application acting as
+    //    itself and "user" (or absent) for a delegated user token; a user token
+    //    never carries "app".
+    if claims.get("idtyp").and_then(Value::as_str) == Some("app") {
+        return true;
+    }
+    // 3. Keycloak service account: the backing user's `preferred_username` is
+    //    `service-account-<client>`. A human's `preferred_username` is their own
+    //    login, never this reserved prefix.
+    if claims
+        .get("preferred_username")
+        .and_then(Value::as_str)
+        .is_some_and(|u| u.starts_with("service-account-"))
+    {
+        return true;
+    }
+    false
+}
+
 /// Actor chain and principal nature, derived from the `act` claim.
 ///
 /// RFC 8693 semantics: `sub` names the principal on whose behalf we act, `act`
@@ -176,10 +217,13 @@ pub fn actor_chain(
 
     chain.push(subject.to_string());
 
-    // A `client_credentials` token has `sub` == `client_id`: there is nobody
-    // behind it. The distinction matters — a destructive action with no
-    // identifiable human at the end of the chain is defensible to no auditor.
-    let machine = client_id.is_some_and(|c| c == subject);
+    // Is there a human at the end of the chain, or is this a keyless robot?
+    // The distinction is the reason `PrincipalKind` exists — a destructive
+    // action with no identifiable human behind it is defensible to no auditor,
+    // and Cedar rules gate on it. Getting it wrong in the machine→human
+    // direction is a bypass, so detection is additive and fail-safe: any one
+    // marker is enough, and none of them ever fires on a genuine user token.
+    let machine = is_machine(claims, subject, client_id);
 
     let kind = match (chain.len() > 1, machine) {
         (_, true) => PrincipalKind::Machine,
@@ -245,6 +289,50 @@ mod tests {
         assert_eq!(chain, vec!["batch-agent"]);
         assert_eq!(kind, PrincipalKind::Machine);
         assert!(!kind.has_human(), "no human may be assumed");
+    }
+
+    #[test]
+    fn keycloak_service_account_is_machine_despite_sub_ne_client_id() {
+        // The gap the `sub == client_id` test missed: a real Keycloak
+        // client_credentials token has `sub` = the service-account user id,
+        // distinct from `azp`. Only `preferred_username` betrays the robot.
+        let c = json!({
+            "sub": "b8f3c0a1-service-uuid",
+            "azp": "batch-agent",
+            "preferred_username": "service-account-batch-agent"
+        });
+        let (_, kind) = actor_chain(&c, "b8f3c0a1-service-uuid", Some("batch-agent"));
+        assert_eq!(kind, PrincipalKind::Machine);
+        assert!(!kind.has_human(), "a keyless robot must not pass as a human");
+    }
+
+    #[test]
+    fn entra_app_only_token_is_machine() {
+        // Entra ID app-only token: `sub` is the service principal object id,
+        // `appid`/`azp` the client id, and `idtyp` == "app" marks it.
+        let c = json!({
+            "sub": "sp-object-id",
+            "azp": "00000000-client",
+            "idtyp": "app"
+        });
+        let (_, kind) = actor_chain(&c, "sp-object-id", Some("00000000-client"));
+        assert_eq!(kind, PrincipalKind::Machine);
+        assert!(!kind.has_human());
+    }
+
+    #[test]
+    fn human_token_with_username_is_not_misclassified() {
+        // Counter-check: the new markers must never fire on a genuine user.
+        // A normal `preferred_username` and no `idtyp` stays Human.
+        let c = json!({
+            "sub": "u:marie",
+            "azp": "probant-proxy",
+            "preferred_username": "marie",
+            "idtyp": "user"
+        });
+        let (_, kind) = actor_chain(&c, "u:marie", Some("probant-proxy"));
+        assert_eq!(kind, PrincipalKind::Human);
+        assert!(kind.has_human());
     }
 
     #[test]
