@@ -483,6 +483,7 @@ fn kind(rec: &Record) -> &'static str {
         Payload::ToolCall(_) => "tool_call",
         Payload::Decision(_) => "decision",
         Payload::Effect(_) => "effect",
+        Payload::ConfigReload(_) => "config_reload",
     }
 }
 
@@ -513,6 +514,21 @@ fn summary(rec: &Record) -> String {
             s
         }
         Payload::Effect(x) => format!("{} ({} ms)", x.status.as_str(), x.latency_ms),
+        Payload::ConfigReload(c) => {
+            let mut s = format!(
+                "<b>{}</b> {} — in force: {}",
+                match c.status {
+                    audit_core::record::ReloadStatus::Applied => "applied",
+                    audit_core::record::ReloadStatus::Rejected => "REJECTED",
+                },
+                c.config_kind.as_str(),
+                esc(&c.bundle_version),
+            );
+            if let Some(r) = &c.reason {
+                let _ = write!(s, " — {}", esc(r));
+            }
+            s
+        }
     }
 }
 
