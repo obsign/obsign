@@ -123,6 +123,32 @@ pub fn list_chains(wal_dir: &Path) -> Result<Vec<String>, Error> {
     Ok(chains)
 }
 
+/// Chains the store has sealed, read from its `<chain>.checkpoints.jsonl` files.
+///
+/// The store is the independent witness that a chain existed and was sealed. A
+/// chain it names whose WAL file has since vanished is the "drop a whole chain
+/// from the dossier" attack: `list_chains` reads only the WAL directory, so
+/// without cross-checking the store the export would never see the missing
+/// chain and would sign a smaller manifest that looks complete.
+fn list_store_chains(store_dir: &Path) -> Result<Vec<String>, Error> {
+    const SUFFIX: &str = ".checkpoints.jsonl";
+    let mut chains = Vec::new();
+    if store_dir.is_dir() {
+        for entry in std::fs::read_dir(store_dir)? {
+            let path = entry?.path();
+            if let Some(chain) = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_suffix(SUFFIX))
+            {
+                chains.push(chain.to_string());
+            }
+        }
+    }
+    chains.sort();
+    Ok(chains)
+}
+
 /// Exports every chain and writes the signed manifest.
 ///
 /// Packs that do not verify are written and listed anyway, marked invalid:
@@ -152,6 +178,25 @@ pub fn export_all(
             wal_dir.display()
         )));
     }
+
+    // A sealed chain the store knows about but the WAL no longer holds is a
+    // removed WAL file — the exact way to make a whole session disappear from
+    // the dossier while every remaining pack still verifies. Refuse rather than
+    // sign a manifest that silently omits it. (A chain in the WAL but not the
+    // store is only unsealed, which the per-chain export already reports.)
+    let dropped: Vec<String> = list_store_chains(store_dir)?
+        .into_iter()
+        .filter(|c| !chains.contains(c))
+        .collect();
+    if !dropped.is_empty() {
+        return Err(Error::Source(format!(
+            "store holds sealed chain(s) with no WAL file in {}: {} — a WAL was \
+             removed; a dossier cannot omit a sealed chain",
+            wal_dir.display(),
+            dropped.join(", ")
+        )));
+    }
+
     std::fs::create_dir_all(out_dir)?;
 
     let mut exports = Vec::new();
