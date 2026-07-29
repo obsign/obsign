@@ -450,8 +450,10 @@ mod tests {
         // signed bundle may turn that single marker off without losing the
         // other two.
         let c = json!({ "sub": "portal", "client_id": "portal" });
-        let mut m = MachineMarkers::default();
-        m.subject_is_client = false;
+        let m = MachineMarkers {
+            subject_is_client: false,
+            ..MachineMarkers::default()
+        };
         let (_, kind) = actor_chain(&c, "portal", Some("portal"), &m);
         assert_eq!(kind, PrincipalKind::Human);
     }

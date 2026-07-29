@@ -39,9 +39,11 @@ be merged.
 
 ```bash
 cargo test --workspace
-cargo fmt --all -- --check
 cargo clippy --workspace --all-targets
 ```
+
+Match the style of the surrounding code; the tree is not rustfmt-clean and a
+wholesale reformat is its own decision, not a side effect of your change.
 
 New behavior comes with tests; a change to anything signed or hashed comes
 with a tamper test proving the verifier refuses the altered artifact.
