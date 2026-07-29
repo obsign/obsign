@@ -42,7 +42,6 @@ printf '%s\n' \
      --identity-bundle /tmp/demo/identity-bundle.json \
      --token-file /tmp/demo/token.jwt \
      --wal /tmp/demo/wal --chain-id demo --env prod \
-     --evidence-out /tmp/demo/evidence.json \
      -- ./target/debug/mock-mcp-server
 ```
 
@@ -72,6 +71,10 @@ seq=7   dec-2    decision       ALLOW <allow_scoped>
 seq=8   eff-2    effect         ok
 ```
 
+The WAL under `/tmp/demo/wal` is the gateway's only output. It holds no
+signing key — sealing that log into an evidence pack, with a key the gateway
+never sees, is the ledger's job (see below).
+
 With an expired token (`mint_demo_token -- /tmp/demo -3600`), the gateway
 refuses to start and no call is relayed.
 
@@ -81,7 +84,8 @@ The same gateway serves MCP over Streamable HTTP: one shared network service
 instead of one process per agent. Each `initialize` opens a session — its own
 instance of the wrapped server, its own audit chain, its own identity — and the
 token arrives per request in the `Authorization` header, where enterprise SSO
-puts it. Deleting the session seals its chain and writes its evidence pack.
+puts it. Deleting the session closes its chain; the ledger then seals it like
+any other WAL, under `<chain-id>-<session>`.
 
 ```bash
 cargo run -p probant-proxy -- \
@@ -90,7 +94,6 @@ cargo run -p probant-proxy -- \
     --trusted-keys /tmp/demo/trusted-keys.json \
     --identity-bundle /tmp/demo/identity-bundle.json \
     --wal /tmp/demo/wal --chain-id demo --env prod \
-    --evidence-out /tmp/demo/evidence \
     -- ./target/debug/mock-mcp-server
 
 TOKEN=$(cat /tmp/demo/token.jwt)
@@ -107,7 +110,8 @@ curl -s http://127.0.0.1:8080/mcp \
 
 curl -s -X DELETE http://127.0.0.1:8080/mcp \
      -H "Mcp-Session-Id: $SID"
-# → the session's chain is sealed, /tmp/demo/evidence/<session>.json is written
+# → when this returns, the WAL holds the complete session (chain demo-$SID),
+#   ready for a probant-ledger pass to seal
 ```
 
 The HTTP layer is written by hand on `std::net` — no async runtime, no web
@@ -553,12 +557,10 @@ that test fails, the question is not "how do I update the constants" but
 
 ## Known debt
 
-**The gateway still seals on shutdown.** The production path is the `ledger`
-(separate process, separate key), but the gateway's `--evidence-out`
-convenience path still signs with a local key — fine for demos, and its
-warning says so, but it should eventually be reduced to an unsealed export or
-removed. (The other half of this debt is paid: `Pkcs11Sealer` puts the
-production key behind an HSM.)
+Three long-standing entries are paid off: the gateway no longer holds any
+signing key (its only output is the WAL, every seal comes from the ledger),
+`Pkcs11Sealer` puts the production sealing key behind a KMS/HSM, and
+configuration reloads are recorded in the chain (tag 8).
 
 **Dependency tree.** `audit-core` pulls in 36 transitive crates, `probant`
 39 — argument parsing in the verifier is hand-rolled, so `clap` and its

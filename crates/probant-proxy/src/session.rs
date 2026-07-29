@@ -1,8 +1,5 @@
-use audit_core::checkpoint::{PublicKeyEntry, SignedCheckpoint};
-use audit_core::evidence::{Evidence, FORMAT as EVIDENCE_FORMAT};
 use audit_core::record::*;
 use audit_core::{content_hash, ChainWriter};
-use ed25519_dalek::SigningKey;
 use std::collections::HashMap;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use wal::Wal;
@@ -68,29 +65,21 @@ impl Session {
         format!("call-{}", self.counter)
     }
 
-    /// Seals whatever is still pending and produces the evidence pack.
-    pub fn finish(
-        &mut self,
-        key_id: &str,
-        key: &SigningKey,
-    ) -> Result<Evidence, wal::Error> {
-        let mut checkpoints: Vec<SignedCheckpoint> = Vec::new();
-        if let Some(cp) = self.chain.seal(now_ms(), key_id) {
-            checkpoints.push(cp.sign(key));
-        }
-
-        Ok(Evidence {
-            format: EVIDENCE_FORMAT.to_string(),
-            chain_id: self.chain.chain_id().to_string(),
-            records: self.wal.read_all()?,
-            checkpoints,
-            keys: vec![PublicKeyEntry {
-                key_id: key_id.to_string(),
-                algo: "ed25519".to_string(),
-                public_key: hex::encode(key.verifying_key().to_bytes()),
-            }],
-            anchors: Vec::new(),
-        })
+    /// Closing report, written to stderr on shutdown.
+    ///
+    /// The gateway does not seal — it must never hold a signing key, or the
+    /// key and the log cohabit on one host and the checkpoints certify
+    /// whatever that host's attacker rewrites (see the `ledger` crate). Its
+    /// job ends when every record is durable in the WAL; the message says
+    /// where to point the sealer.
+    pub fn closing_report(&self) -> String {
+        format!(
+            "{} record(s) durable in {} — seal with: probant-ledger seal \
+             --wal <dir> --chain-id {}",
+            self.chain.next_seq(),
+            self.wal.path().display(),
+            self.chain.chain_id(),
+        )
     }
 }
 

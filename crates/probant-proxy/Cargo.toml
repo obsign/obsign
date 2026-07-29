@@ -14,19 +14,23 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
-ed25519-dalek = { workspace = true }
 hex = { workspace = true }
 # Session identifiers for the Streamable HTTP transport. Already in the tree
-# through ed25519-dalek, so declaring it adds no crate.
+# through audit-core's ed25519-dalek, so declaring it adds no crate.
 getrandom = { workspace = true }
 
 # Token minting for tests only. Deliberately in dev-dependencies rather than
 # behind a feature of the `identity` crate: a feature would be unified by cargo
 # and would ship the means to forge tokens inside the delivered binary.
+# `ed25519-dalek` lives here for the same reason: the gateway holds no signing
+# key, so nothing in the shipped binary signs. `ledger` lets the e2e tests
+# seal what the gateway wrote, the way a deployment would.
 [dev-dependencies]
 jsonwebtoken = "9"
 base64 = "0.22"
 policy = { path = "../policy" }
+ed25519-dalek = { workspace = true }
+ledger = { path = "../ledger" }
 
 [[bin]]
 name = "probant-proxy"

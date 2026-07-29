@@ -28,7 +28,6 @@ mod session;
 use anyhow::{bail, Context as _, Result};
 use auth::Auth;
 use clap::Parser;
-use ed25519_dalek::SigningKey;
 use gateway::{handle_from_agent, handle_from_server, spawn_server, Ctx, Forward};
 use identity::BundleSource;
 use policy::{Engine, SignedBundle};
@@ -125,19 +124,6 @@ struct Cli {
     #[arg(long)]
     session_id: Option<String>,
 
-    /// Sealing key seed, 32 bytes in hex.
-    /// In production this key lives in a KMS/HSM, never in a file.
-    #[arg(long)]
-    signing_key: Option<PathBuf>,
-
-    #[arg(long, default_value = "seal-dev")]
-    key_id: String,
-
-    /// Evidence pack destination: a file written on shutdown (stdio), or a
-    /// directory receiving one pack per session (HTTP).
-    #[arg(long)]
-    evidence_out: Option<PathBuf>,
-
     /// MCP server command to wrap, after `--`
     #[arg(last = true, required = true)]
     server_cmd: Vec<String>,
@@ -179,26 +165,6 @@ fn main() -> Result<()> {
     let engine = Arc::new(Engine::load(bundle).context("loading the policies")?);
     let bundle_version = engine.version().to_string();
 
-    // --- Sealing key ----------------------------------------------------
-    let signing_key = match &cli.signing_key {
-        Some(p) => {
-            let raw = std::fs::read_to_string(p)
-                .with_context(|| format!("lecture de {}", p.display()))?;
-            let bytes = hex::decode(raw.trim()).context("invalid hex seed")?;
-            let seed: [u8; 32] = bytes
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("the seed must be 32 bytes"))?;
-            SigningKey::from_bytes(&seed)
-        }
-        None => {
-            eprintln!(
-                "[probant] WARNING: no --signing-key supplied, development key in use. \
-                 The seals produced have NO probative value."
-            );
-            SigningKey::from_bytes(&[0x2a; 32])
-        }
-    };
-
     eprintln!(
         "[probant] policy {} — {} tool(s) in catalogue — env {}",
         bundle_version,
@@ -207,8 +173,8 @@ fn main() -> Result<()> {
     );
 
     match &cli.http {
-        Some(addr) => run_http(&cli, addr, engine, bundle_version, trusted, signing_key),
-        None => run_stdio(&cli, engine, bundle_version, trusted, signing_key),
+        Some(addr) => run_http(&cli, addr, engine, bundle_version, trusted),
+        None => run_stdio(&cli, engine, bundle_version, trusted),
     }
 }
 
@@ -222,7 +188,6 @@ fn run_http(
     engine: Arc<Engine>,
     bundle_version: String,
     trusted: Vec<audit_core::checkpoint::PublicKeyEntry>,
-    signing_key: SigningKey,
 ) -> Result<()> {
     // Options that only mean something on stdio are refused, not ignored: an
     // operator who set them expects them to act.
@@ -274,11 +239,6 @@ fn run_http(
         }
     };
 
-    if let Some(dir) = &cli.evidence_out {
-        std::fs::create_dir_all(dir)
-            .with_context(|| format!("creating {}", dir.display()))?;
-    }
-
     http::serve(
         http::Gateway {
             engine,
@@ -289,9 +249,6 @@ fn run_http(
             agent_id: cli.agent_id.clone(),
             wal_dir: cli.wal.clone(),
             chain_id: cli.chain_id.clone(),
-            key_id: cli.key_id.clone(),
-            signing_key,
-            evidence_dir: cli.evidence_out.clone(),
             server_cmd: cli.server_cmd.clone(),
             allowed_origins: cli.allowed_origins.clone(),
         },
@@ -308,7 +265,6 @@ fn run_stdio(
     engine: Arc<Engine>,
     bundle_version: String,
     trusted: Vec<audit_core::checkpoint::PublicKeyEntry>,
-    signing_key: SigningKey,
 ) -> Result<()> {
     // --- Identity -------------------------------------------------------
     let auth = build_auth(cli, &trusted)?;
@@ -436,24 +392,14 @@ fn run_stdio(
     }
 
     // --- Shutdown -----------------------------------------------------------
+    // Nothing to seal, nothing to export: the WAL already holds every record,
+    // fsynced before the act it describes was forwarded. Sealing is the
+    // ledger's job, with a key this process never held.
     drop(child_stdin);
     let _ = downstream.join();
     let _ = child.wait();
 
-    let mut s = state.lock().unwrap();
-    let evidence = s.finish(&cli.key_id, &signing_key)?;
-    eprintln!(
-        "[probant] {} record(s), {} checkpoint(s)",
-        evidence.records.len(),
-        evidence.checkpoints.len()
-    );
-
-    if let Some(path) = &cli.evidence_out {
-        std::fs::write(path, serde_json::to_string_pretty(&evidence)?)
-            .with_context(|| format!("writing {}", path.display()))?;
-        eprintln!("[probant] evidence pack: {}", path.display());
-    }
-
+    eprintln!("[probant] {}", state.lock().unwrap().closing_report());
     Ok(())
 }
 

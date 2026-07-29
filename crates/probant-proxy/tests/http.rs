@@ -167,15 +167,13 @@ fn start(name: &str, oidc: bool, extra: &[&str]) -> Gateway {
         serde_json::to_string(&keyring(&key)).unwrap(),
     )
     .unwrap();
-    std::fs::create_dir_all(dir.join("evidence")).unwrap();
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_probant-proxy"));
     cmd.args(["--policy", dir.join("bundle.json").to_str().unwrap()])
         .args(["--trusted-keys", dir.join("keys.json").to_str().unwrap()])
         .args(["--wal", dir.join("wal").to_str().unwrap()])
         .args(["--chain-id", "http", "--env", "prod"])
-        .args(["--http", "127.0.0.1:0"])
-        .args(["--evidence-out", dir.join("evidence").to_str().unwrap()]);
+        .args(["--http", "127.0.0.1:0"]);
 
     if oidc {
         std::fs::write(dir.join("identity-bundle.json"), identity_bundle_json()).unwrap();
@@ -328,13 +326,25 @@ fn call(gw: &Gateway, sid: &str, extra: &[(&str, &str)], id: u64, tool: &str) ->
     )
 }
 
-/// Waits for the evidence pack a DELETE seals.
+/// Seals a session's WAL and assembles its evidence pack.
+///
+/// The gateway holds no signing key; DELETE only guarantees the log is
+/// complete when it returns. This helper is the ledger's job run in-process
+/// over that finished chain — the exact division of trust a deployment has.
 fn evidence(gw: &Gateway, sid: &str) -> Evidence {
-    let path = gw.dir.join("evidence").join(format!("{sid}.json"));
-    serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!("evidence pack {} missing: {e}", path.display())
-    }))
-    .unwrap()
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let chain_id = format!("http-{sid}");
+    let records = wal::read(&gw.dir.join("wal"), &chain_id).unwrap_or_else(|e| {
+        panic!("reading the WAL for session {sid}: {e}")
+    });
+    let mut store = ledger::Store::open(&gw.dir.join("ledger").join(sid), &chain_id)
+        .expect("opening the store");
+    let sealer = ledger::FileSealer::from_seed([0x33; 32], "seal-ledger");
+    ledger::seal_pass(&records, &mut store, &sealer, now, 1).expect("sealing the log");
+    ledger::export(records, &store)
 }
 
 // ===========================================================================
@@ -386,8 +396,8 @@ fn session_lifecycle_enforces_and_seals() {
     );
     assert_eq!(r.status, 202);
 
-    // DELETE seals the chain; the pack must be complete and verifiable
-    // offline, like a stdio shutdown.
+    // DELETE closes the log: when it returns, the WAL holds the complete
+    // session and a ledger pass seals it into a pack verifiable offline.
     let r = http(&gw, "DELETE", &[("Mcp-Session-Id", &sid)], "");
     assert_eq!(r.status, 200);
 

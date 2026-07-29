@@ -5,8 +5,9 @@
 //! request opens a session: its own instance of the wrapped stdio server, its
 //! own audit chain, its own identity. The client gets an `Mcp-Session-Id`
 //! back and presents it on every subsequent request; deleting the session
-//! seals the chain and writes the evidence pack. One agent's session ending —
-//! or misbehaving — never touches another's log.
+//! closes the log — sealing and evidence export belong to the ledger, which
+//! runs with a key this process never holds. One agent's session ending — or
+//! misbehaving — never touches another's log.
 //!
 //! Identity travels in the `Authorization: Bearer` header of each request and
 //! is verified against the same signed identity bundle as in stdio mode. The
@@ -30,7 +31,6 @@ use crate::auth::Auth;
 use crate::gateway::{self, Ctx, Forward};
 use crate::session::{self, now_ms};
 use anyhow::{Context as _, Result};
-use ed25519_dalek::SigningKey;
 use identity::BundleSource;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -84,9 +84,6 @@ pub struct Gateway {
     pub agent_id: String,
     pub wal_dir: PathBuf,
     pub chain_id: String,
-    pub key_id: String,
-    pub signing_key: SigningKey,
-    pub evidence_dir: Option<PathBuf>,
     pub server_cmd: Vec<String>,
     pub allowed_origins: Vec<String>,
 }
@@ -106,9 +103,10 @@ struct McpSession {
     /// Sink of the GET stream, when one is open. Server-initiated messages
     /// go there; without a stream they are dropped, loudly.
     events: Mutex<Option<mpsc::Sender<Value>>>,
-    /// Signalled once the chain is sealed, so DELETE can return only after
-    /// the evidence pack exists.
-    sealed: (Mutex<bool>, Condvar),
+    /// Signalled once the log is complete — every buffered response processed
+    /// and durable — so DELETE returns only when a ledger pass would see the
+    /// whole session.
+    finished: (Mutex<bool>, Condvar),
 }
 
 type Registry = Arc<Mutex<HashMap<String, Arc<McpSession>>>>;
@@ -592,20 +590,14 @@ fn open_session(
             child_stdin: Mutex::new(Some(child_stdin)),
             waiters: Mutex::new(HashMap::new()),
             events: Mutex::new(None),
-            sealed: (Mutex::new(false), Condvar::new()),
+            finished: (Mutex::new(false), Condvar::new()),
         });
         registry.lock().unwrap().insert(sid.clone(), Arc::clone(&sess));
 
         let dispatcher_sess = Arc::clone(&sess);
-        let dispatcher_gw = Arc::clone(gw);
         let dispatcher_registry = Arc::clone(registry);
         std::thread::spawn(move || {
-            dispatch_from_server(
-                dispatcher_sess,
-                child_stdout,
-                dispatcher_gw,
-                dispatcher_registry,
-            )
+            dispatch_from_server(dispatcher_sess, child_stdout, dispatcher_registry)
         });
 
         Ok(sess)
@@ -650,15 +642,14 @@ fn open_session(
 /// routes each message: responses to the POST thread waiting for them,
 /// server-initiated traffic to the GET stream.
 ///
-/// This thread is also the only place a session is sealed. Everything that
-/// ends a session — DELETE, a dying child, gateway shutdown via child exit —
-/// converges here as an EOF on the child's stdout, after every last buffered
-/// response has been processed. Sealing anywhere else would race the effects
-/// still being written.
+/// This thread is also the only place a session is declared finished.
+/// Everything that ends a session — DELETE, a dying child, gateway shutdown
+/// via child exit — converges here as an EOF on the child's stdout, after
+/// every last buffered response has been processed. Declaring it anywhere
+/// else would race the effects still being written.
 fn dispatch_from_server(
     sess: Arc<McpSession>,
     child_stdout: std::process::ChildStdout,
-    gw: Arc<Gateway>,
     registry: Registry,
 ) {
     let reader = BufReader::new(child_stdout);
@@ -715,31 +706,16 @@ fn dispatch_from_server(
     // In-flight calls whose response never came stay as call+decision records
     // with no effect. Deliberate: writing an effect would claim knowledge of
     // an outcome nobody observed. A truncated triple *is* the honest record.
-    let mut s = sess.state.lock().unwrap();
-    match s.finish(&gw.key_id, &gw.signing_key) {
-        Ok(evidence) => {
-            eprintln!(
-                "[probant] session {} sealed — {} record(s), {} checkpoint(s)",
-                &sess.id[..8],
-                evidence.records.len(),
-                evidence.checkpoints.len()
-            );
-            if let Some(dir) = &gw.evidence_dir {
-                let path = dir.join(format!("{}.json", sess.id));
-                match serde_json::to_string_pretty(&evidence)
-                    .map_err(std::io::Error::other)
-                    .and_then(|j| std::fs::write(&path, j))
-                {
-                    Ok(()) => eprintln!("[probant] evidence pack: {}", path.display()),
-                    Err(e) => eprintln!("[probant] writing evidence pack failed: {e}"),
-                }
-            }
-        }
-        Err(e) => eprintln!("[probant] sealing session {} failed: {e}", &sess.id[..8]),
-    }
-    drop(s);
+    //
+    // Nothing is sealed here: the WAL already holds every record, and sealing
+    // belongs to the ledger, with a key this process never held.
+    eprintln!(
+        "[probant] session {} closed — {}",
+        &sess.id[..8],
+        sess.state.lock().unwrap().closing_report()
+    );
 
-    let (lock, cvar) = &sess.sealed;
+    let (lock, cvar) = &sess.finished;
     *lock.lock().unwrap() = true;
     cvar.notify_all();
 }
@@ -771,13 +747,14 @@ fn handle_delete(
     };
 
     // Closing stdin is the whole termination protocol: the server exits, its
-    // stdout reaches EOF, and the dispatcher seals the chain after the last
-    // buffered response. We only wait for that seal so the client can rely on
-    // the evidence pack existing when DELETE returns.
+    // stdout reaches EOF, and the dispatcher closes the log after the last
+    // buffered response. We only wait for that close so the client can rely
+    // on the WAL holding the complete session when DELETE returns — the
+    // ledger's next pass then seals a finished chain, not a moving one.
     *sess.child_stdin.lock().unwrap() = None;
 
-    let (lock, cvar) = &sess.sealed;
-    let sealed = cvar
+    let (lock, cvar) = &sess.finished;
+    let finished = cvar
         .wait_timeout_while(
             lock.lock().unwrap(),
             Duration::from_secs(10),
@@ -786,11 +763,11 @@ fn handle_delete(
         .map(|(guard, timeout)| *guard && !timeout.timed_out())
         .unwrap_or(false);
 
-    if !sealed {
+    if !finished {
         // The wrapped server is ignoring EOF. Killing it now would race the
         // dispatcher; better to say what is happening.
         eprintln!(
-            "[probant] session {}: server has not exited, sealing pending",
+            "[probant] session {}: server has not exited, log still open",
             &sess.id[..8]
         );
         respond(stream, 202, "Accepted", &[], None, b"")?;
