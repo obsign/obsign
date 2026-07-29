@@ -444,6 +444,31 @@ fn a_rewritten_wal_is_exported_but_flagged_invalid() {
 }
 
 #[test]
+fn a_sealed_chain_whose_wal_was_removed_refuses_the_export() {
+    // Dropping a whole chain from the dossier: the store still holds beta's
+    // checkpoints (proof it existed and was sealed), but its WAL file is gone.
+    // Without the store cross-check, export would list only alpha and sign a
+    // manifest that looks complete. It must refuse instead.
+    let wal_dir = tmp("drop-wal");
+    let store_dir = tmp("drop-store");
+    let out = tmp("drop-out");
+
+    for (chain, salt) in [("alpha", 0u64), ("beta", 100)] {
+        fill_chain(&wal_dir, chain, 4, salt);
+        seal_chain(&wal_dir, &store_dir, chain);
+    }
+
+    std::fs::remove_file(wal_dir.join("beta.jsonl")).unwrap();
+
+    let err = export_all(&wal_dir, &store_dir, &out, &ops(), 9_000)
+        .expect_err("a sealed chain missing its WAL must not be silently omitted");
+    assert!(
+        matches!(&err, Error::Source(m) if m.contains("beta")),
+        "the refusal must name the dropped chain, got: {err:?}"
+    );
+}
+
+#[test]
 fn an_empty_or_mistyped_export_is_refused() {
     let wal_dir = tmp("empty-wal");
     let store_dir = tmp("empty-store");
