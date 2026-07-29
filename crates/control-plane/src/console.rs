@@ -23,17 +23,23 @@ use audit_core::checkpoint::PublicKeyEntry;
 use audit_core::record::{Payload, Record};
 use ledger::Store;
 use std::fmt::Write as _;
-use std::io::{BufRead, BufReader, Write as _};
+use std::io::{BufRead, BufReader, Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::export::list_chains;
 use crate::release::SignedManifest;
 use crate::Error;
 
 /// Ceiling on request head bytes. Above this, nobody is browsing.
-const MAX_HEAD_BYTES: usize = 8 * 1024;
+const MAX_HEAD_BYTES: u64 = 8 * 1024;
+
+/// Deadline on every socket read and write. One thread per connection is
+/// fine for an admin page, but only if a client that stops mid-request
+/// releases its thread instead of holding it forever.
+const IO_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Records shown on a chain page. Not a silent cap: the page says when it
 /// truncates and points at `export` for the full log.
@@ -75,11 +81,21 @@ impl Console {
 /// One request per connection. Keep-alive buys nothing on an admin page and
 /// the close is what makes the hand-written test client trivial.
 fn handle(console: &Console, stream: TcpStream) -> std::io::Result<()> {
-    let mut reader = BufReader::new(stream.try_clone()?);
+    stream.set_read_timeout(Some(IO_TIMEOUT))?;
+    stream.set_write_timeout(Some(IO_TIMEOUT))?;
+    // The cap sits under the reader, so it bounds the request line too:
+    // `read_line` otherwise buffers a newline-less line without limit, and an
+    // unbounded allocation driven by the peer is a one-connection DoS.
+    let mut reader = BufReader::new(stream.try_clone()?.take(MAX_HEAD_BYTES));
     let mut stream = stream;
 
     let mut line = String::new();
     reader.read_line(&mut line)?;
+    if !line.ends_with('\n') {
+        // The cap was hit mid-line, or the client hung up before finishing
+        // its request line. Neither is a request to serve.
+        return respond(&mut stream, 431, "Request Header Fields Too Large", "text/plain", b"");
+    }
     let mut parts = line.split_whitespace();
     let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
         return respond(&mut stream, 400, "Bad Request", "text/plain", b"malformed request");
@@ -87,15 +103,11 @@ fn handle(console: &Console, stream: TcpStream) -> std::io::Result<()> {
     let method = method.to_string();
     let path = target.split('?').next().unwrap_or(target).to_string();
 
-    // Drain headers, bounded; their content is irrelevant to a GET-only server.
-    let mut total = line.len();
+    // Drain headers; their content is irrelevant to a GET-only server. EOF
+    // before the blank line means the head was truncated by the cap above.
     loop {
         let mut h = String::new();
         if reader.read_line(&mut h)? == 0 {
-            break;
-        }
-        total += h.len();
-        if total > MAX_HEAD_BYTES {
             return respond(&mut stream, 431, "Request Header Fields Too Large", "text/plain", b"");
         }
         if h.trim_end().is_empty() {

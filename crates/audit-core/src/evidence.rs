@@ -15,6 +15,7 @@ pub const FORMAT: &str = "probant-evidence/1";
 /// access to our infrastructure. If verification needs a server, it is no
 /// longer proof, it is a claim.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Evidence {
     pub format: String,
     pub chain_id: String,
@@ -593,6 +594,33 @@ mod tests {
         let r = verify(&ev, &[entry]);
         assert!(!r.is_valid(), "a TSA rejection must not pass as an anchor");
         assert!(r.errors().any(|f| f.code == "anchor_rejected"));
+    }
+
+    #[test]
+    fn unknown_fields_in_a_pack_are_refused() {
+        // A field nobody defined is not ignorable noise in a proof format:
+        // two parsers that disagree on what a pack contains is exactly the
+        // ambiguity an attacker wants. deny_unknown_fields makes the refusal
+        // uniform — at the top level, on a record, and inside a payload
+        // (the internally-tagged case, where serde strips only `kind`).
+        let (ev, _) = sealed_pack();
+
+        let mut v = serde_json::to_value(&ev).unwrap();
+        v["smuggled"] = serde_json::json!("x");
+        assert!(serde_json::from_value::<Evidence>(v).is_err());
+
+        let mut v = serde_json::to_value(&ev).unwrap();
+        v["records"][0]["smuggled"] = serde_json::json!("x");
+        assert!(serde_json::from_value::<Evidence>(v).is_err());
+
+        let mut v = serde_json::to_value(&ev).unwrap();
+        v["records"][0]["payload"]["smuggled"] = serde_json::json!("x");
+        assert!(serde_json::from_value::<Evidence>(v).is_err());
+
+        // The untouched pack still parses: the refusal is the fields', not
+        // the format's.
+        let v = serde_json::to_value(&ev).unwrap();
+        assert!(serde_json::from_value::<Evidence>(v).is_ok());
     }
 
     #[test]

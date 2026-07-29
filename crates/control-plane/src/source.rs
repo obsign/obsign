@@ -244,6 +244,17 @@ pub fn git_head(start: &Path) -> Result<String, Error> {
             )));
         };
 
+        // The refname is joined under the git directory and opened: without
+        // this check, a hand-crafted `ref: ../../...` (or an absolute path)
+        // in HEAD reads an arbitrary file on the compiling host. Git's own
+        // refname rules already forbid these shapes; enforcing the subset
+        // that decides path safety is enough here.
+        if !is_safe_refname(refname) {
+            return Err(Error::NoVersion(format!(
+                "HEAD names a ref that escapes the repository: {refname:?}"
+            )));
+        }
+
         let loose = common.join(refname);
         if loose.is_file() {
             target = std::fs::read_to_string(&loose)?.trim().to_string();
@@ -306,6 +317,15 @@ pub(crate) fn find_git_dirs(start: &Path) -> Option<GitDirs> {
     None
 }
 
+fn is_safe_refname(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('/')
+        && !name.contains('\\')
+        && name
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
 fn packed_ref(path: &Path, refname: &str) -> Result<Option<String>, Error> {
     if !path.is_file() {
         return Ok(None);
@@ -333,5 +353,41 @@ pub fn short_ref(sha: &str) -> &str {
         &sha[..12]
     } else {
         sha
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refnames_that_escape_the_git_directory_are_refused() {
+        assert!(is_safe_refname("refs/heads/main"));
+        assert!(is_safe_refname("refs/heads/feature/x-1.2"));
+        assert!(!is_safe_refname(""));
+        assert!(!is_safe_refname("/etc/passwd"));
+        assert!(!is_safe_refname("refs/../../../etc/passwd"));
+        assert!(!is_safe_refname(".."));
+        assert!(!is_safe_refname("refs//heads"));
+        assert!(!is_safe_refname("refs/./heads"));
+        assert!(!is_safe_refname("refs\\heads\\main"));
+    }
+
+    #[test]
+    fn a_traversal_symref_in_head_is_an_error_not_a_file_read() {
+        let dir = std::env::temp_dir().join(format!("probant-symref-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        // A file outside the git directory whose content is a plausible sha:
+        // without the refname check, git_head would happily return it.
+        std::fs::write(dir.join("secret"), "a".repeat(40)).unwrap();
+        std::fs::write(dir.join(".git").join("HEAD"), "ref: ../secret\n").unwrap();
+
+        let err = git_head(&dir).unwrap_err();
+        assert!(
+            matches!(&err, Error::NoVersion(m) if m.contains("escapes")),
+            "expected a refusal, got: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

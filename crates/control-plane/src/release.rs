@@ -22,6 +22,7 @@
 //!   never a torn file. Rollback needs no tooling: republish the old sha.
 
 use audit_core::canonical::Encoder;
+use audit_core::checkpoint::PublicKeyEntry;
 use audit_core::hash::{digest, domain, sha256, Hash};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier as _, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -39,6 +40,7 @@ pub const FORMAT: &str = "probant-release/1";
 /// the manifest names?" is answerable with standard tooling. What is signed
 /// is the manifest, through the canonical encoding, like everything else.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub format: String,
     /// The source ref: short commit sha or explicit label.
@@ -49,6 +51,7 @@ pub struct Manifest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Artifact {
     pub name: String,
     pub sha256: Hash,
@@ -78,6 +81,7 @@ impl Manifest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct SignedManifest {
     pub manifest: Manifest,
     pub key_id: String,
@@ -130,8 +134,9 @@ pub fn publish(
     artifacts.sort_by(|a, b| a.0.cmp(&b.0));
 
     // The ops key becomes (or already is) a trusted key. Refusing a rebound
-    // key id happens before anything else is written.
-    record_trusted_key(&dist.join("trusted-keys.json"), &ops.public_entry())?;
+    // key id happens before anything else is written. The full set is kept:
+    // a rollback may republish a manifest signed by an *earlier* ops key.
+    let trusted = record_trusted_key(&dist.join("trusted-keys.json"), &ops.public_entry())?;
 
     let version = compiled.source_ref.clone();
     let release_dir = dist.join("releases").join(&version);
@@ -172,7 +177,8 @@ pub fn publish(
     // fleet at it. A fresh one is only written when the directory is new or
     // its manifest no longer matches the artifacts (crash repair again).
     let manifest_path = release_dir.join("manifest.json");
-    let manifest_bytes = match read_matching_manifest(&manifest_path, &manifest.artifacts) {
+    let manifest_bytes = match read_matching_manifest(&manifest_path, &manifest.artifacts, &trusted)
+    {
         Some(bytes) => bytes,
         None => {
             let signed = manifest.clone().sign(ops.key_id(), ops.signing_key());
@@ -197,10 +203,29 @@ pub fn publish(
     })
 }
 
-/// Returns the existing manifest bytes if they parse and name exactly the
-/// artifacts being published.
-fn read_matching_manifest(path: &Path, artifacts: &[Artifact]) -> Option<Vec<u8>> {
+/// Returns the existing manifest bytes if they parse, name exactly the
+/// artifacts being published, and still carry a valid signature from a
+/// trusted key.
+///
+/// The signature check is not redundancy: on a rollback these bytes become
+/// the *current* manifest the fleet trusts. A manifest tampered with in the
+/// release directory since it was written must be re-signed fresh, not
+/// propagated as-is.
+fn read_matching_manifest(
+    path: &Path,
+    artifacts: &[Artifact],
+    trusted: &[PublicKeyEntry],
+) -> Option<Vec<u8>> {
     let bytes = std::fs::read(path).ok()?;
     let signed: SignedManifest = serde_json::from_slice(&bytes).ok()?;
-    (signed.manifest.artifacts == artifacts).then_some(bytes)
+    if signed.manifest.artifacts != artifacts {
+        return None;
+    }
+    let vk = trusted
+        .iter()
+        .find(|k| k.key_id == signed.key_id)?
+        .to_verifying_key()
+        .ok()?;
+    signed.verify(&vk).ok()?;
+    Some(bytes)
 }
