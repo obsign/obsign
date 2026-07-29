@@ -38,7 +38,7 @@ proxy = subprocess.Popen(
      "--identity-bundle", D / "identity-bundle.json",
      "--token-file", D / "token.jwt",
      "--wal", D / "wal", "--chain-id", "rot", "--env", "prod",
-     "--evidence-out", D / "ev.json", "--", SRV],
+     "--", SRV],
     stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, text=True)
 
 proxy.stdin.write(REQ % 1); proxy.stdin.flush()

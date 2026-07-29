@@ -17,7 +17,7 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use policy::bundle::{Bundle, FailBehaviour, FailMode, ToolDef, FORMAT};
 use serde_json::{json, Value};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const ISSUER: &str = "https://sso.acme.fr/realms/corp";
@@ -164,6 +164,25 @@ struct Fixture {
     started: bool,
 }
 
+/// Seals the WAL the gateway left behind and assembles the evidence pack.
+///
+/// The gateway no longer holds a signing key: its output is the WAL, full
+/// stop. This helper is the ledger's job run in-process — same `seal_pass`,
+/// same `export` — so the tests exercise the exact division of trust a
+/// deployment has.
+fn seal_and_export(dir: &Path, chain_id: &str) -> Evidence {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let records = wal::read(&dir.join("wal"), chain_id).expect("reading the WAL");
+    let mut store =
+        ledger::Store::open(&dir.join("ledger"), chain_id).expect("opening the store");
+    let sealer = ledger::FileSealer::from_seed([0x33; 32], "seal-ledger");
+    ledger::seal_pass(&records, &mut store, &sealer, now, 1).expect("sealing the log");
+    ledger::export(records, &store)
+}
+
 fn tool(name: &str, destructive: bool, scope: Option<&str>) -> ToolDef {
     ToolDef {
         name: name.into(),
@@ -198,7 +217,6 @@ fn run(name: &str, cedar: &str, ident: Ident, traffic: &[&str]) -> Fixture {
 
     let bundle_path = dir.join("bundle.json");
     let keys_path = dir.join("keys.json");
-    let evidence_path = dir.join("evidence.json");
     std::fs::write(&bundle_path, serde_json::to_string(&signed).unwrap()).unwrap();
     std::fs::write(&keys_path, serde_json::to_string(&keys).unwrap()).unwrap();
 
@@ -212,9 +230,7 @@ fn run(name: &str, cedar: &str, ident: Ident, traffic: &[&str]) -> Fixture {
         .arg("--chain-id")
         .arg("test")
         .arg("--env")
-        .arg("prod")
-        .arg("--evidence-out")
-        .arg(&evidence_path);
+        .arg("prod");
 
     match &ident {
         Ident::Declared { scopes } => {
@@ -267,10 +283,11 @@ fn run(name: &str, cedar: &str, ident: Ident, traffic: &[&str]) -> Fixture {
         .map(|l| serde_json::from_str::<Value>(l).expect("valid JSON response"))
         .collect();
 
-    // A refused startup (invalid identity) produces no pack.
-    let started = evidence_path.exists();
+    // A refused startup (invalid identity) never opens the log: identity is
+    // established before the WAL exists.
+    let started = dir.join("wal").join("test.jsonl").exists();
     let evidence: Evidence = if started {
-        serde_json::from_str(&std::fs::read_to_string(&evidence_path).unwrap()).unwrap()
+        seal_and_export(&dir, "test")
     } else {
         Evidence {
             format: audit_core::evidence::FORMAT.to_string(),
@@ -442,7 +459,7 @@ fn the_produced_evidence_pack_is_verifiable() {
     assert!(report.is_valid(), "findings: {:?}", report.findings);
     assert_eq!(
         report.records_sealed, report.records_total,
-        "everything logged must be sealed on shutdown"
+        "one ledger pass over the finished WAL must seal every record"
     );
 }
 
@@ -473,17 +490,13 @@ fn the_log_resumes_after_restart() {
     let call = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_docs","arguments":{}}}"#;
 
     let mut seqs = Vec::new();
-    for run_idx in 0..2 {
+    for _ in 0..2 {
         let mut child = Command::new(env!("CARGO_BIN_EXE_probant-proxy"))
             .args(["--policy", dir.join("bundle.json").to_str().unwrap()])
             .args(["--trusted-keys", dir.join("keys.json").to_str().unwrap()])
             .args(["--wal", dir.join("wal").to_str().unwrap()])
             .args(["--chain-id", "resume", "--env", "prod"])
             .args(["--insecure-declared-identity", "--principal", "m"])
-            .args([
-                "--evidence-out",
-                dir.join(format!("ev{run_idx}.json")).to_str().unwrap(),
-            ])
             .arg("--")
             .arg(env!("CARGO_BIN_EXE_mock-mcp-server"))
             .stdin(Stdio::piped())
@@ -494,11 +507,8 @@ fn the_log_resumes_after_restart() {
         writeln!(child.stdin.take().unwrap(), "{call}").unwrap();
         child.wait_with_output().unwrap();
 
-        let ev: Evidence = serde_json::from_str(
-            &std::fs::read_to_string(dir.join(format!("ev{run_idx}.json"))).unwrap(),
-        )
-        .unwrap();
-        seqs.push(ev.records.last().unwrap().seq);
+        let records = wal::read(&dir.join("wal"), "resume").unwrap();
+        seqs.push(records.last().unwrap().seq);
     }
 
     assert!(
@@ -506,10 +516,9 @@ fn the_log_resumes_after_restart() {
         "the chain restarted from zero: {seqs:?}"
     );
 
-    // The second run's pack holds the full history and stays verifiable end
-    // to end.
-    let ev: Evidence =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("ev1.json")).unwrap()).unwrap();
+    // One ledger pass over the accumulated WAL: the full history seals and
+    // stays verifiable end to end.
+    let ev = seal_and_export(&dir, "resume");
     let keys = ev.keys.clone();
     let report = evidence::verify(&ev, &keys);
     assert!(report.is_valid(), "findings: {:?}", report.findings);
