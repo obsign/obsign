@@ -317,7 +317,19 @@ fn do_export(store_args: &StoreArgs, wal_dir: &Path, out: &Path) -> Result<()> {
         }
         bail!("the exported pack does not verify — see findings above");
     }
-    eprintln!("[ledger] verified: chain intact, {} sealed record(s)", report.records_sealed);
+    if report.self_referential {
+        // No keys in the store: nothing signed, nothing to prove.
+        eprintln!(
+            "[ledger] verified: internally consistent, {} sealed record(s) — \
+             no key in the store, authenticity not provable",
+            report.records_sealed
+        );
+    } else {
+        eprintln!(
+            "[ledger] verified: chain intact, {} sealed record(s)",
+            report.records_sealed
+        );
+    }
     Ok(())
 }
 

@@ -12,6 +12,12 @@ audit-core = { path = "../audit-core" }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 
+# Test-only: forging packs to check the exit-code contract. Kept out of
+# [dependencies] so the auditor's build stays as small as advertised.
+[dev-dependencies]
+ed25519-dalek = { workspace = true }
+hex = { workspace = true }
+
 [[bin]]
 name = "probant"
 path = "src/main.rs"

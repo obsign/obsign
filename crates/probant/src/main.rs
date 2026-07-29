@@ -6,7 +6,8 @@
 //!
 //! * no network access, ever;
 //! * minimal dependencies, readable end to end;
-//! * script-friendly exit codes (0 valid, 1 invalid, 2 execution error).
+//! * script-friendly exit codes (0 proven, 1 invalid, 2 execution error,
+//!   3 consistent but unproven — self-referential verification).
 
 use anyhow::{Context, Result};
 use audit_core::checkpoint::PublicKeyEntry;
@@ -29,12 +30,14 @@ Arguments:
 
 Options:
       --trusted-keys <FILE>  Trusted public keys, obtained outside the pack.
-                             Without this the verification stays self-referential.
+                             Without this the verification stays self-referential
+                             and cannot prove authenticity (exit 3 at best).
       --json                 JSON output instead of the human-readable report
       --strict               Treat warnings as errors
   -h, --help                 Print help
 
-Exit codes: 0 valid, 1 invalid, 2 execution error.";
+Exit codes: 0 proven, 1 invalid, 2 execution error,
+            3 consistent but unproven (no trusted keys supplied).";
 
 enum Cli {
     Verify(VerifyCmd),
@@ -115,8 +118,7 @@ fn main() -> ExitCode {
         }
     };
     match run(cmd) {
-        Ok(true) => ExitCode::SUCCESS,
-        Ok(false) => ExitCode::from(1),
+        Ok(code) => code,
         Err(e) => {
             eprintln!("error: {e:#}");
             ExitCode::from(2)
@@ -124,7 +126,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(cmd: VerifyCmd) -> Result<bool> {
+fn run(cmd: VerifyCmd) -> Result<ExitCode> {
     let raw = std::fs::read_to_string(&cmd.evidence)
         .with_context(|| format!("reading {}", cmd.evidence.display()))?;
     let ev: Evidence = serde_json::from_str(&raw)
@@ -148,7 +150,17 @@ fn run(cmd: VerifyCmd) -> Result<bool> {
     }
 
     let has_warnings = report.warnings().next().is_some();
-    Ok(report.is_valid() && !(cmd.strict && has_warnings))
+    if !report.is_valid() || (cmd.strict && has_warnings) {
+        return Ok(ExitCode::from(1));
+    }
+    // A self-referential run must not exit 0: a fully forged pack, signed
+    // with the attacker's key embedded in the pack itself, passes every
+    // internal check. Exit 0 is reserved for verification against keys the
+    // auditor obtained through another channel.
+    if report.self_referential {
+        return Ok(ExitCode::from(3));
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn print_report(r: &evidence::Report) {
@@ -187,7 +199,19 @@ fn print_report(r: &evidence::Report) {
 
     println!();
     if r.is_valid() {
-        println!("VERDICT: chain intact.");
+        if r.self_referential {
+            println!("VERDICT: internally consistent — NOT PROVEN.");
+            println!(
+                "         Verified against the keys embedded in the pack itself: \
+                 a forged"
+            );
+            println!(
+                "         pack passes this check identically. Re-run with \
+                 --trusted-keys."
+            );
+        } else {
+            println!("VERDICT: chain intact.");
+        }
         if r.records_sealed < r.records_total {
             println!(
                 "         {} record(s) unsealed: consistent, but not proven.",

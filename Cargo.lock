@@ -1110,6 +1110,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "audit-core",
+ "ed25519-dalek",
+ "hex",
  "serde_json",
 ]
 

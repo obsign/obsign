@@ -98,6 +98,7 @@ fn intact_chain_is_valid() {
     assert_eq!(r.records_total, 6);
     assert_eq!(r.records_sealed, 6, "everything must be sealed");
     assert_eq!(r.checkpoints_valid, 1);
+    assert!(!r.self_referential, "trusted keys were supplied");
 }
 
 #[test]
@@ -180,9 +181,14 @@ fn rewriting_the_whole_chain_is_stopped_by_the_signature() {
     assert!(codes(&r).contains(&"invalid_signature"));
 
     // And with no key anchoring, the same pack would pass — hence the
-    // mandatory warning.
+    // mandatory warning AND the self_referential flag, which callers use to
+    // refuse presenting the run as proof (probant exits 3, not 0).
     let unanchored = evidence::verify(&forged, &[]);
     assert!(unanchored.is_valid());
+    assert!(
+        unanchored.self_referential,
+        "a run against embedded keys must be flagged self-referential"
+    );
     assert!(unanchored.warnings().any(|f| f.code == "keys_not_anchored"));
 }
 

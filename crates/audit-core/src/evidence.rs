@@ -81,6 +81,13 @@ pub struct Report {
     pub anchors_ok: usize,
     pub first_seq: Option<u64>,
     pub last_seq: Option<u64>,
+    /// True when no trusted keys were supplied and verification fell back to
+    /// the keys embedded in the pack. A valid report then proves internal
+    /// consistency only: a forged pack signed with a made-up key embedded in
+    /// the same pack yields the exact same result. Callers must not present
+    /// such a run as proof of authenticity.
+    #[serde(default)]
+    pub self_referential: bool,
     pub findings: Vec<Finding>,
 }
 
@@ -110,7 +117,8 @@ impl Report {
 ///
 /// `trusted`: public keys obtained outside the pack. If empty we fall back to
 /// the embedded ones, but the whole verification becomes self-referential and
-/// the report says so explicitly.
+/// the report says so explicitly (`self_referential` flag, `keys_not_anchored`
+/// warning).
 pub fn verify(ev: &Evidence, trusted: &[PublicKeyEntry]) -> Report {
     let mut findings = Vec::new();
 
@@ -480,6 +488,7 @@ pub fn verify(ev: &Evidence, trusted: &[PublicKeyEntry]) -> Report {
         anchors_ok,
         first_seq: records_by_seq.keys().next().copied(),
         last_seq: records_by_seq.keys().next_back().copied(),
+        self_referential: trusted.is_empty(),
         findings,
     }
 }

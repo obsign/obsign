@@ -481,7 +481,10 @@ cargo run -p probant -- verify /tmp/sample/evidence.json \
     --trusted-keys /tmp/sample/trusted-keys.json    # exit 1
 ```
 
-Exit codes: `0` valid, `1` tampered, `2` execution error.
+Exit codes: `0` proven, `1` tampered, `2` execution error, `3` consistent but
+unproven — the pack was only checked against the keys it carries itself
+(no `--trusted-keys`), which a forged pack passes identically. Exit 0 is
+reserved for verification against keys obtained outside the pack.
 
 ## What verification establishes
 
