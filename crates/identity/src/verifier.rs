@@ -145,7 +145,8 @@ impl Verifier {
         }
 
         let client_id = self.claims.client_id(&claims);
-        let (actor_chain, kind) = actor_chain(&claims, &subject, client_id.as_deref());
+        let (actor_chain, kind) =
+            actor_chain(&claims, &subject, client_id.as_deref(), &self.claims.machine);
 
         Ok(Delegation {
             subject,

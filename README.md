@@ -174,8 +174,10 @@ RFC 8693 token exchange does, and Probant records it.
 | `client_credentials` | `batch-agent` | `machine` |
 
 The third case is the one nobody covers: a batch agent, with no human behind
-it, deleting in production. It is recognised by `sub == client_id`, and the
-policy can then express it:
+it, deleting in production. It is recognised by the union of the markers the
+target IdPs actually emit — `sub == client_id`, Entra ID's `idtyp: "app"`,
+Keycloak's `service-account-` username prefix — and the policy can then
+express it:
 
 ```cedar
 @id("destructive_requires_human")
@@ -220,6 +222,28 @@ These defaults already cover Keycloak and Entra ID. The Keycloak case is worth
 flagging: roles are **never** flat, everything sits under `realm_access.roles`
 and `resource_access.<client>.roles`. A naive mapping returns empty groups, and
 no `principal in Group::"dba"` rule ever matches — with no visible error.
+
+The same goes for what marks a token as a machine's. The defaults recognise
+the three shapes the target IdPs emit; an IdP with its own convention is
+described, not special-cased (format `probant-identity/2`):
+
+```json
+"claims": {
+  "machine": {
+    "subject_is_client": true,
+    "equals":   [{ "path": "/idtyp", "value": "app" }],
+    "prefixes": [{ "path": "/preferred_username", "value": "service-account-" }]
+  }
+}
+```
+
+Marker paths speak the same language as the claim paths, wildcard included.
+Because these markers decide `principal_kind` — hence which Cedar rules apply
+— they live **inside the signed bundle**, never as a file option: widening
+what counts as human must be signed like any other authorization change. A
+`probant-identity/1` bundle still verifies unchanged, but only with the
+default markers; carrying custom ones requires re-signing as `/2`, since the
+v1 signature does not cover them.
 
 Two realm-side configuration points for Keycloak, done once:
 
@@ -571,7 +595,7 @@ implementations. Not a priority before the first design partner.
 ## Tests
 
 ```bash
-cargo test --workspace     # 155 tests
+cargo test --workspace     # 171 tests
 ```
 
 Six families, each with a distinct role:

@@ -7,7 +7,12 @@ use crate::claims::ClaimMap;
 use crate::jwks::{Jwk, JwkSet};
 use crate::Error;
 
-pub const FORMAT: &str = "probant-identity/1";
+/// Current format: machine markers are part of the signed bytes.
+pub const FORMAT: &str = "probant-identity/2";
+/// First format. Still verifiable — a bundle published before the revision
+/// keeps its hash and its signature — but its signature does not cover
+/// machine markers, so only the default markers are accepted with it.
+pub const FORMAT_V1: &str = "probant-identity/1";
 
 /// Identity configuration, signed and distributed by the control plane.
 ///
@@ -68,6 +73,24 @@ impl IdentityBundle {
             .str_seq(&self.claims.groups)
             .str_seq(&self.claims.client_id);
 
+        // v2 extends the signed bytes with the machine markers; v1 bytes stay
+        // exactly as they were so that already-published bundles keep their
+        // hash and signature. The format string is itself signed (first field
+        // above), so an attacker cannot relabel a v1 bundle as v2 or the
+        // reverse.
+        if self.format != FORMAT_V1 {
+            let m = &self.claims.machine;
+            e.u64(m.subject_is_client as u64);
+            e.u64(m.equals.len() as u64);
+            for r in &m.equals {
+                e.str(&r.path).str(&r.value);
+            }
+            e.u64(m.prefixes.len() as u64);
+            for r in &m.prefixes {
+                e.str(&r.path).str(&r.value);
+            }
+        }
+
         digest(domain::IDENTITY_BUNDLE, e.finish())
             .as_bytes()
             .to_vec()
@@ -103,9 +126,111 @@ impl SignedIdentityBundle {
         let bytes: [u8; 64] = raw.try_into().map_err(|_| Error::BadBundleSignature)?;
         key.verify(&self.bundle.signing_bytes(), &Signature::from_bytes(&bytes))
             .map_err(|_| Error::BadBundleSignature)?;
-        if self.bundle.format != FORMAT {
-            return Err(Error::UnknownBundleFormat(self.bundle.format.clone()));
+        match self.bundle.format.as_str() {
+            FORMAT => {}
+            FORMAT_V1 => {
+                // A v1 signature does not cover the markers. Accepting a v1
+                // file that carries non-default ones would let unsigned JSON
+                // decide who counts as human — exactly the threat the signed
+                // bundle exists to close. Re-signing as v2 is one
+                // `probant-control compile` away.
+                if self.bundle.claims.machine != crate::claims::MachineMarkers::default() {
+                    return Err(Error::UnsignedMachineMarkers);
+                }
+            }
+            other => return Err(Error::UnknownBundleFormat(other.to_string())),
         }
         Ok(&self.bundle)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::claims::{MachineMarkers, MarkerMatch};
+
+    fn key() -> SigningKey {
+        SigningKey::from_bytes(&[7u8; 32])
+    }
+
+    fn bundle(format: &str) -> IdentityBundle {
+        IdentityBundle {
+            format: format.into(),
+            version: "identity@test".into(),
+            issuer: "https://idp.example".into(),
+            audience: "probant".into(),
+            jwks: JwkSet { keys: vec![] },
+            claims: ClaimMap::default(),
+        }
+    }
+
+    #[test]
+    fn v2_roundtrip() {
+        let k = key();
+        let signed = bundle(FORMAT).sign("k1", &k);
+        assert!(signed.verify(&k.verifying_key()).is_ok());
+    }
+
+    #[test]
+    fn v1_with_default_markers_still_verifies() {
+        // A bundle published before the format revision keeps verifying:
+        // its signing bytes are unchanged by the v2 extension.
+        let k = key();
+        let signed = bundle(FORMAT_V1).sign("k1", &k);
+        assert!(signed.verify(&k.verifying_key()).is_ok());
+    }
+
+    #[test]
+    fn v1_with_custom_markers_is_refused() {
+        // The v1 signature does not cover the markers: a valid signature plus
+        // attacker-chosen markers must not pass, else unsigned JSON decides
+        // who counts as human.
+        let k = key();
+        let mut b = bundle(FORMAT_V1);
+        b.claims.machine.subject_is_client = false;
+        let signed = b.sign("k1", &k);
+        assert!(matches!(
+            signed.verify(&k.verifying_key()),
+            Err(Error::UnsignedMachineMarkers)
+        ));
+    }
+
+    #[test]
+    fn v2_markers_are_covered_by_the_signature() {
+        let k = key();
+        let mut signed = bundle(FORMAT).sign("k1", &k);
+        signed.bundle.claims.machine.equals.push(MarkerMatch {
+            path: "/x".into(),
+            value: "y".into(),
+        });
+        assert!(matches!(
+            signed.verify(&k.verifying_key()),
+            Err(Error::BadBundleSignature)
+        ));
+    }
+
+    #[test]
+    fn format_string_is_signed() {
+        // Relabelling a v1 bundle as v2 (or the reverse) must break the
+        // signature: the format decides which bytes the signature covers.
+        let k = key();
+        let mut signed = bundle(FORMAT_V1).sign("k1", &k);
+        signed.bundle.format = FORMAT.into();
+        assert!(matches!(
+            signed.verify(&k.verifying_key()),
+            Err(Error::BadBundleSignature)
+        ));
+    }
+
+    #[test]
+    fn custom_markers_change_the_hash() {
+        let a = bundle(FORMAT);
+        let mut b = bundle(FORMAT);
+        b.claims.machine = MachineMarkers {
+            subject_is_client: true,
+            equals: vec![],
+            prefixes: vec![],
+        };
+        assert_ne!(a.hash(), b.hash());
     }
 }

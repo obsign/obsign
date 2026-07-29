@@ -25,6 +25,12 @@ pub struct ClaimMap {
     pub groups: Vec<String>,
     /// Used to recognise a service token (`sub` == `client_id`).
     pub client_id: Vec<String>,
+    /// What marks a token as a machine's. `#[serde(default)]` so a
+    /// `probant-identity/1` bundle deserializes unchanged — but for that
+    /// format the signature does not cover this field, so [`crate::bundle`]
+    /// refuses a v1 bundle carrying anything but the defaults.
+    #[serde(default)]
+    pub machine: MachineMarkers,
 }
 
 impl Default for ClaimMap {
@@ -42,6 +48,7 @@ impl Default for ClaimMap {
                 "/resource_access/*/roles".into(),
             ],
             client_id: vec!["/client_id".into(), "/azp".into()],
+            machine: MachineMarkers::default(),
         }
     }
 }
@@ -148,7 +155,15 @@ impl ClaimMap {
 /// no legitimate use.
 const MAX_ACT_DEPTH: usize = 8;
 
-/// Whether the token belongs to a machine (no human at the root of the chain).
+/// One marker: a claim path (same syntax as [`ClaimMap`], wildcard included)
+/// matched against a value.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MarkerMatch {
+    pub path: String,
+    pub value: String,
+}
+
+/// Markers identifying a machine token (no human at the root of the chain).
 ///
 /// The old test — `sub` == `client_id` — is only one of the shapes a service
 /// token takes, and NOT the one the IdPs this product targets actually emit: a
@@ -156,37 +171,73 @@ const MAX_ACT_DEPTH: usize = 8;
 /// principal's own id, distinct from the client id, so that test alone let a
 /// keyless robot classify as `Human` and satisfy a "requires a human" Cedar
 /// rule. Detection is therefore the union of the markers each target IdP does
-/// emit. Every branch only ever *adds* a Machine verdict — a genuine user
+/// emit. Every marker only ever *adds* a Machine verdict — a genuine user
 /// token matches none of them — so broadening this can never downgrade a real
 /// human to a robot, only the reverse, which is the safe direction.
 ///
-/// These live as built-in defaults (like `MAX_ACT_DEPTH` and the Keycloak
-/// paths in `ClaimMap::default`). Making them overridable belongs to a future
-/// signed-bundle revision: the claim map is part of the signed identity bundle
-/// because it changes authorization outcomes, and so would this.
-fn is_machine(claims: &Value, subject: &str, client_id: Option<&str>) -> bool {
-    // 1. `sub` == `client_id`: the textbook client_credentials shape, and what
-    //    a Keycloak "sub == clientId" protocol mapper produces when configured.
-    if client_id.is_some_and(|c| c == subject) {
-        return true;
+/// These are configuration, not code, for the same reason the claim paths
+/// are: no two providers mark their service tokens the same way, and a
+/// hard-coded list means "we support your IdP" instead of "we speak the
+/// standard". But they decide `PrincipalKind`, hence which Cedar rules apply
+/// — so they travel inside the signed identity bundle (`probant-identity/2`),
+/// never as a plain file option. A verifier that removes a marker widens what
+/// counts as human; that change must be signed like any other authorization
+/// change.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MachineMarkers {
+    /// `sub` == `client_id`: the textbook client_credentials shape, and what
+    /// a Keycloak "sub == clientId" protocol mapper produces when configured.
+    pub subject_is_client: bool,
+    /// A claim equals a value exactly. Default: Entra ID's `idtyp` is `"app"`
+    /// for an application acting as itself and `"user"` (or absent) for a
+    /// delegated user token; a user token never carries `"app"`.
+    pub equals: Vec<MarkerMatch>,
+    /// A claim starts with a prefix. Default: a Keycloak service account's
+    /// backing user has `preferred_username` = `service-account-<client>`, a
+    /// reserved prefix no human login carries.
+    pub prefixes: Vec<MarkerMatch>,
+}
+
+impl Default for MachineMarkers {
+    fn default() -> Self {
+        MachineMarkers {
+            subject_is_client: true,
+            equals: vec![MarkerMatch {
+                path: "/idtyp".into(),
+                value: "app".into(),
+            }],
+            prefixes: vec![MarkerMatch {
+                path: "/preferred_username".into(),
+                value: "service-account-".into(),
+            }],
+        }
     }
-    // 2. Entra ID app-only token. `idtyp` is "app" for an application acting as
-    //    itself and "user" (or absent) for a delegated user token; a user token
-    //    never carries "app".
-    if claims.get("idtyp").and_then(Value::as_str) == Some("app") {
-        return true;
+}
+
+impl MachineMarkers {
+    /// Whether the token belongs to a machine. Any one marker is enough.
+    pub fn is_machine(&self, claims: &Value, subject: &str, client_id: Option<&str>) -> bool {
+        if self.subject_is_client && client_id.is_some_and(|c| c == subject) {
+            return true;
+        }
+        for m in &self.equals {
+            if resolve(claims, &m.path)
+                .iter()
+                .any(|v| v.as_str() == Some(m.value.as_str()))
+            {
+                return true;
+            }
+        }
+        for m in &self.prefixes {
+            if resolve(claims, &m.path)
+                .iter()
+                .any(|v| v.as_str().is_some_and(|s| s.starts_with(m.value.as_str())))
+            {
+                return true;
+            }
+        }
+        false
     }
-    // 3. Keycloak service account: the backing user's `preferred_username` is
-    //    `service-account-<client>`. A human's `preferred_username` is their own
-    //    login, never this reserved prefix.
-    if claims
-        .get("preferred_username")
-        .and_then(Value::as_str)
-        .is_some_and(|u| u.starts_with("service-account-"))
-    {
-        return true;
-    }
-    false
 }
 
 /// Actor chain and principal nature, derived from the `act` claim.
@@ -199,6 +250,7 @@ pub fn actor_chain(
     claims: &Value,
     subject: &str,
     client_id: Option<&str>,
+    markers: &MachineMarkers,
 ) -> (Vec<String>, PrincipalKind) {
     let mut chain = Vec::new();
     let mut node = claims.get("act");
@@ -223,7 +275,7 @@ pub fn actor_chain(
     // and Cedar rules gate on it. Getting it wrong in the machine→human
     // direction is a bypass, so detection is additive and fail-safe: any one
     // marker is enough, and none of them ever fires on a genuine user token.
-    let machine = is_machine(claims, subject, client_id);
+    let machine = markers.is_machine(claims, subject, client_id);
 
     let kind = match (chain.len() > 1, machine) {
         (_, true) => PrincipalKind::Machine,
@@ -238,6 +290,11 @@ pub fn actor_chain(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Default markers — what every deployment gets without configuration.
+    fn chain(c: &Value, sub: &str, cid: Option<&str>) -> (Vec<String>, PrincipalKind) {
+        actor_chain(c, sub, cid, &MachineMarkers::default())
+    }
 
     #[test]
     fn nested_keycloak_roles_are_read() {
@@ -275,7 +332,7 @@ mod tests {
     #[test]
     fn plain_user_token() {
         let c = json!({ "sub": "u:marie", "azp": "probant-proxy" });
-        let (chain, kind) = actor_chain(&c, "u:marie", Some("probant-proxy"));
+        let (chain, kind) = chain(&c, "u:marie", Some("probant-proxy"));
         assert_eq!(chain, vec!["u:marie"]);
         assert_eq!(kind, PrincipalKind::Human);
         assert!(kind.has_human());
@@ -285,7 +342,7 @@ mod tests {
     fn service_token_is_recognised_as_machine() {
         // client_credentials: `sub` == `client_id`, no human behind it.
         let c = json!({ "sub": "batch-agent", "client_id": "batch-agent" });
-        let (chain, kind) = actor_chain(&c, "batch-agent", Some("batch-agent"));
+        let (chain, kind) = chain(&c, "batch-agent", Some("batch-agent"));
         assert_eq!(chain, vec!["batch-agent"]);
         assert_eq!(kind, PrincipalKind::Machine);
         assert!(!kind.has_human(), "no human may be assumed");
@@ -301,7 +358,7 @@ mod tests {
             "azp": "batch-agent",
             "preferred_username": "service-account-batch-agent"
         });
-        let (_, kind) = actor_chain(&c, "b8f3c0a1-service-uuid", Some("batch-agent"));
+        let (_, kind) = chain(&c, "b8f3c0a1-service-uuid", Some("batch-agent"));
         assert_eq!(kind, PrincipalKind::Machine);
         assert!(!kind.has_human(), "a keyless robot must not pass as a human");
     }
@@ -315,7 +372,7 @@ mod tests {
             "azp": "00000000-client",
             "idtyp": "app"
         });
-        let (_, kind) = actor_chain(&c, "sp-object-id", Some("00000000-client"));
+        let (_, kind) = chain(&c, "sp-object-id", Some("00000000-client"));
         assert_eq!(kind, PrincipalKind::Machine);
         assert!(!kind.has_human());
     }
@@ -330,7 +387,7 @@ mod tests {
             "preferred_username": "marie",
             "idtyp": "user"
         });
-        let (_, kind) = actor_chain(&c, "u:marie", Some("probant-proxy"));
+        let (_, kind) = chain(&c, "u:marie", Some("probant-proxy"));
         assert_eq!(kind, PrincipalKind::Human);
         assert!(kind.has_human());
     }
@@ -338,7 +395,7 @@ mod tests {
     #[test]
     fn single_hop_delegation_via_token_exchange() {
         let c = json!({ "sub": "u:marie", "act": { "sub": "support-copilot" } });
-        let (chain, kind) = actor_chain(&c, "u:marie", Some("probant-proxy"));
+        let (chain, kind) = chain(&c, "u:marie", Some("probant-proxy"));
         assert_eq!(chain, vec!["support-copilot", "u:marie"]);
         assert_eq!(kind, PrincipalKind::DelegatedHuman);
     }
@@ -351,9 +408,52 @@ mod tests {
             "sub": "u:marie",
             "act": { "sub": "agent-b", "act": { "sub": "agent-a" } }
         });
-        let (chain, kind) = actor_chain(&c, "u:marie", None);
+        let (chain, kind) = chain(&c, "u:marie", None);
         assert_eq!(chain, vec!["agent-b", "agent-a", "u:marie"]);
         assert_eq!(kind, PrincipalKind::DelegatedHuman);
+    }
+
+    #[test]
+    fn custom_equals_marker_adds_a_machine_verdict() {
+        // An IdP marking its service tokens with `token_use: "m2m"` — none of
+        // the built-in markers fire, the configured one must.
+        let c = json!({ "sub": "svc-42", "azp": "some-client", "token_use": "m2m" });
+        assert_eq!(chain(&c, "svc-42", Some("some-client")).1, PrincipalKind::Human);
+
+        let mut m = MachineMarkers::default();
+        m.equals.push(MarkerMatch {
+            path: "/token_use".into(),
+            value: "m2m".into(),
+        });
+        let (_, kind) = actor_chain(&c, "svc-42", Some("some-client"), &m);
+        assert_eq!(kind, PrincipalKind::Machine);
+    }
+
+    #[test]
+    fn custom_prefix_marker_uses_claim_paths() {
+        // Marker paths speak the same language as the claim map, wildcard
+        // included: a robot naming convention buried under a provider-specific
+        // segment stays expressible.
+        let c = json!({ "sub": "x1", "ext": { "corp": { "login": "robot-batch" } } });
+        let mut m = MachineMarkers::default();
+        m.prefixes.push(MarkerMatch {
+            path: "/ext/*/login".into(),
+            value: "robot-".into(),
+        });
+        let (_, kind) = actor_chain(&c, "x1", None, &m);
+        assert_eq!(kind, PrincipalKind::Machine);
+    }
+
+    #[test]
+    fn subject_is_client_can_be_disabled() {
+        // Some IdPs reuse `azp` == `sub` for first-party human logins; the
+        // signed bundle may turn that single marker off without losing the
+        // other two.
+        let c = json!({ "sub": "portal", "client_id": "portal" });
+        let mut m = MachineMarkers::default();
+        m.subject_is_client = false;
+        let (_, kind) = actor_chain(&c, "portal", Some("portal"), &m);
+        assert_eq!(kind, PrincipalKind::Human);
     }
 
     #[test]
@@ -363,7 +463,7 @@ mod tests {
             act = json!({ "sub": format!("a{i}"), "act": act });
         }
         let c = json!({ "sub": "u:marie", "act": act });
-        let (chain, _) = actor_chain(&c, "u:marie", None);
+        let (chain, _) = chain(&c, "u:marie", None);
         assert!(chain.len() <= MAX_ACT_DEPTH + 1, "nesting is not bounded");
     }
 }

@@ -1,0 +1,261 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e6]:
+      - img "image" [ref=e9] [cursor=pointer]
+      - generic [ref=e11]:
+        - generic [ref=e13]:
+          - button "" [ref=e14] [cursor=pointer]
+          - button "" [ref=e15] [cursor=pointer]
+          - button "" [ref=e16] [cursor=pointer]
+        - link "Aide" [ref=e18] [cursor=pointer]:
+          - /url: "#/tmview/help"
+        - button "Français (fr) " [ref=e21] [cursor=pointer]:
+          - generic: Français (fr)
+          - generic: 
+        - generic [ref=e23]:
+          - button "Identification" [ref=e24] [cursor=pointer]
+          - button "S'enregistrer" [ref=e25] [cursor=pointer]
+  - generic [ref=e1574]:
+    - generic [ref=e2000]:
+      - generic [ref=e2002]:
+        - generic [ref=e2003]:
+          - button " Exporter" [ref=e2007] [cursor=pointer]:
+            - generic:
+              - generic: 
+              - generic: 
+            - generic: Exporter
+          - button " Alertes" [disabled] [ref=e2012] [cursor=pointer]:
+            - generic:
+              - generic: 
+              - generic: 
+              - generic: 
+              - generic: 
+            - generic: Alertes
+          - button " Balises" [disabled] [ref=e2017] [cursor=pointer]:
+            - generic:
+              - generic: 
+              - generic: 
+            - generic: Balises
+          - button " Partager par courrier électronique" [ref=e2018] [cursor=pointer]:
+            - generic:
+              - generic: 
+              - generic: 
+            - generic: Partager par courrier électronique
+        - generic [ref=e2019]:
+          - button "Voir dans la langue originale" [ref=e2020] [cursor=pointer]
+          - generic [ref=e2021]:
+            - generic [ref=e2022]: "Aller à :"
+            - button "Information des marques " [ref=e2024] [cursor=pointer]:
+              - generic: Information des marques
+              - generic: 
+      - button "" [ref=e2027] [cursor=pointer]
+    - generic [ref=e2029]:
+      - generic [ref=e2030]:
+        - generic [ref=e2033]:
+          - generic [ref=e2034]: Probant Systems
+          - generic [ref=e2036]:
+            - button "Probant Systems" [ref=e2039] [cursor=pointer]:
+              - img "Probant Systems"
+            - button " Recherches des marques avec des images similaires" [ref=e2042] [cursor=pointer]:
+              - generic:
+                - generic: 
+                - generic: 
+                - generic: 
+              - generic: Recherches des marques avec des images similaires
+          - generic [ref=e2044]:
+            - generic [ref=e2045]:
+              - generic [ref=e2046]: Statut de la marque
+              - generic [ref=e2047]: Enregistrée
+            - generic [ref=e2048]:
+              - generic [ref=e2049]: Numéro de la demande
+              - generic [ref=e2050]: "4360643"
+            - generic [ref=e2051]:
+              - generic [ref=e2052]: Numéro de l'enregistrement
+              - generic [ref=e2053]: "4360643"
+            - generic [ref=e2054]:
+              - generic [ref=e2055]: 550 Type de marque
+              - generic [ref=e2056]: Verbale
+            - generic [ref=e2057]:
+              - generic [ref=e2058]: Langue de la demande
+              - generic [ref=e2059]: fr
+            - generic [ref=e2060]:
+              - generic [ref=e2061]: Lieu de dépôt
+              - generic [ref=e2062]: 92 INPI - Dépôt électronique
+            - generic [ref=e2063]:
+              - generic [ref=e2064]: Classification de Nice
+              - generic [ref=e2065]: 09, 35, 38, 41, 42
+        - generic [ref=e2066]:
+          - generic [ref=e2067]: Produits et Services
+          - generic [ref=e2071]:
+            - generic [ref=e2072]:
+              - generic [ref=e2073]: "Langue:"
+              - button "Français (Original) " [ref=e2075] [cursor=pointer]:
+                - generic: Français (Original)
+                - generic: 
+            - generic [ref=e2076]:
+              - generic [ref=e2078]:
+                - generic [ref=e2079]: "09"
+                - generic [ref=e2081]: instruments et appareils de mesure ; appareils et instruments de vérification (contrôle) ; appareils et instruments pour l'enseignement ; supports d'enregistrement numériques ; caisses enregistreuses ; équipements de traitement de données ; ordinateurs ; logiciels de jeux ; logiciels (programmes enregistrés) ; périphériques d'ordinateurs ;
+              - generic [ref=e2084]:
+                - generic [ref=e2085]: "35"
+                - generic [ref=e2087]: gestion des affaires commerciales ; administration commerciale ; services d'abonnement à des services de télécommunications pour des tiers ; présentation de produits sur tout moyen de communication pour la vente au détail ; conseils en organisation et direction des affaires ; comptabilité ; service de gestion informatisée de fichiers ; optimisation du trafic pour des sites web ; location de temps publicitaire sur tout moyen de communication ;
+              - generic [ref=e2090]:
+                - generic [ref=e2091]: "38"
+                - generic [ref=e2093]: Télécommunications ; informations en matière de télécommunications ; communications par terminaux d'ordinateurs ; communications téléphoniques ; fourniture d'accès utilisateur à des réseaux informatiques mondiaux ; mise à disposition de forums en ligne ; fourniture d'accès à des bases de données ; services d'affichage électronique (télécommunications) ; raccordement par télécommunications à un réseau informatique mondial ; location d'appareils de télécommunication ; services de téléconférences ; services de visioconférence ; services de messagerie électronique ; location de temps d'accès à des réseaux informatiques mondiaux ;
+              - generic [ref=e2096]:
+                - generic [ref=e2097]: "41"
+                - generic [ref=e2099]: Éducation ; formation ; informations en matière d'éducation ; services de jeu proposés en ligne à partir d'un réseau informatique ;
+              - text: Montrer plus
+        - generic [ref=e2101]:
+          - generic [ref=e2102]: Code de Vienne
+          - generic [ref=e2104]: Aucune information disponible
+      - generic [ref=e2106]:
+        - generic [ref=e2107]:
+          - generic [ref=e2108]: Dates
+          - generic [ref=e2111]:
+            - generic [ref=e2112]:
+              - generic [ref=e2113]: 220 Date de la demande
+              - generic [ref=e2114]: 11/05/2017
+            - generic [ref=e2115]:
+              - generic [ref=e2116]: 151 Date d'enregistrement
+              - generic [ref=e2117]: 01/09/2017
+        - generic [ref=e2118]:
+          - generic [ref=e2119]: Office
+          - generic [ref=e2122]:
+            - img "Probant Systems" [ref=e2123]
+            - link "Voir cette marque dans l'office d'origine" [ref=e2125] [cursor=pointer]:
+              - /url: https://data.inpi.fr/marques/FR4360643
+            - generic [ref=e2126]:
+              - generic [ref=e2127]:
+                - generic [ref=e2128]: Office des marques
+                - generic [ref=e2129]: France - INPI
+              - generic [ref=e2130]:
+                - generic [ref=e2131]: 190 Office d'enregistrement
+                - generic [ref=e2132]: FR
+        - generic [ref=e2133]:
+          - generic [ref=e2134]: Titulaire
+          - generic [ref=e2137]:
+            - generic [ref=e2138]:
+              - generic [ref=e2139]: Nom du demandeur
+              - generic [ref=e2140]: Francois Verollet
+            - generic [ref=e2141]:
+              - generic [ref=e2142]: N° d'identification
+              - generic [ref=e2143]: FR0004360643-01
+            - generic [ref=e2144]:
+              - generic [ref=e2145]: Adresse
+              - generic [ref=e2146]: ", 74960 Cran Gevrier"
+            - generic [ref=e2147]:
+              - generic [ref=e2148]: Code Pays / territoire de l’adresse
+              - generic [ref=e2149]: FR
+        - generic [ref=e2150]:
+          - generic [ref=e2151]: Représentant
+          - generic [ref=e2153]: Aucune information disponible
+        - generic [ref=e2155]:
+          - generic [ref=e2156]: Adresse de correspondance
+          - generic [ref=e2158]: Aucune information disponible
+      - generic [ref=e2161]:
+        - generic [ref=e2162]: Publication (2)
+        - generic [ref=e2166]:
+          - grid [ref=e2167]:
+            - row [ref=e2169]:
+              - columnheader "Date" [ref=e2170]
+              - columnheader "Numéro de publication" [ref=e2172]
+              - columnheader "Section" [ref=e2174]
+            - generic [ref=e2176]:
+              - rowgroup [ref=e2177]:
+                - row [ref=e2178]:
+                  - gridcell "02/06/2017" [ref=e2179]
+                  - gridcell "2017-22" [ref=e2180]
+                  - gridcell "Demande" [ref=e2181]
+              - rowgroup [ref=e2182]:
+                - row [ref=e2183]:
+                  - gridcell "01/09/2017" [ref=e2184]
+                  - gridcell "2017-35" [ref=e2185]
+                  - gridcell "Enregistrement" [ref=e2186]
+          - generic: Loading...
+      - generic [ref=e2188]:
+        - generic [ref=e2190]:
+          - generic [ref=e2191]: Priorité d'exposition
+          - generic [ref=e2193]: Aucune information disponible
+        - generic [ref=e2196]:
+          - generic [ref=e2197]: Priorité
+          - generic [ref=e2199]: Aucune information disponible
+        - generic [ref=e2202]:
+          - generic [ref=e2203]: Tranformation d'un enregistrement international
+          - generic [ref=e2205]: Aucune information disponible
+      - generic [ref=e2208]:
+        - generic [ref=e2209]: Ancienneté
+        - generic [ref=e2211]: Aucune information disponible
+      - generic [ref=e2214]:
+        - generic [ref=e2215]: Opposition
+        - generic [ref=e2217]: Aucune information disponible
+      - generic [ref=e2219]:
+        - generic [ref=e2220]:
+          - generic [ref=e2221]: Inscriptions
+          - generic [ref=e2223]: Aucune information disponible
+        - generic [ref=e2225]:
+          - generic [ref=e2226]: Recours
+          - generic [ref=e2228]: Aucune information disponible
+      - generic [ref=e2230]:
+        - generic [ref=e2231]:
+          - generic [ref=e2232]: Annulation
+          - generic [ref=e2234]: Aucune information disponible
+        - generic [ref=e2236]:
+          - generic [ref=e2237]: Renouvellements
+          - generic [ref=e2239]: Aucune information disponible
+  - contentinfo [ref=e28]:
+    - generic [ref=e29]:
+      - navigation [ref=e31]:
+        - link "Chercher" [ref=e32] [cursor=pointer]:
+          - /url: "#/tmview"
+        - link "Offices participants" [ref=e33] [cursor=pointer]:
+          - /url: "#/tmview/participating"
+        - link "Aide" [ref=e34] [cursor=pointer]:
+          - /url: "#/tmview/help"
+        - generic [ref=e35] [cursor=pointer]: Vos réactions
+      - generic [ref=e36]:
+        - link "EUIPN Réseau européen de la propriété intellectuelle" [ref=e38] [cursor=pointer]:
+          - /url: https://euipn.org
+          - text: EUIPN Réseau européen de la propriété intellectuelle
+          - generic [ref=e39]:
+            - generic [ref=e40]: 
+            - generic: 
+        - generic [ref=e42]: Avenida de Europa, 4 E-03008 Alicante (ESPAGNE)
+        - generic [ref=e44]: "Centre d'information: +34 96 513 9100"
+      - navigation [ref=e46]:
+        - generic [ref=e47]: Copyright 2007-2026 EUIPO
+        - generic [ref=e48]:
+          - text: "Ce site web est coordonné et maintenu par:"
+          - strong [ref=e49]: Office de l'Union européenne pour la propriété intellectuelle
+      - generic [ref=e50]:
+        - generic [ref=e51]: Les outils de recherche TMview et DesignView ne constituent pas des registres officiels et les informations qu’ils contiennent n’ont aucun effet juridique.
+        - navigation [ref=e52]:
+          - link "Voir les conditions générales" [ref=e53] [cursor=pointer]:
+            - /url: "#/tmview/disclaimer"
+      - generic [ref=e54]:
+        - generic [ref=e55]: TMDSVIEW-4.5.0-RC1.1
+        - navigation [ref=e56]:
+          - link [ref=e57] [cursor=pointer]:
+            - /url: https://www.tmdn.org/network/compatibility
+            - strong [ref=e58]: Compatibilité
+          - link [ref=e59] [cursor=pointer]:
+            - /url: "#/tmview/data-protection"
+            - strong [ref=e60]: Protection des données
+          - link [ref=e61] [cursor=pointer]:
+            - /url: https://www.euipn.org/en/info/legal-notices
+            - strong [ref=e62]: Mention légale
+          - link "A propos de" [ref=e63] [cursor=pointer]:
+            - /url: "#/tmview/about"
+  - generic [ref=e66]:
+    - generic [ref=e67]:
+      - generic [ref=e68]: 
+      - generic [ref=e70]:
+        - paragraph [ref=e71]:
+          - text: Ce site utilise des cookies pour vous offrir des conditions de navigation optimales et pour des analyses anonymisées. En savoir plus sur la façon dont nous utilisons les
+          - link "Cookies" [ref=e72] [cursor=pointer]:
+            - /url: /network/data-protection
+        - generic [ref=e73]:
+          - button "Accept all cookies" [ref=e74] [cursor=pointer]
+          - button "No thanks, only essential cookies" [ref=e75] [cursor=pointer]
+    - button "" [ref=e77] [cursor=pointer]
+  - text: 
