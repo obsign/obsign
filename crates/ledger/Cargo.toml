@@ -16,6 +16,11 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 
+# dlopen/dlsym for the PKCS#11 module. Already in the tree via getrandom:
+# a direct use, not a new dependency.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [[bin]]
 name = "probant-ledger"
 path = "src/main.rs"

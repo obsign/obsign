@@ -44,7 +44,7 @@ pub fn sign_checkpoint(cp: Checkpoint, sealer: &dyn Sealer) -> Result<SignedChec
 /// A key in a file is exactly the cohabitation problem the ledger exists to
 /// solve, one host over. It stays acceptable for development and for a first
 /// design partner running the ledger on a hardened admin host; anything
-/// beyond that belongs behind a KMS/HSM implementation of [`Sealer`].
+/// beyond that belongs in `Pkcs11Sealer`, which leaves the key in an HSM.
 pub struct FileSealer {
     key: SigningKey,
     key_id: String,

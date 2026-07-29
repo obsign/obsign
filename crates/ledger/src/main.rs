@@ -13,7 +13,7 @@ use audit_core::rfc3161::{parse_timestamp_response, Anchor};
 use audit_core::Hash;
 use clap::{Args, Parser, Subcommand};
 use ledger::{
-    export, seal_pass, timestamp_request, validate_response, FileSealer, Store,
+    export, seal_pass, timestamp_request, validate_response, FileSealer, Sealer, Store,
 };
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -53,10 +53,32 @@ struct SealArgs {
     wal: PathBuf,
 
     /// Sealing key seed, 32 bytes in hex. Development-grade by construction:
-    /// production implements the Sealer trait over a KMS/HSM so the key
-    /// material never sits in a file at all.
+    /// production seals through an HSM (--hsm-module) so the key material
+    /// never sits in a file at all.
+    #[arg(long, conflicts_with = "hsm_module")]
+    key: Option<PathBuf>,
+
+    /// PKCS#11 module (.so) of the HSM that holds the sealing key
     #[arg(long)]
-    key: PathBuf,
+    hsm_module: Option<PathBuf>,
+
+    /// Label of the Ed25519 key pair on the token
+    #[arg(long, requires = "hsm_module")]
+    hsm_key_label: Option<String>,
+
+    /// Token to use, by label, when the module exposes several
+    #[arg(long, requires = "hsm_module", conflicts_with = "hsm_slot")]
+    hsm_token_label: Option<String>,
+
+    /// Token to use, by slot id, when labels are not unique
+    #[arg(long, requires = "hsm_module")]
+    hsm_slot: Option<u64>,
+
+    /// File holding the user PIN. Without it, the PROBANT_HSM_PIN
+    /// environment variable. Never an argument: arguments end up in `ps`
+    /// output and shell history.
+    #[arg(long, requires = "hsm_module")]
+    hsm_pin_file: Option<PathBuf>,
 
     #[arg(long, default_value = "seal-ledger")]
     key_id: String,
@@ -142,13 +164,22 @@ fn now_ms() -> i64 {
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Seal(args) => {
-            one_pass(&args).map_err(anyhow::Error::from)?;
+            let sealer = make_sealer(&args)?;
+            one_pass(&args, sealer.as_ref()).map_err(anyhow::Error::from)?;
             Ok(())
         }
         Command::Run {
             args,
             interval_secs,
-        } => run_loop(&args, interval_secs),
+        } => {
+            // The sealer outlives the loop on purpose: credentials are
+            // presented exactly once, at startup. A retry loop that
+            // re-presented a wrong PIN every interval would walk the HSM
+            // to CKR_PIN_LOCKED — a config mistake must not become a
+            // locked token.
+            let sealer = make_sealer(&args)?;
+            run_loop(&args, sealer.as_ref(), interval_secs)
+        }
         Command::Export { store, wal, out } => do_export(&store, &wal, &out),
         Command::Anchor(cmd) => match cmd {
             AnchorCmd::Request {
@@ -165,12 +196,56 @@ fn main() -> Result<()> {
     }
 }
 
-fn one_pass(args: &SealArgs) -> Result<bool, ledger::Error> {
+/// Where the sealing key lives, from the flags. Exactly one source: a seed
+/// file (development) or a PKCS#11 module (production).
+fn make_sealer(args: &SealArgs) -> Result<Box<dyn Sealer>> {
+    match (&args.key, &args.hsm_module) {
+        (Some(seed), None) => Ok(Box::new(FileSealer::from_seed_file(seed, &args.key_id)?)),
+        #[cfg(unix)]
+        (None, Some(module)) => {
+            use ledger::{Pkcs11Sealer, TokenSelector};
+            let label = args
+                .hsm_key_label
+                .as_deref()
+                .context("--hsm-module needs --hsm-key-label: which key on the token seals")?;
+            let token = match (args.hsm_slot, &args.hsm_token_label) {
+                (Some(slot), None) => TokenSelector::Slot(slot),
+                (None, Some(label)) => TokenSelector::Label(label.clone()),
+                (None, None) => TokenSelector::Only,
+                (Some(_), Some(_)) => unreachable!("clap: conflicts_with"),
+            };
+            let pin = match &args.hsm_pin_file {
+                Some(path) => std::fs::read_to_string(path)
+                    .with_context(|| format!("reading the PIN file {}", path.display()))?
+                    .trim()
+                    .to_string(),
+                None => std::env::var("PROBANT_HSM_PIN").map_err(|_| {
+                    anyhow::anyhow!("no PIN: give --hsm-pin-file or set PROBANT_HSM_PIN")
+                })?,
+            };
+            Ok(Box::new(Pkcs11Sealer::open(
+                module,
+                &token,
+                &pin,
+                label,
+                &args.key_id,
+            )?))
+        }
+        #[cfg(not(unix))]
+        (None, Some(_)) => bail!("PKCS#11 sealing is only built on unix targets"),
+        (None, None) => bail!(
+            "choose a sealing key: --key <seed file> (development) or \
+             --hsm-module <pkcs11 .so> (production)"
+        ),
+        (Some(_), Some(_)) => unreachable!("clap: conflicts_with"),
+    }
+}
+
+fn one_pass(args: &SealArgs, sealer: &dyn Sealer) -> Result<bool, ledger::Error> {
     let records = wal::read(&args.wal, &args.store.chain_id)?;
     let mut store = Store::open(&args.store.store, &args.store.chain_id)?;
-    let sealer = FileSealer::from_seed_file(&args.key, &args.key_id)?;
 
-    match seal_pass(&records, &mut store, &sealer, now_ms(), args.min_new)? {
+    match seal_pass(&records, &mut store, sealer, now_ms(), args.min_new)? {
         Some(sc) => {
             let cp = &sc.checkpoint;
             eprintln!(
@@ -193,9 +268,9 @@ fn one_pass(args: &SealArgs) -> Result<bool, ledger::Error> {
     }
 }
 
-fn run_loop(args: &SealArgs, interval_secs: u64) -> Result<()> {
+fn run_loop(args: &SealArgs, sealer: &dyn Sealer, interval_secs: u64) -> Result<()> {
     loop {
-        match one_pass(args) {
+        match one_pass(args, sealer) {
             Ok(_) => {}
             // Divergence, truncation and store corruption never self-heal:
             // looping over them would turn an incident into a heartbeat.
