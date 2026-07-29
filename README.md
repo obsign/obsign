@@ -571,7 +571,7 @@ implementations. Not a priority before the first design partner.
 ## Tests
 
 ```bash
-cargo test --workspace     # 134 tests
+cargo test --workspace     # 150 tests
 ```
 
 Six families, each with a distinct role:
