@@ -87,6 +87,10 @@ fn identity_bundle_json() -> String {
 }
 
 fn mint(exp_offset: i64, scopes: &str) -> String {
+    mint_for("u:marie.dupont", exp_offset, scopes)
+}
+
+fn mint_for(sub: &str, exp_offset: i64, scopes: &str) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -99,7 +103,7 @@ fn mint(exp_offset: i64, scopes: &str) -> String {
     header.kid = Some("k1".to_string());
 
     let claims = json!({
-        "sub": "u:marie.dupont", "iss": ISSUER, "aud": AUDIENCE,
+        "sub": sub, "iss": ISSUER, "aud": AUDIENCE,
         "azp": "probant-proxy",
         "exp": now + exp_offset, "iat": now - 10,
         "scope": scopes,
@@ -591,6 +595,102 @@ fn the_get_stream_carries_server_notifications() {
         "",
     );
     assert_eq!(r.status, 409);
+}
+
+#[test]
+fn concurrent_identities_keep_their_own_attribution_subtrees() {
+    // Two principals share one MCP session — per-request bearers make that
+    // legal — and their calls race on separate connections. The gateway once
+    // snapshotted the identity under the auth lock, released it, then took
+    // the session lock to write the call: in that gap the other principal
+    // could record its delegation and move `agent_record_id`, and a call
+    // whose token had not changed attached under the wrong subtree. The
+    // invariant checked here is interleaving-independent: every call in the
+    // log must climb, through its parents, to the delegation of the token
+    // that carried it. Each principal calls a distinct tool so the log
+    // itself says who was really calling.
+    let gw = start("concurrent-ids", true, &[]);
+    let alice = format!(
+        "Bearer {}",
+        mint_for("u:alice.durand", 1800, "support:ticket_update")
+    );
+    let bob = format!(
+        "Bearer {}",
+        mint_for("u:bob.martin", 1800, "support:ticket_update")
+    );
+
+    let (sid, r) = initialize(&gw, &[("Authorization", &alice)]);
+    assert_eq!(r.status, 200);
+
+    const N: u64 = 25;
+    std::thread::scope(|scope| {
+        let alice_thread = scope.spawn(|| {
+            for i in 0..N {
+                let r = call(&gw, &sid, &[("Authorization", &alice)], 1000 + i, "search_docs");
+                assert_eq!(
+                    r.body.pointer("/result/isError"),
+                    Some(&Value::Bool(false)),
+                    "alice call {i}: {}",
+                    r.body
+                );
+            }
+        });
+        for i in 0..N {
+            let r = call(&gw, &sid, &[("Authorization", &bob)], 2000 + i, "ticket_update");
+            assert_eq!(
+                r.body.pointer("/result/isError"),
+                Some(&Value::Bool(false)),
+                "bob call {i}: {}",
+                r.body
+            );
+        }
+        alice_thread.join().unwrap();
+    });
+
+    http(
+        &gw,
+        "DELETE",
+        &[("Mcp-Session-Id", &sid), ("Authorization", &alice)],
+        "",
+    );
+
+    // The interleaved writes must still seal into a valid pack.
+    let ev = evidence(&gw, &sid);
+    let keys = ev.keys.clone();
+    let report = evidence::verify(&ev, &keys);
+    assert!(report.is_valid(), "findings: {:?}", report.findings);
+
+    let by_id: std::collections::HashMap<&str, &audit_core::record::Record> =
+        ev.records.iter().map(|r| (r.id.as_str(), r)).collect();
+
+    let mut checked = 0;
+    for rec in &ev.records {
+        let Payload::ToolCall(tc) = &rec.payload else { continue };
+        // call -> agent_session -> actor -> delegation.
+        let mut cursor = rec;
+        let sub = loop {
+            let parent = cursor
+                .parent_id
+                .as_deref()
+                .unwrap_or_else(|| panic!("{} never reaches a delegation", rec.id));
+            cursor = by_id[parent];
+            if let Payload::Delegation(d) = &cursor.payload {
+                break d.principal_sub.clone();
+            }
+        };
+        let expected = match tc.tool.as_str() {
+            "search_docs" => "u:alice.durand",
+            "ticket_update" => "u:bob.martin",
+            other => panic!("unexpected tool in the log: {other}"),
+        };
+        assert_eq!(
+            sub, expected,
+            "{} ({}) is attributed to {sub}",
+            rec.id, tc.tool
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 2 * N as usize, "every call must have been audited");
 }
 
 #[test]
