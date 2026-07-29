@@ -1,4 +1,4 @@
-use audit_core::record::PrincipalKind;
+use audit_core::record::{ConfigKind, ConfigReload, PrincipalKind, ReloadStatus};
 use identity::{BundleSource, Delegation, ReloadOutcome};
 use std::path::{Path, PathBuf};
 
@@ -18,6 +18,13 @@ pub struct Auth {
     current: Delegation,
     /// Incremented on every renewal, to number the delegation records.
     generation: u64,
+    /// Bundle reloads observed since the caller last drained them.
+    ///
+    /// Reloads happen deep inside token verification, where no audit chain is
+    /// in reach; the events accumulate here and the gateway engraves them at
+    /// the next write opportunity. A rejected bundle is an event too: the
+    /// configuration did not change, but somebody tried to change it.
+    reloads: Vec<ConfigReload>,
 }
 
 /// Reason an act was refused on identity grounds.
@@ -60,18 +67,23 @@ impl Auth {
                 kind: PrincipalKind::Machine,
             },
             generation: 1,
+            reloads: Vec::new(),
         }
     }
 
     /// Identity proven by a verified OIDC token.
     pub fn oidc(mut source: BundleSource, token_path: PathBuf) -> Result<Self, String> {
-        let current = read_and_verify(&mut source, &token_path, 0)?;
+        // Startup can already trigger a reload: the provider rotated while
+        // the gateway was down. The event is kept so the session records it.
+        let mut reloads = Vec::new();
+        let current = read_and_verify(&mut source, &token_path, 0, &mut reloads)?;
         Ok(Auth {
             source: Some(source),
             token_path: Some(token_path),
             presented: None,
             current,
             generation: 1,
+            reloads,
         })
     }
 
@@ -82,7 +94,8 @@ impl Auth {
     /// its own `Authorization` header and renewal shows up as a new value
     /// there. There is no file to fall back on.
     pub fn oidc_presented(mut source: BundleSource, token: &str) -> Result<Self, String> {
-        let current = verify_token(&mut source, token, 0)?;
+        let mut reloads = Vec::new();
+        let current = verify_token(&mut source, token, 0, &mut reloads)?;
         if current.is_expired(crate::session::now_ms()) {
             return Err("presented token is expired".to_string());
         }
@@ -92,6 +105,7 @@ impl Auth {
             presented: Some(token.to_string()),
             current,
             generation: 1,
+            reloads,
         })
     }
 
@@ -110,6 +124,16 @@ impl Auth {
 
     pub fn delegation(&self) -> &Delegation {
         &self.current
+    }
+
+    /// Drains the reloads observed since the last call.
+    ///
+    /// The caller owns the audit chain; whatever is drained MUST be written
+    /// to it. Drained unconditionally — even when the act that triggered the
+    /// reload ends up refused: a rejected rogue bundle deserves a record most
+    /// of all.
+    pub fn take_reloads(&mut self) -> Vec<ConfigReload> {
+        std::mem::take(&mut self.reloads)
     }
 
     /// The delegation in force at this instant.
@@ -134,7 +158,7 @@ impl Auth {
 
         // The token may have been renewed on disk by whatever holds the OIDC
         // session. We re-read before concluding a refusal.
-        match read_and_verify(source, path, now_ms) {
+        match read_and_verify(source, path, now_ms, &mut self.reloads) {
             Ok(fresh) if !fresh.is_expired(now_ms) => {
                 let changed = fresh.subject != self.current.subject
                     || fresh.scopes != self.current.scopes
@@ -187,7 +211,7 @@ impl Auth {
             return self.refresh(now_ms);
         };
 
-        match verify_token(source, token, now_ms) {
+        match verify_token(source, token, now_ms, &mut self.reloads) {
             Ok(fresh) if !fresh.is_expired(now_ms) => {
                 self.presented = Some(token.to_string());
                 let changed = fresh.subject != self.current.subject
@@ -221,34 +245,56 @@ fn read_and_verify(
     source: &mut BundleSource,
     path: &Path,
     now_ms: i64,
+    reloads: &mut Vec<ConfigReload>,
 ) -> Result<Delegation, String> {
     let raw = std::fs::read_to_string(path)
         .map_err(|e| format!("reading {}: {e}", path.display()))?;
-    verify_token(source, raw.trim(), now_ms)
+    verify_token(source, raw.trim(), now_ms, reloads)
 }
 
 fn verify_token(
     source: &mut BundleSource,
     token: &str,
     now_ms: i64,
+    reloads: &mut Vec<ConfigReload>,
 ) -> Result<Delegation, String> {
     match source.verifier().verify(token) {
         Ok(d) => Ok(d),
         Err(identity::Error::UnknownKid(kid)) => {
             match source.reload(now_ms) {
-                ReloadOutcome::Reloaded { version, keys } => {
+                ReloadOutcome::Reloaded {
+                    version,
+                    keys,
+                    content,
+                } => {
                     eprintln!(
                         "[probant] rotation detected (unknown kid \"{kid}\") — identity \
                          bundle reloaded: {version}, {keys} key(s)"
                     );
+                    reloads.push(ConfigReload {
+                        config_kind: ConfigKind::IdentityBundle,
+                        status: ReloadStatus::Applied,
+                        bundle_version: version,
+                        bundle_hash: Some(content),
+                        reason: None,
+                    });
                 }
-                ReloadOutcome::Failed { reason } => {
+                ReloadOutcome::Failed { reason, content } => {
                     // The previous bundle stays in place: we fail on this
                     // token, not on the service.
                     eprintln!(
                         "[probant] WARNING: identity bundle reload failed ({reason}) \
                          — previous configuration kept"
                     );
+                    reloads.push(ConfigReload {
+                        config_kind: ConfigKind::IdentityBundle,
+                        status: ReloadStatus::Rejected,
+                        // The version kept in force, not the one refused: what
+                        // this field always means for the auditor.
+                        bundle_version: source.version().to_string(),
+                        bundle_hash: content,
+                        reason: Some(reason),
+                    });
                 }
                 ReloadOutcome::Unchanged => {}
             }
@@ -406,9 +452,17 @@ mod rotation_tests {
         write_bundle(&bp, "identity@2", &[("k1", 1), ("k2", 2)]);
         std::fs::write(&tp, mint(2, 1800, "support:read")).unwrap();
 
-        let a = Auth::oidc(source, tp.clone()).expect("the rotation must be recovered");
+        let mut a = Auth::oidc(source, tp.clone()).expect("the rotation must be recovered");
         assert_eq!(a.delegation().issuer, ISSUER);
         assert_eq!(a.identity_version(), "identity@2");
+
+        // The reload survives Auth's construction: the session opening right
+        // after must be able to engrave it.
+        let reloads = a.take_reloads();
+        assert_eq!(reloads.len(), 1);
+        assert_eq!(reloads[0].status, ReloadStatus::Applied);
+        assert_eq!(reloads[0].bundle_version, "identity@2");
+        assert!(a.take_reloads().is_empty(), "draining must drain");
         cleanup(&bp, &tp);
     }
 
@@ -433,6 +487,52 @@ mod rotation_tests {
         assert!(renewed, "the renewal must be signalled");
         assert_eq!(a.identity_version(), "identity@2");
         assert!(a.delegation().scopes.contains(&"db:admin".to_string()));
+
+        let reloads = a.take_reloads();
+        assert_eq!(reloads.len(), 1);
+        assert_eq!(reloads[0].status, ReloadStatus::Applied);
+        assert_eq!(reloads[0].bundle_version, "identity@2");
+        let raw = std::fs::read(&bp).unwrap();
+        assert_eq!(
+            reloads[0].bundle_hash,
+            Some(audit_core::content_hash(&raw)),
+            "the record must name the exact bytes now in force"
+        );
+        cleanup(&bp, &tp);
+    }
+
+    #[test]
+    fn a_rejected_reload_is_kept_for_the_log() {
+        // Mid-session, an unverifiable file lands where the bundle lives and
+        // a token with an unknown kid arrives. The reload is refused, the
+        // token too — and the refusal itself must reach the caller, because
+        // dropping a rogue bundle on disk is the event an investigation
+        // wants to see.
+        let (bp, tp) = paths("rejected-event");
+        write_bundle(&bp, "identity@1", &[("k1", 1)]);
+        let source = BundleSource::load(&bp, &keyring()).unwrap();
+        std::fs::write(&tp, mint(1, 1800, "support:read")).unwrap();
+        let mut a = Auth::oidc(source, tp.clone()).unwrap();
+        assert!(a.take_reloads().is_empty(), "no reload on a nominal startup");
+        let end = a.delegation().expires_at_ms;
+
+        std::fs::write(&bp, "not a bundle").unwrap();
+        std::fs::write(&tp, mint(2, 7200, "support:read")).unwrap();
+
+        assert!(a.refresh(end + 1).is_err(), "the token must stay refused");
+        let reloads = a.take_reloads();
+        assert_eq!(reloads.len(), 1);
+        assert_eq!(reloads[0].status, ReloadStatus::Rejected);
+        assert_eq!(
+            reloads[0].bundle_version, "identity@1",
+            "the version recorded is the one kept in force"
+        );
+        assert_eq!(
+            reloads[0].bundle_hash,
+            Some(audit_core::content_hash(b"not a bundle")),
+            "the record must name the rejected bytes"
+        );
+        assert!(reloads[0].reason.is_some());
         cleanup(&bp, &tp);
     }
 

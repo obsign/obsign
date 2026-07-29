@@ -18,10 +18,21 @@ use crate::Error;
 pub enum ReloadOutcome {
     /// The file has not changed.
     Unchanged,
-    /// New bundle loaded and verified.
-    Reloaded { version: String, keys: usize },
-    /// Attempt failed, the previous bundle is kept.
-    Failed { reason: String },
+    /// New bundle loaded and verified. `content` is the hash of the file as
+    /// read, so the reload can be recorded against exact bytes, not just a
+    /// version string the bundle declares about itself.
+    Reloaded {
+        version: String,
+        keys: usize,
+        content: Hash,
+    },
+    /// Attempt failed, the previous bundle is kept. `content` hashes the
+    /// rejected bytes — evidence of *what* was refused — and is `None` only
+    /// when the file could not be read at all.
+    Failed {
+        reason: String,
+        content: Option<Hash>,
+    },
 }
 
 /// Hot-reloadable identity bundle.
@@ -111,6 +122,7 @@ impl BundleSource {
             Err(e) => {
                 return ReloadOutcome::Failed {
                     reason: format!("reading {}: {e}", self.path.display()),
+                    content: None,
                 }
             }
         };
@@ -129,7 +141,11 @@ impl BundleSource {
                 self.verifier = verifier;
                 self.version = version.clone();
                 self.content = digest;
-                ReloadOutcome::Reloaded { version, keys }
+                ReloadOutcome::Reloaded {
+                    version,
+                    keys,
+                    content: digest,
+                }
             }
             Err(e) => {
                 // We still record the hash: no point re-verifying a broken
@@ -137,6 +153,7 @@ impl BundleSource {
                 self.content = digest;
                 ReloadOutcome::Failed {
                     reason: e.to_string(),
+                    content: Some(digest),
                 }
             }
         }
@@ -235,9 +252,12 @@ mod tests {
         .unwrap();
 
         match src.reload(10_000) {
-            ReloadOutcome::Reloaded { version, keys } => {
+            ReloadOutcome::Reloaded { version, keys, content } => {
                 assert_eq!(version, "identity@2");
                 assert_eq!(keys, 2);
+                // The hash names the exact bytes now in force.
+                let raw = std::fs::read(&p).unwrap();
+                assert_eq!(content, content_hash(&raw));
             }
             other => panic!("expected Reloaded, got {other:?}"),
         }

@@ -350,7 +350,10 @@ fn run_stdio(
 
     let mut sess = session::open(chain, wal, session_id.clone());
     {
-        let a = auth.lock().unwrap();
+        let mut a = auth.lock().unwrap();
+        // A rotation recovered while verifying the startup token happened
+        // before this session existed; its record still comes first.
+        session::record_config_reloads(&mut sess, a.take_reloads())?;
         session::record_delegation(
             &mut sess,
             a.generation(),

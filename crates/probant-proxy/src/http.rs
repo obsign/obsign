@@ -427,10 +427,17 @@ fn present_bearer(sess: &McpSession, bearer: Option<&str>) {
     let Some(token) = bearer else { return };
     let now = now_ms();
 
-    let renewed = {
+    let (renewed, reloads) = {
         let mut a = sess.ctx.auth.lock().unwrap();
-        matches!(a.present(token, now), Ok(true))
+        let renewed = matches!(a.present(token, now), Ok(true));
+        (renewed, a.take_reloads())
     };
+    if !reloads.is_empty() {
+        let mut s = sess.state.lock().unwrap();
+        if let Err(e) = session::record_config_reloads(&mut s, reloads) {
+            eprintln!("[probant] failed to record config reload: {e}");
+        }
+    }
     if !renewed {
         return;
     }
@@ -552,7 +559,10 @@ fn open_session(
             bundle_version: gw.bundle_version.clone(),
         });
         {
-            let a = ctx.auth.lock().unwrap();
+            let mut a = ctx.auth.lock().unwrap();
+            // A rotation recovered while verifying the opening token belongs
+            // to this session's chain, ahead of its delegation.
+            session::record_config_reloads(&mut s, a.take_reloads())?;
             session::record_delegation(
                 &mut s,
                 a.generation(),

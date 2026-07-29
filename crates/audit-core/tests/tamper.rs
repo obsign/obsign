@@ -300,8 +300,8 @@ fn payload_types_are_not_confusable() {
 ///
 /// Extending the format stays possible: add a *new* payload type with the next
 /// free discriminant, do not touch the existing ones. `Payload::Actor` (tag 7)
-/// was added that way after the fact, without any of the first three hashes
-/// below moving.
+/// then `Payload::ConfigReload` (tag 8) were added that way after the fact,
+/// without any of the earlier hashes below moving.
 #[test]
 fn record_format_is_frozen() {
     use audit_core::{Hash, GENESIS};
@@ -378,6 +378,25 @@ fn record_format_is_frozen() {
             },
             "aebd19fa48503ee85f15838657480a39e04c9d7f61dfd9c322f7d0ecfaf85c1b",
         ),
+        (
+            "config_reload",
+            Record {
+                seq: 4,
+                ts_ms: 1_700_000_000_004,
+                prev_hash: Hash([0x12; 32]),
+                id: "reload-1".into(),
+                parent_id: None,
+                session_id: "s1".into(),
+                payload: Payload::ConfigReload(ConfigReload {
+                    config_kind: ConfigKind::IdentityBundle,
+                    status: ReloadStatus::Applied,
+                    bundle_version: "identity@2".into(),
+                    bundle_hash: Some(Hash([0x34; 32])),
+                    reason: None,
+                }),
+            },
+            "1a688bc4d21c20a4e377f96828508421b953707d0f0eddb6198fcac0b537f8e4",
+        ),
     ];
 
     for (name, rec, expected) in cases {
@@ -434,6 +453,13 @@ fn every_payload_survives_a_json_round_trip() {
             status: EffectStatus::Timeout,
             result_hash: Some(Hash([4; 32])),
             latency_ms: 7,
+        }),
+        Payload::ConfigReload(ConfigReload {
+            config_kind: ConfigKind::IdentityBundle,
+            status: ReloadStatus::Rejected,
+            bundle_version: "identity@1".into(),
+            bundle_hash: Some(Hash([5; 32])),
+            reason: Some("bad signature".into()),
         }),
     ];
 

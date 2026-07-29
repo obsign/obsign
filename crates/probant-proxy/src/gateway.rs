@@ -76,19 +76,26 @@ pub(crate) fn handle_from_agent(
     // 30-minute token. Over stdio the fresh token is re-read from a file;
     // over HTTP it arrives with the request.
     let now = now_ms();
-    let (deleg, generation, renewed, auth_error) = {
+    let (deleg, generation, renewed, reloads, auth_error) = {
         let mut a = ctx.auth.lock().unwrap();
         let outcome = match bearer {
             Some(token) => a.present(token, now),
             None => a.refresh(now),
         };
+        // Drained whatever the outcome: a reload rejected while refusing this
+        // token is exactly the event the log must keep.
+        let reloads = a.take_reloads();
         match outcome {
-            Ok(renewed) => (a.delegation().clone(), a.generation(), renewed, None),
-            Err(e) => (a.delegation().clone(), a.generation(), false, Some(e)),
+            Ok(renewed) => (a.delegation().clone(), a.generation(), renewed, reloads, None),
+            Err(e) => (a.delegation().clone(), a.generation(), false, reloads, Some(e)),
         }
     };
 
     let mut s = state.lock().unwrap();
+
+    // Reloads precede the delegation they may have enabled: the new bundle
+    // was in force before the token it validated was accepted.
+    session::record_config_reloads(&mut s, reloads)?;
 
     // Token renewed: a new delegation goes into the log, and subsequent
     // calls attach to it. Without this, an act performed under a renewed
