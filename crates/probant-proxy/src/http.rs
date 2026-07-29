@@ -425,13 +425,17 @@ fn present_bearer(sess: &McpSession, bearer: Option<&str>) {
     let Some(token) = bearer else { return };
     let now = now_ms();
 
-    let (renewed, reloads) = {
+    // Session lock before auth lock, as everywhere: presenting the token and
+    // recording the delegation it may carry must be atomic with respect to
+    // concurrent requests on the same session, or a tools/call slipping into
+    // the gap attaches to a stale `agent_record_id`.
+    let mut s = sess.state.lock().unwrap();
+    let (renewed, reloads, deleg, generation) = {
         let mut a = sess.ctx.auth.lock().unwrap();
         let renewed = matches!(a.present(token, now), Ok(true));
-        (renewed, a.take_reloads())
+        (renewed, a.take_reloads(), a.delegation().clone(), a.generation())
     };
     if !reloads.is_empty() {
-        let mut s = sess.state.lock().unwrap();
         if let Err(e) = session::record_config_reloads(&mut s, reloads) {
             eprintln!("[probant] failed to record config reload: {e}");
         }
@@ -440,11 +444,6 @@ fn present_bearer(sess: &McpSession, bearer: Option<&str>) {
         return;
     }
 
-    let (deleg, generation) = {
-        let a = sess.ctx.auth.lock().unwrap();
-        (a.delegation().clone(), a.generation())
-    };
-    let mut s = sess.state.lock().unwrap();
     if let Err(e) = session::record_delegation(
         &mut s,
         generation,

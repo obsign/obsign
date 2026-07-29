@@ -75,7 +75,17 @@ pub(crate) fn handle_from_agent(
     // checking once at startup amounts to drawing unlimited authority from a
     // 30-minute token. Over stdio the fresh token is re-read from a file;
     // over HTTP it arrives with the request.
+    //
+    // The session lock comes *first* and stays held through the writes below:
+    // the identity snapshot and the attribution parent (`agent_record_id`)
+    // must be one atomic step. Released between the two, a concurrent request
+    // on the same session presenting a different token records its delegation
+    // and moves `agent_record_id` in the gap — and this call, whose token did
+    // not change, attaches under the other principal's subtree. Lock order is
+    // session then auth, everywhere: auth is only ever taken alone or nested
+    // inside the session lock, never the other way around.
     let now = now_ms();
+    let mut s = state.lock().unwrap();
     let (deleg, generation, renewed, reloads, auth_error) = {
         let mut a = ctx.auth.lock().unwrap();
         let outcome = match bearer {
@@ -90,8 +100,6 @@ pub(crate) fn handle_from_agent(
             Err(e) => (a.delegation().clone(), a.generation(), false, reloads, Some(e)),
         }
     };
-
-    let mut s = state.lock().unwrap();
 
     // Reloads precede the delegation they may have enabled: the new bundle
     // was in force before the token it validated was accepted.
