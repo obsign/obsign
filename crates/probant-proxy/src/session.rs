@@ -38,6 +38,10 @@ pub struct Session {
     pub pending: HashMap<String, Pending>,
     /// Call counter, used to build readable identifiers.
     pub counter: u64,
+    /// Separate counter for `reload-N` identifiers: reloads are rarer than
+    /// calls and sharing the call counter would leave holes in the dec-N /
+    /// eff-N pairing an investigator reads by.
+    pub reload_counter: u64,
 }
 
 impl Session {
@@ -88,6 +92,25 @@ impl Session {
             anchors: Vec::new(),
         })
     }
+}
+
+/// Engraves configuration reloads drained from `Auth::take_reloads`.
+///
+/// Chain-level events, deliberately outside the attribution tree (no
+/// parent): a reload changes what the gateway trusts, whoever the principal
+/// of the moment is. Written before the act that triggered them, so "which
+/// keys were trusted when this act happened?" reads directly: the last
+/// applied `config_reload` — or the opening `agent_session` — above the act.
+pub fn record_config_reloads(
+    s: &mut Session,
+    reloads: Vec<ConfigReload>,
+) -> Result<(), wal::Error> {
+    for reload in reloads {
+        s.reload_counter += 1;
+        let id = format!("reload-{}", s.reload_counter);
+        s.write(id, None, Payload::ConfigReload(reload))?;
+    }
+    Ok(())
 }
 
 /// Records a delegation and the opening (or resumption) of an agent session.
@@ -157,5 +180,53 @@ pub fn open(chain: ChainWriter, wal: Wal, session_id: String) -> Session {
         agent_record_id: String::new(),
         pending: HashMap::new(),
         counter: 0,
+        reload_counter: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reload_records_chain_outside_the_attribution_tree() {
+        let dir = std::env::temp_dir()
+            .join(format!("probant-session-reload-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (wal, chain) = Wal::open(&dir, "t").unwrap();
+        let mut s = open(chain, wal, "sess".into());
+
+        record_config_reloads(
+            &mut s,
+            vec![
+                ConfigReload {
+                    config_kind: ConfigKind::IdentityBundle,
+                    status: ReloadStatus::Applied,
+                    bundle_version: "identity@2".into(),
+                    bundle_hash: Some(content_hash(b"new bundle")),
+                    reason: None,
+                },
+                ConfigReload {
+                    config_kind: ConfigKind::IdentityBundle,
+                    status: ReloadStatus::Rejected,
+                    bundle_version: "identity@2".into(),
+                    bundle_hash: None,
+                    reason: Some("reading: gone".into()),
+                },
+            ],
+        )
+        .unwrap();
+
+        let recs = s.wal.read_all().unwrap();
+        assert_eq!(recs.len(), 2);
+        assert_eq!(recs[0].id, "reload-1");
+        assert_eq!(recs[1].id, "reload-2");
+        for r in &recs {
+            // A reload belongs to the whole chain, not to any principal's
+            // attribution tree.
+            assert!(r.parent_id.is_none());
+            assert!(matches!(r.payload, Payload::ConfigReload(_)));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

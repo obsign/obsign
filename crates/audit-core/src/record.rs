@@ -50,6 +50,9 @@ pub enum Payload {
     Decision(Decision),
     /// What actually happened.
     Effect(Effect),
+    /// A configuration reload observed by the gateway (key rotation,
+    /// republished bundle), applied or rejected.
+    ConfigReload(ConfigReload),
 }
 
 impl Payload {
@@ -73,6 +76,11 @@ impl Payload {
             // change its hash and invalidate every already-sealed log. An
             // additional type touches nothing.
             Payload::Actor(_) => 7,
+            // Added later, same rule: configuration reloads used to be
+            // traceable only through the `config_hash` of the next
+            // `agent_session` record, i.e. only if a delegation happened to be
+            // recorded after the reload.
+            Payload::ConfigReload(_) => 8,
         }
     }
 
@@ -125,6 +133,13 @@ impl Payload {
                 e.str(x.status.as_str())
                     .opt_hash(x.result_hash.as_ref())
                     .u64(x.latency_ms);
+            }
+            Payload::ConfigReload(c) => {
+                e.str(c.config_kind.as_str())
+                    .str(c.status.as_str())
+                    .str(&c.bundle_version)
+                    .opt_hash(c.bundle_hash.as_ref())
+                    .opt_str(c.reason.as_deref());
             }
         }
     }
@@ -313,6 +328,74 @@ impl EffectStatus {
             EffectStatus::Error => "error",
             EffectStatus::Blocked => "blocked",
             EffectStatus::Timeout => "timeout",
+        }
+    }
+}
+
+/// A configuration reload observed by the gateway.
+///
+/// The bundles the gateway trusts — JWKS, claim mapping, policies — are
+/// reloaded from disk when the control plane republishes them, typically on a
+/// key rotation. That changes what the log means: the same token is refused
+/// before the reload and accepted after. So the reload itself goes into the
+/// log, and "which keys were trusted when this act happened?" has a direct
+/// answer: the last applied `config_reload` (or the opening `agent_session`)
+/// before the act.
+///
+/// Rejected attempts are recorded too. A bundle refused at reload — bad
+/// signature, truncated file — leaves the previous configuration in force,
+/// but the attempt itself is exactly what an investigation wants to see:
+/// dropping a rogue JWKS on disk is an attack, not noise.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConfigReload {
+    /// Same serde constraint as `Actor::principal_kind`: `Payload` is tagged
+    /// with `kind`, so no field here may bear that name.
+    pub config_kind: ConfigKind,
+    pub status: ReloadStatus,
+    /// Version in force AFTER the attempt: the new version when applied, the
+    /// previous one — kept — when rejected.
+    pub bundle_version: String,
+    /// Content hash of the file that was read: the applied bundle, or the
+    /// rejected bytes. None when the file could not be read at all.
+    pub bundle_hash: Option<Hash>,
+    /// Why the file was rejected (status = rejected).
+    pub reason: Option<String>,
+}
+
+/// Which configuration the reload concerned.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigKind {
+    /// Signed identity bundle: issuer, audience, JWKS, claim mapping.
+    IdentityBundle,
+    /// Signed policy bundle: Cedar rules and tool catalogue.
+    PolicyBundle,
+}
+
+impl ConfigKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ConfigKind::IdentityBundle => "identity_bundle",
+            ConfigKind::PolicyBundle => "policy_bundle",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReloadStatus {
+    /// New configuration verified and in force.
+    Applied,
+    /// File refused — bad signature, unreadable — the previous configuration
+    /// stays in force.
+    Rejected,
+}
+
+impl ReloadStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ReloadStatus::Applied => "applied",
+            ReloadStatus::Rejected => "rejected",
         }
     }
 }

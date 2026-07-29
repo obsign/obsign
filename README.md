@@ -249,7 +249,7 @@ python3 scripts/demo-rotation.py /tmp/rot
 [server] EXECUTING ticket_update
 ```
 
-Four properties worth knowing:
+Five properties worth knowing:
 
 **Triggered by the unknown `kid`.** That is the exact signal of a rotation, so
 reloading costs nothing in nominal operation: zero disk access as long as
@@ -270,6 +270,16 @@ accident.
 Detection uses the content hash rather than the modification time: mtime
 granularity goes up to one second on some filesystems, enough to miss two
 writes close together.
+
+**The reload is itself recorded** — a `config_reload` record (tag 8) goes
+into the audit chain, carrying the version and content hash of the bundle in
+force after the attempt. A reload changes what the log means: the same token
+is refused before it and accepted after, so "which keys were trusted when
+this act happened?" must read directly off the chain — the last applied
+`config_reload`, or the opening `agent_session`, above the act. Rejected
+reloads are recorded too, with the hash of the refused bytes: dropping a
+rogue JWKS on disk is an attack, and the attempt is precisely what an
+investigation wants to see.
 
 ## The ledger: sealing away from the gateway
 
@@ -415,12 +425,13 @@ The `Payload` discriminants and the canonical encoding are **frozen**. Changing
 them invalidates every already-sealed log. A new payload type takes the next
 free integer; we never renumber.
 
-The rule has already been exercised: `Payload::Actor` (tag 7) was added after
-the fact for the actor chain, rather than adding a field to `Delegation`. The
-`record_format_is_frozen` test carries reference hashes for the existing
-payloads — none of them moved. The day that test fails, the question is not
-"how do I update the constants" but "which sealed logs have just been
-invalidated".
+The rule has already been exercised twice: `Payload::Actor` (tag 7) was added
+after the fact for the actor chain, rather than adding a field to
+`Delegation`, and `Payload::ConfigReload` (tag 8) the same way for
+configuration reloads. The `record_format_is_frozen` test carries reference
+hashes for the existing payloads — none of them moved either time. The day
+that test fails, the question is not "how do I update the constants" but
+"which sealed logs have just been invalidated".
 
 ## Known debt
 
@@ -431,12 +442,6 @@ warning says so, but it should eventually be reduced to an unsealed export or
 removed. The other half of the same debt: the only `Sealer` implementation is
 a seed file; the KMS/HSM implementation behind the trait is still to write.
 
-**Configuration reloads are not recorded.** An auditor asking "which keys were
-trusted when this action happened?" gets only an indirect answer: the bundle
-version is folded into the `config_hash` of the `agent_session` record, so it
-is traceable only if a delegation was recorded after the reload. Doing it
-properly needs a dedicated record type (tag 8).
-
 **Dependency tree.** `audit-core` pulls in 36 transitive crates, `probant`
 52 — 12 of them for `clap`. The stated goal is a tree an auditor reads end to
 end. To get closer: manual `serde` implementations and hand-rolled argument
@@ -445,7 +450,7 @@ parsing in the verifier. Not a priority before the first design partner.
 ## Tests
 
 ```bash
-cargo test --workspace     # 120 tests
+cargo test --workspace     # 122 tests
 ```
 
 Five families, each with a distinct role:
@@ -469,7 +474,8 @@ Five families, each with a distinct role:
   the evidence pack and foreign tokens do not attach. Each control has its
   paired legitimate-path test.
 - `probant-proxy` — unit tests on expiry, delegation renewal and rotation recovery (at
-  startup and mid-session), plus `tests/e2e.rs` which runs the real binary in
+  startup and mid-session, applied reloads and rejected ones both surfacing as
+  `config_reload` records), plus `tests/e2e.rs` which runs the real binary in
   front of an MCP server and checks that the refused call **never reaches the
   server**. Two of those tests are regressions found by a manual demo, not by
   unit tests: duplicated effect identifiers when two calls are in flight, and
