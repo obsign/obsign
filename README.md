@@ -579,6 +579,13 @@ hashes for the existing payloads — none of them moved either time. The day
 that test fails, the question is not "how do I update the constants" but
 "which sealed logs have just been invalidated".
 
+Signed *bundles* evolve differently: their format string is part of the
+signed bytes, so a revision is a new string, and every revision an artifact
+was published under keeps verifying with the signing bytes of its day.
+Exercised once: `probant-identity/2` extended the signed bytes with the
+machine markers; a `/1` bundle keeps its hash and signature, and a `/1` file
+carrying the fields only `/2` signs is refused rather than trusted.
+
 ## Known debt
 
 Three long-standing entries are paid off: the gateway no longer holds any
@@ -650,3 +657,11 @@ Pinned to 1.97.1 via `rust-toolchain.toml`, for two reasons: Cedar's
 dependencies require rustc ≥ 1.89, and a proof product needs reproducible
 builds — the compiler version is part of what will be audited. The pin is
 scoped to this project.
+
+## License
+
+Apache-2.0 — see [LICENSE](LICENSE). Contributions are accepted under the
+[DCO](https://developercertificate.org/), sign-off required; see
+[CONTRIBUTING.md](CONTRIBUTING.md). The commercial layer (compliance report
+packs, console RBAC/SSO, long retention) is separate code under a separate
+license — this repository is complete and verifiable without it.
