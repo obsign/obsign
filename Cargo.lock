@@ -341,6 +341,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
 
 [[package]]
+name = "control-plane"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "audit-core",
+ "base64",
+ "clap",
+ "ed25519-dalek",
+ "hex",
+ "identity",
+ "ledger",
+ "policy",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "wal",
+]
+
+[[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

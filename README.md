@@ -23,7 +23,7 @@ policy decides, the log is sealed, and the auditor verifies offline.
 | `wal` | Durable local log, replay on startup | done |
 | `probant-proxy` | MCP proxy (stdio and Streamable HTTP), `tools/list` filtering, `tools/call` arbitration | done |
 | `ledger` | Sealing away from the gateway, checkpoint store, RFC 3161 anchoring, evidence export | done |
-| `control-plane` | Compiling policies from git, console, exports | to come |
+| `control-plane` | Compiling policies from git, immutable signed releases, fleet evidence export, read-only console | done |
 
 ## Demo — the gateway at work
 
@@ -333,6 +333,84 @@ validated against the TSA certificate with standard tooling (`openssl ts
 -verify`), and the report says so rather than passing a structural check off
 as a cryptographic one.
 
+## The control plane: from git to the fleet
+
+Everything the gateway trusts arrives as a signed file. `probant-control` is
+where those files come from — and the reason a rule change is a dated,
+reviewed pull request rather than a click in a UI:
+
+```bash
+# the source tree is a git checkout:
+#   policies/*.cedar   tools.json   fail-mode.json   identity/{provider,jwks}.json
+openssl rand -hex 32 > /tmp/ops.hex
+
+./target/debug/probant-control publish \
+    --source ~/acme-policies --key /tmp/ops.hex --key-id ops-2026 \
+    --dist /srv/probant/dist
+# [control] compiled policies@847d4fca5754 — 1 rule file(s), 2 tool(s), ...
+# [control] published release 847d4fca5754 -> /srv/probant/dist/releases/847d4fca5754
+```
+
+The version *is* the commit sha, resolved by reading `.git` directly — no git
+binary required on the build host, worktrees and packed refs included. Every
+decision recorded in the log cites `policies@<sha>`; replaying it months later
+means checking out that sha.
+
+Compilation validates with the gateway's own code paths (`Engine::load`,
+`KeyStore::from_set`), so what passes in CI cannot fail at startup across the
+fleet: Cedar syntax, the mandatory `@id` on every rule, duplicate tools,
+fail-mode overrides naming tools that do not exist, unusable or forbidden
+JWKS keys. The JWKS is a file in git, reviewed like a rule — it decides who
+can mint identities, and fetching it from the IdP is the job of whatever
+refreshes the repository, never of a gateway-side network call.
+
+Publication holds two invariants:
+
+- **a version is immutable** — `releases/<sha>/` is written once; publishing
+  different content under an existing sha is refused. A crash mid-publish is
+  repaired on the next run, a changed source is not;
+- **the current files change atomically** — write-then-rename on the files
+  the gateways hot-reload, so a reader sees the old release or the new one,
+  never a torn file. Rollback needs no tooling: republish the old sha.
+
+The release manifest is signed (canonical encoding, like every other signed
+artifact) but the artifact hashes inside it are plain SHA-256 of the file
+bytes, deliberately: "is the bundle my gateway loaded the one the manifest
+names?" must be answerable with nothing but `sha256sum`.
+
+### The audit dossier
+
+`probant-ledger export` produces one pack for one chain; an auditor asks for
+a period. With the HTTP transport every agent session is its own chain, so
+"what did your agents do in Q3" is dozens of packs:
+
+```bash
+./target/debug/probant-control export \
+    --wal /srv/probant/wal --store /srv/probant/ledger \
+    --out /tmp/dossier --key /tmp/ops.hex --key-id ops-2026
+```
+
+Every chain is exported, verified on the way out, and listed in a signed
+export manifest — the dossier cannot lose a pack in transit without the loss
+being visible. A pack that fails verification is written and flagged, never
+repaired or filtered: an export that fixed things on the way out would do
+exactly what the product exists to make impossible. The exit code says so.
+
+### The console
+
+```bash
+./target/debug/probant-control console \
+    --wal /srv/probant/wal --store /srv/probant/ledger --dist /srv/probant/dist
+```
+
+Three server-rendered HTML pages on `std::net` — current release with its
+signature verdict, chains with their sealing state (each one re-verified on
+request), records. No JavaScript, no template engine, no cache: what the
+console shows is what the files say now. Read-only **by construction** — the
+only accepted method is GET, so the console can never become a second write
+path around git. It binds to localhost by default; authentication is the
+commercial layer's job, not a reason to weaken the core.
+
 ## Demo — verification
 
 ```bash
@@ -445,10 +523,10 @@ parsing in the verifier. Not a priority before the first design partner.
 ## Tests
 
 ```bash
-cargo test --workspace     # 120 tests
+cargo test --workspace     # 134 tests
 ```
 
-Five families, each with a distinct role:
+Six families, each with a distinct role:
 
 - `audit-core/tests/tamper.rs` — does not check that the code works but that it
   **detects**: modified verdict, deleted record, permuted order, wholly
@@ -468,6 +546,16 @@ Five families, each with a distinct role:
   detected; a torn final store line survives a crash; anchors round-trip into
   the evidence pack and foreign tokens do not attach. Each control has its
   paired legitimate-path test.
+- `control-plane/tests/control_plane.rs` — every refusal has its paired
+  legitimate path: a rule without `@id`, a duplicate tool, a fail-mode
+  override with a typo and an unusable JWKS are compile errors; a published
+  version cannot change content but rollback (republishing an old sha) works;
+  a key id cannot be rebound but rotation under a new id can; a rewritten WAL
+  exports flagged invalid, never repaired; the console answers 405 to
+  anything but GET and 404 to chain ids shaped like path traversals; git HEAD
+  resolves from loose refs, packed refs and detached HEAD without a git
+  binary. Compilation is byte-for-byte deterministic, tested by compiling
+  twice.
 - `probant-proxy` — unit tests on expiry, delegation renewal and rotation recovery (at
   startup and mid-session), plus `tests/e2e.rs` which runs the real binary in
   front of an MCP server and checks that the refused call **never reaches the

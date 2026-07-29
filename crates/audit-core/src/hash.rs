@@ -72,6 +72,10 @@ pub mod domain {
     pub const POLICY_BUNDLE: u8 = 0x05;
     /// Signed identity bundle (issuer, audience, JWKS, claim mapping).
     pub const IDENTITY_BUNDLE: u8 = 0x06;
+    /// Release manifest published by the control plane.
+    pub const RELEASE_MANIFEST: u8 = 0x07;
+    /// Export manifest covering a set of evidence packs.
+    pub const EXPORT_MANIFEST: u8 = 0x08;
     /// Application content (prompt, arguments, result).
     pub const CONTENT: u8 = 0xF0;
 }
@@ -83,6 +87,20 @@ pub mod domain {
 pub fn digest(domain: u8, body: &[u8]) -> Hash {
     let mut h = Sha256::new();
     h.update([domain]);
+    h.update(body);
+    Hash(h.finalize().into())
+}
+
+/// Plain SHA-256 of raw bytes, **without** domain separation.
+///
+/// Reserved for hashing distributed files as-is (release artifacts, evidence
+/// packs) inside signed manifests. No prefix, deliberately: the recipient must
+/// be able to check the file they received against the manifest with nothing
+/// but `sha256sum`. There is no type-confusion surface here — these digests
+/// only ever appear length-prefixed inside a canonical encoding that names
+/// their role. Everything hashed *within* the proof system keeps its domain.
+pub fn sha256(body: &[u8]) -> Hash {
+    let mut h = Sha256::new();
     h.update(body);
     Hash(h.finalize().into())
 }
