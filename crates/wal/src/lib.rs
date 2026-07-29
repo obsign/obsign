@@ -51,6 +51,10 @@ impl Wal {
         std::fs::create_dir_all(dir)?;
         let path = dir.join(format!("{chain_id}.jsonl"));
 
+        // Whether we are about to create the file dictates whether the
+        // directory entry needs to be made durable below.
+        let is_new = !path.exists();
+
         let (records, good_len) = replay(&path)?;
 
         // A truncated final line means the process died mid-write. The record
@@ -64,6 +68,17 @@ impl Wal {
         if file.metadata()?.len() != good_len {
             file.set_len(good_len)?;
             file.seek(SeekFrom::End(0))?;
+        }
+
+        // `append` fsyncs the file's *contents*, but the directory entry that
+        // names a freshly created file is a separate piece of metadata: a power
+        // cut after the first record is fdatasync'd could still lose the whole
+        // file, and with it a record we durably wrote before forwarding the
+        // act. With the HTTP transport every session is a new chain file, so
+        // this is the first audited call of every session, not a corner case.
+        // Persist the new entry once, here, before any record is written.
+        if is_new {
+            sync_dir(dir)?;
         }
 
         let writer = match records.last() {
@@ -112,6 +127,17 @@ impl Wal {
 /// acknowledged that record, so the act it would describe did not happen.
 pub fn read(dir: &Path, chain_id: &str) -> Result<Vec<Record>, Error> {
     Ok(replay(&dir.join(format!("{chain_id}.jsonl")))?.0)
+}
+
+/// fsync a directory so a newly created entry inside it survives a crash.
+///
+/// On Unix, fsync of the file only guarantees the file's data; the link that
+/// names it in its parent directory is durable only once the directory itself
+/// is fsync'd. Opening a directory read-only and syncing it is the portable way
+/// to do that.
+fn sync_dir(dir: &Path) -> Result<(), Error> {
+    File::open(dir)?.sync_all()?;
+    Ok(())
 }
 
 /// Re-reads the log and returns the valid records plus the length of the
@@ -211,6 +237,28 @@ mod tests {
         assert_eq!(chain2.next_seq(), 3, "the sequence must continue");
         assert_eq!(chain2.head(), head, "the head must be recovered");
         assert_eq!(wal2.read_all().unwrap().len(), 3);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_new_chain_file_is_named_in_its_directory_at_open() {
+        // The durability fix: opening a fresh chain creates the file and syncs
+        // its directory entry before any record is written, so the first
+        // audited call of a session cannot be lost to an unsynced dirent. We
+        // cannot observe the fsync, but we can pin that the entry exists at
+        // open time and that both the new-file and reopen paths stay sound.
+        let dir = tmpdir("newfile");
+        {
+            let (_wal, _chain) = Wal::open(&dir, "fresh").unwrap();
+            assert!(
+                dir.join("fresh.jsonl").exists(),
+                "the chain file must be created and named at open"
+            );
+        }
+        // Reopen: the existing-file path must not error either.
+        let (_wal, chain) = Wal::open(&dir, "fresh").unwrap();
+        assert_eq!(chain.next_seq(), 0);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
