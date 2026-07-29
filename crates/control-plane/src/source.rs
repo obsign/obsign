@@ -182,9 +182,8 @@ fn read_identity(dir: &Path) -> Result<Option<IdentitySource>, Error> {
         }
     }
 
-    let provider: ProviderFile =
-        serde_json::from_str(&std::fs::read_to_string(&provider_path)?)
-            .map_err(|e| Error::Source(format!("{}: {e}", provider_path.display())))?;
+    let provider: ProviderFile = serde_json::from_str(&std::fs::read_to_string(&provider_path)?)
+        .map_err(|e| Error::Source(format!("{}: {e}", provider_path.display())))?;
     if provider.issuer.is_empty() || provider.audience.is_empty() {
         return Err(Error::Source(format!(
             "{}: issuer and audience must both be set — an empty audience \
@@ -221,7 +220,7 @@ fn read_identity(dir: &Path) -> Result<Option<IdentitySource>, Error> {
 /// `.git` file pointing at a worktree gitdir, and refs packed into
 /// `packed-refs`.
 pub fn git_head(start: &Path) -> Result<String, Error> {
-    let (gitdir, common) = find_git_dir(start).ok_or_else(|| {
+    let GitDirs { gitdir, common, .. } = find_git_dirs(start).ok_or_else(|| {
         Error::NoVersion(format!(
             "{} is not inside a git repository — pass --label to name the \
              version explicitly",
@@ -264,11 +263,28 @@ pub fn git_head(start: &Path) -> Result<String, Error> {
     Err(Error::NoVersion("symbolic ref chain too deep".to_string()))
 }
 
-fn find_git_dir(start: &Path) -> Option<(PathBuf, PathBuf)> {
+/// Where a repository keeps its state, resolved from a path inside its
+/// working tree.
+pub(crate) struct GitDirs {
+    /// The working-tree root: the directory that contains `.git`. Paths in
+    /// the index are relative to it.
+    pub root: PathBuf,
+    /// Per-worktree state: HEAD, index.
+    pub gitdir: PathBuf,
+    /// Shared state: refs, packed-refs, config. The same directory as
+    /// `gitdir` except in a linked worktree.
+    pub common: PathBuf,
+}
+
+pub(crate) fn find_git_dirs(start: &Path) -> Option<GitDirs> {
     for dir in start.ancestors() {
         let dot = dir.join(".git");
         if dot.is_dir() {
-            return Some((dot.clone(), dot));
+            return Some(GitDirs {
+                root: dir.to_path_buf(),
+                gitdir: dot.clone(),
+                common: dot,
+            });
         }
         if dot.is_file() {
             // Worktree: `.git` is a file `gitdir: <path>`. HEAD lives in
@@ -280,7 +296,11 @@ fn find_git_dir(start: &Path) -> Option<(PathBuf, PathBuf)> {
                 Ok(c) => gitdir.join(c.trim()),
                 Err(_) => gitdir.clone(),
             };
-            return Some((gitdir, common));
+            return Some(GitDirs {
+                root: dir.to_path_buf(),
+                gitdir,
+                common,
+            });
         }
     }
     None

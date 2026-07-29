@@ -7,7 +7,8 @@
 //!   validates it (Cedar syntax, mandatory `@id` annotations, catalogue
 //!   consistency, usable JWKS) and signs the bundles. The version carries the
 //!   commit sha, so a rule change is a dated, reviewed pull request — never a
-//!   click in a UI;
+//!   click in a UI. A working tree that has drifted from HEAD is refused:
+//!   the sha never stamps bytes its commit does not contain;
 //! * **publish** — places a release into a distribution directory,
 //!   immutably (`releases/<sha>/` is never rewritten) and atomically (the
 //!   current files the gateways watch are replaced by rename). Rolling back
@@ -30,12 +31,14 @@ pub mod console;
 pub mod export;
 pub mod release;
 pub mod source;
+pub mod worktree;
 
 pub use compile::{compile, Compiled};
 pub use console::Console;
 pub use export::{export_all, ExportManifest, SignedExportManifest};
 pub use release::{publish, Manifest, Published, SignedManifest};
 pub use source::SourceTree;
+pub use worktree::worktree_divergence;
 
 use audit_core::checkpoint::PublicKeyEntry;
 use ed25519_dalek::SigningKey;
@@ -73,6 +76,18 @@ pub enum Error {
 
     #[error("no version for this compilation: {0}")]
     NoVersion(String),
+
+    /// The version stamps a commit sha onto bytes read from disk. When the
+    /// working tree has drifted from that commit, every decision in the log
+    /// citing `policies@<sha>` would point auditors at rules that were never
+    /// the ones enforced.
+    #[error(
+        "the working tree diverges from HEAD — refusing to stamp its sha \
+         onto bytes the commit does not contain:\n{0}\ncommit (or restore) \
+         the changes, or pass --label to version this build without citing \
+         a commit"
+    )]
+    DirtyTree(String),
 
     #[error("invalid signing seed: {0}")]
     BadSeed(String),
@@ -115,8 +130,8 @@ pub struct OpsKey {
 impl OpsKey {
     pub fn from_seed_file(path: &Path, key_id: &str) -> Result<Self, Error> {
         let raw = std::fs::read_to_string(path)?;
-        let bytes = hex::decode(raw.trim())
-            .map_err(|_| Error::BadSeed("not valid hex".to_string()))?;
+        let bytes =
+            hex::decode(raw.trim()).map_err(|_| Error::BadSeed("not valid hex".to_string()))?;
         let seed: [u8; 32] = bytes
             .try_into()
             .map_err(|_| Error::BadSeed("the seed must be 32 bytes".to_string()))?;

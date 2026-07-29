@@ -6,7 +6,9 @@
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use control_plane::source::{git_head, short_ref};
-use control_plane::{compile, export_all, publish, Console, OpsKey, SourceTree};
+use control_plane::{
+    compile, export_all, publish, worktree_divergence, Console, OpsKey, SourceTree,
+};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -32,7 +34,8 @@ struct CompileArgs {
     source: PathBuf,
 
     /// Version label when the source is not in git. Defaults to the short
-    /// commit sha of HEAD.
+    /// commit sha of HEAD — in which case the working tree must match that
+    /// commit: compile refuses to stamp a sha onto uncommitted bytes.
     #[arg(long)]
     label: Option<String>,
 
@@ -153,6 +156,14 @@ fn load_and_compile(args: &CompileArgs) -> Result<(control_plane::Compiled, OpsK
         Some(l) => l.clone(),
         None => {
             let sha = git_head(&args.source)?;
+            // The version will cite this sha. Refuse to sign bytes the
+            // commit does not contain — an explicit --label is the way to
+            // compile a tree that is not exactly a commit.
+            let divergence = worktree_divergence(&args.source)?;
+            if !divergence.is_empty() {
+                let listed: Vec<String> = divergence.iter().map(|d| format!("  {d}")).collect();
+                return Err(control_plane::Error::DirtyTree(listed.join("\n")).into());
+            }
             short_ref(&sha).to_string()
         }
     };
@@ -178,7 +189,10 @@ fn do_compile(args: &CompileArgs, out: &std::path::Path) -> Result<()> {
     std::fs::create_dir_all(out)?;
 
     let bundle_path = out.join("policy-bundle.json");
-    std::fs::write(&bundle_path, serde_json::to_string_pretty(&compiled.policy)?)?;
+    std::fs::write(
+        &bundle_path,
+        serde_json::to_string_pretty(&compiled.policy)?,
+    )?;
     eprintln!("[control] signed policy bundle : {}", bundle_path.display());
 
     if let Some(idb) = &compiled.identity {
@@ -228,7 +242,11 @@ fn do_export(
             e.report.records_total,
             e.report.records_sealed,
             e.report.records_total,
-            if e.report.is_valid() { "" } else { " — INVALID" }
+            if e.report.is_valid() {
+                ""
+            } else {
+                " — INVALID"
+            }
         );
         for f in e.report.errors() {
             eprintln!("[control]   [{}] {}", f.code, f.message);

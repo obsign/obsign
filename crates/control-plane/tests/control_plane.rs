@@ -12,6 +12,7 @@ use base64::Engine as _;
 use control_plane::export::SignedExportManifest;
 use control_plane::release::SignedManifest;
 use control_plane::source::{git_head, short_ref};
+use control_plane::worktree::{blob_oid, worktree_divergence};
 use control_plane::{compile, export_all, publish, Console, Error, OpsKey, SourceTree};
 use ledger::{seal_pass, FileSealer, Store};
 use std::io::{Read, Write};
@@ -55,8 +56,7 @@ fn write_source_tree(root: &Path) {
     .unwrap();
     std::fs::write(
         root.join("fail-mode.json"),
-        serde_json::json!({"default": "closed", "tools": {"ticket_update": "open"}})
-            .to_string(),
+        serde_json::json!({"default": "closed", "tools": {"ticket_update": "open"}}).to_string(),
     )
     .unwrap();
 
@@ -112,7 +112,10 @@ fn compilation_is_deterministic_and_verifiable() {
     idb.verify(&vk).expect("identity bundle must verify");
 
     let other = ed25519_dalek::SigningKey::from_bytes(&[0x22u8; 32]).verifying_key();
-    assert!(a.policy.verify(&other).is_err(), "a foreign key must not verify");
+    assert!(
+        a.policy.verify(&other).is_err(),
+        "a foreign key must not verify"
+    );
 }
 
 #[test]
@@ -155,8 +158,7 @@ fn source_tree_mistakes_are_compile_errors() {
     write_source_tree(&dir);
     std::fs::write(
         dir.join("fail-mode.json"),
-        serde_json::json!({"default": "closed", "tools": {"tikcet_update": "open"}})
-            .to_string(),
+        serde_json::json!({"default": "closed", "tools": {"tikcet_update": "open"}}).to_string(),
     )
     .unwrap();
     assert!(matches!(SourceTree::load(&dir), Err(Error::Source(m)) if m.contains("tikcet_update")));
@@ -219,6 +221,259 @@ fn git_head_is_resolved_without_a_git_binary() {
     // Outside any repository: a clear refusal pointing at --label.
     let dir = tmp("git-none");
     assert!(matches!(git_head(&dir), Err(Error::NoVersion(_))));
+}
+
+// ---------------------------------------------------------------------------
+// Clean-tree verification
+// ---------------------------------------------------------------------------
+
+/// The files `write_source_tree` writes, as a committed checkout would track
+/// them.
+const TRACKED: &[&str] = &[
+    "policies/00-base.cedar",
+    "tools.json",
+    "fail-mode.json",
+    "identity/provider.json",
+    "identity/jwks.json",
+];
+
+/// Hand-writes `.git/HEAD` plus a real `.git/index` covering `paths` exactly
+/// as they sit on disk — the state git leaves right after a commit. Written
+/// by hand for the same reason the git_head tests are: the verification must
+/// not need a git binary, so neither may its tests.
+fn write_git_checkout(root: &Path, paths: &[&str]) {
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::write(
+        root.join(".git/HEAD"),
+        "0123456789abcdef0123456789abcdef01234567\n",
+    )
+    .unwrap();
+    write_git_index(root, paths, true, 2);
+}
+
+/// `cache_tree_valid: false` reproduces what `git add` leaves behind: an
+/// invalidated root cache-tree entry that only a commit re-validates.
+fn write_git_index(root: &Path, paths: &[&str], cache_tree_valid: bool, version: u32) {
+    let mut sorted: Vec<&str> = paths.to_vec();
+    sorted.sort();
+
+    let mut b: Vec<u8> = Vec::new();
+    b.extend_from_slice(b"DIRC");
+    b.extend_from_slice(&version.to_be_bytes());
+    b.extend_from_slice(&(sorted.len() as u32).to_be_bytes());
+
+    let mut prev = String::new();
+    for path in &sorted {
+        let start = b.len();
+        b.extend_from_slice(&[0u8; 24]); // ctime/mtime/dev/ino: stat data, ignored
+        b.extend_from_slice(&0o100644u32.to_be_bytes());
+        b.extend_from_slice(&[0u8; 12]); // uid/gid/size: ignored
+        let content = std::fs::read(root.join(path)).unwrap();
+        b.extend_from_slice(&blob_oid(&content, 20).unwrap());
+        b.extend_from_slice(&(path.len().min(0xFFF) as u16).to_be_bytes());
+        if version == 4 {
+            // Prefix-compressed path: strip from the end of the previous
+            // path, then the NUL-terminated suffix. No padding.
+            let common = prev
+                .bytes()
+                .zip(path.bytes())
+                .take_while(|(a, c)| a == c)
+                .count();
+            let strip = prev.len() - common;
+            assert!(strip < 128, "tests only need single-byte varints");
+            b.push(strip as u8);
+            b.extend_from_slice(&path.as_bytes()[common..]);
+            b.push(0);
+            prev = path.to_string();
+        } else {
+            b.extend_from_slice(path.as_bytes());
+            b.push(0);
+            while !(b.len() - start).is_multiple_of(8) {
+                b.push(0);
+            }
+        }
+    }
+
+    let mut tree = Vec::new();
+    tree.push(0u8); // root entry, path ""
+    if cache_tree_valid {
+        tree.extend_from_slice(format!("{} 0\n", sorted.len()).as_bytes());
+        tree.extend_from_slice(&[0u8; 20]); // the tree oid is not read
+    } else {
+        tree.extend_from_slice(b"-1 0\n"); // invalidated: no oid follows
+    }
+    b.extend_from_slice(b"TREE");
+    b.extend_from_slice(&(tree.len() as u32).to_be_bytes());
+    b.extend_from_slice(&tree);
+
+    b.extend_from_slice(&[0u8; 20]); // trailing checksum: not verified
+    std::fs::write(root.join(".git/index"), b).unwrap();
+}
+
+#[test]
+fn known_git_blob_ids_are_reproduced() {
+    // Pinned to git's own answers (`git hash-object`), so the hand-rolled
+    // hashing is checked against git's arithmetic — not against itself.
+    assert_eq!(
+        hex::encode(blob_oid(b"", 20).unwrap()),
+        "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    );
+    assert_eq!(
+        hex::encode(blob_oid(b"hello\n", 20).unwrap()),
+        "ce013625030ba8dba906f756967f9e9ca394464a"
+    );
+    // And the SHA-256 object format, for repositories initialised with it.
+    assert_eq!(
+        hex::encode(blob_oid(b"hello\n", 32).unwrap()),
+        "2cf8d83d9ee29543b34a87727421fdecb7e3f3a183d337639025de576db9ebb4"
+    );
+}
+
+#[test]
+fn a_clean_checkout_passes_and_an_edit_is_named() {
+    let dir = tmp("clean-tree");
+    write_source_tree(&dir);
+    write_git_checkout(&dir, TRACKED);
+    assert_eq!(worktree_divergence(&dir).unwrap(), Vec::<String>::new());
+
+    // An edited rule: HEAD's sha would cite a commit without the edit.
+    std::fs::write(
+        dir.join("policies/00-base.cedar"),
+        CEDAR_OK.replace("prod", "staging"),
+    )
+    .unwrap();
+    let d = worktree_divergence(&dir).unwrap();
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert!(d[0].contains("00-base.cedar"), "{d:?}");
+
+    // Restored content is clean again: the comparison is by content, not by
+    // stat data — the mtime just changed and must not matter, or a tarball'd
+    // checkout on the air-gapped host could never compile.
+    std::fs::write(dir.join("policies/00-base.cedar"), CEDAR_OK).unwrap();
+    assert!(worktree_divergence(&dir).unwrap().is_empty());
+}
+
+#[test]
+fn every_kind_of_divergence_is_caught() {
+    // Untracked rule file: read by compile, absent from the commit.
+    let dir = tmp("wt-untracked");
+    write_source_tree(&dir);
+    write_git_checkout(&dir, TRACKED);
+    std::fs::write(
+        dir.join("policies/99-extra.cedar"),
+        "@id(\"x\") permit (principal, action, resource);",
+    )
+    .unwrap();
+    let d = worktree_divergence(&dir).unwrap();
+    assert!(
+        d.iter()
+            .any(|m| m.contains("99-extra.cedar") && m.contains("not tracked")),
+        "{d:?}"
+    );
+
+    // Deleted tracked file: the commit holds bytes the tree no longer does.
+    let dir = tmp("wt-deleted");
+    write_source_tree(&dir);
+    write_git_checkout(&dir, TRACKED);
+    std::fs::remove_file(dir.join("fail-mode.json")).unwrap();
+    let d = worktree_divergence(&dir).unwrap();
+    assert!(
+        d.iter()
+            .any(|m| m.contains("fail-mode.json") && m.contains("missing")),
+        "{d:?}"
+    );
+
+    // Staged but uncommitted: every file matches the index, but the cache
+    // tree says `git add` ran and no commit followed.
+    let dir = tmp("wt-staged");
+    write_source_tree(&dir);
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    std::fs::write(
+        dir.join(".git/HEAD"),
+        "0123456789abcdef0123456789abcdef01234567\n",
+    )
+    .unwrap();
+    write_git_index(&dir, TRACKED, false, 2);
+    let d = worktree_divergence(&dir).unwrap();
+    assert!(d.iter().any(|m| m.contains("staged")), "{d:?}");
+
+    // A stray file compile never reads is NOT divergence: the citation is
+    // about the bytes that get signed, not about desktop clutter.
+    let dir = tmp("wt-stray");
+    write_source_tree(&dir);
+    write_git_checkout(&dir, TRACKED);
+    std::fs::write(dir.join("policies/.DS_Store"), b"junk").unwrap();
+    std::fs::write(dir.join("README.md"), b"out of scope entirely").unwrap();
+    assert!(worktree_divergence(&dir).unwrap().is_empty());
+}
+
+#[test]
+fn unverifiable_checkouts_are_refused_not_trusted() {
+    // No index at all: nothing to verify against — refusal, not a pass.
+    let dir = tmp("wt-no-index");
+    write_source_tree(&dir);
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    std::fs::write(
+        dir.join(".git/HEAD"),
+        "0123456789abcdef0123456789abcdef01234567\n",
+    )
+    .unwrap();
+    assert!(matches!(worktree_divergence(&dir), Err(Error::Source(m)) if m.contains("--label")));
+
+    // A mandatory index extension (split index) means the entry list is not
+    // the whole truth: half an index must not certify a clean tree.
+    let dir = tmp("wt-split");
+    write_source_tree(&dir);
+    write_git_checkout(&dir, TRACKED);
+    let mut b = std::fs::read(dir.join(".git/index")).unwrap();
+    b.truncate(b.len() - 20);
+    b.extend_from_slice(b"link");
+    b.extend_from_slice(&0u32.to_be_bytes());
+    b.extend_from_slice(&[0u8; 20]);
+    std::fs::write(dir.join(".git/index"), b).unwrap();
+    assert!(matches!(worktree_divergence(&dir), Err(Error::Source(m)) if m.contains("link")));
+}
+
+#[test]
+fn a_v4_index_reads_the_same_as_v2() {
+    let dir = tmp("wt-v4");
+    write_source_tree(&dir);
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    std::fs::write(
+        dir.join(".git/HEAD"),
+        "0123456789abcdef0123456789abcdef01234567\n",
+    )
+    .unwrap();
+    write_git_index(&dir, TRACKED, true, 4);
+    assert!(worktree_divergence(&dir).unwrap().is_empty());
+
+    std::fs::write(dir.join("tools.json"), "[]").unwrap();
+    let d = worktree_divergence(&dir).unwrap();
+    assert!(d.iter().any(|m| m.contains("tools.json")), "{d:?}");
+}
+
+#[test]
+fn a_source_tree_in_a_repo_subdirectory_is_scoped_by_its_prefix() {
+    let repo = tmp("wt-subdir");
+    let src = repo.join("policy-src");
+    std::fs::create_dir_all(&src).unwrap();
+    write_source_tree(&src);
+
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::write(
+        repo.join(".git/HEAD"),
+        "0123456789abcdef0123456789abcdef01234567\n",
+    )
+    .unwrap();
+    let paths: Vec<String> = TRACKED.iter().map(|p| format!("policy-src/{p}")).collect();
+    let refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+    write_git_index(&repo, &refs, true, 2);
+
+    assert!(worktree_divergence(&src).unwrap().is_empty());
+    std::fs::write(src.join("tools.json"), "[]").unwrap();
+    let d = worktree_divergence(&src).unwrap();
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert!(d[0].contains("policy-src/tools.json"), "{d:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -389,10 +644,9 @@ fn export_produces_verifiable_packs_and_a_signed_manifest() {
     assert!(all_valid);
     assert_eq!(exports.len(), 2, "one pack per chain");
 
-    let signed: SignedExportManifest = serde_json::from_str(
-        &std::fs::read_to_string(out.join("export-manifest.json")).unwrap(),
-    )
-    .unwrap();
+    let signed: SignedExportManifest =
+        serde_json::from_str(&std::fs::read_to_string(out.join("export-manifest.json")).unwrap())
+            .unwrap();
     let manifest = signed
         .verify(&ops().signing_key().verifying_key())
         .expect("export manifest must verify");
@@ -435,10 +689,9 @@ fn a_rewritten_wal_is_exported_but_flagged_invalid() {
     // never passed off as fine.
     assert!(!all_valid);
     assert!(!exports[0].report.is_valid());
-    let signed: SignedExportManifest = serde_json::from_str(
-        &std::fs::read_to_string(out.join("export-manifest.json")).unwrap(),
-    )
-    .unwrap();
+    let signed: SignedExportManifest =
+        serde_json::from_str(&std::fs::read_to_string(out.join("export-manifest.json")).unwrap())
+            .unwrap();
     assert!(!signed.manifest.packs[0].valid);
     assert!(out.join("alpha.evidence.json").exists());
 }
@@ -517,29 +770,63 @@ fn console_is_read_only_and_shows_the_log() {
     };
     std::thread::spawn(move || console.serve_on(listener));
 
-    let overview = http_get(addr, "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    let overview = http_get(
+        addr,
+        "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    );
     assert!(overview.starts_with("HTTP/1.1 200"));
     assert!(overview.contains("alpha"), "chains must be listed");
     assert!(overview.contains("intact"), "sealing state must be shown");
-    assert!(overview.contains("version <code>v1</code>"), "release version must be shown");
-    assert!(overview.contains("signature valid"), "manifest verdict must be shown");
+    assert!(
+        overview.contains("version <code>v1</code>"),
+        "release version must be shown"
+    );
+    assert!(
+        overview.contains("signature valid"),
+        "manifest verdict must be shown"
+    );
 
-    let chain = http_get(addr, "GET /chain/alpha HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    let chain = http_get(
+        addr,
+        "GET /chain/alpha HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    );
     assert!(chain.starts_with("HTTP/1.1 200"));
     assert!(chain.contains("effect"), "records must be rendered");
 
-    let release = http_get(addr, "GET /release HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    let release = http_get(
+        addr,
+        "GET /release HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    );
     assert!(release.starts_with("HTTP/1.1 200"));
-    assert!(release.contains("delete_production_db"), "catalogue must be shown");
-    assert!(release.contains("forbid_destructive_prod"), "rules must be shown");
+    assert!(
+        release.contains("delete_production_db"),
+        "catalogue must be shown"
+    );
+    assert!(
+        release.contains("forbid_destructive_prod"),
+        "rules must be shown"
+    );
 
     // Read-only by construction: no method but GET exists.
-    let post = http_get(addr, "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-    assert!(post.starts_with("HTTP/1.1 405"), "got: {}", &post[..40.min(post.len())]);
+    let post = http_get(
+        addr,
+        "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    );
+    assert!(
+        post.starts_with("HTTP/1.1 405"),
+        "got: {}",
+        &post[..40.min(post.len())]
+    );
 
     // A chain id is a file name: traversal shapes are 404, not a disk read.
-    let esc = http_get(addr, "GET /chain/../../etc/passwd HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    let esc = http_get(
+        addr,
+        "GET /chain/../../etc/passwd HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    );
     assert!(esc.starts_with("HTTP/1.1 404"));
-    let unknown = http_get(addr, "GET /chain/nope HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    let unknown = http_get(
+        addr,
+        "GET /chain/nope HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    );
     assert!(unknown.starts_with("HTTP/1.1 404"));
 }
