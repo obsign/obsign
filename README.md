@@ -303,11 +303,51 @@ chain was entirely recomputed and is internally consistent — is refused with
 self-heals, and looping over it would turn an incident into a heartbeat.
 
 The key file is development-grade by construction. Signing goes through the
-`Sealer` trait, which is the KMS/HSM boundary: a production implementation
-forwards signatures to the HSM and the key material never enters this process
-either. The trait also self-verifies every signature before it is persisted —
-a misconfigured HSM key slot fails at sealing time, not twenty-four months
-later in front of an auditor.
+`Sealer` trait, which is the KMS/HSM boundary — and the production
+implementation is `Pkcs11Sealer`: the key lives in an HSM behind the vendor's
+PKCS#11 module, and never enters this process either. The trait self-verifies
+every signature before it is persisted — a misconfigured HSM key slot fails
+at sealing time, not twenty-four months later in front of an auditor.
+
+### Sealing through an HSM (PKCS#11)
+
+PKCS#11 is the interface the target deployments actually have — on-prem HSMs
+(Trustway, Luna, YubiHSM), smartcard middleware, SoftHSM in development — and
+it is a local library call: the module may reach a network HSM internally,
+but the ledger itself still makes no network call. A cloud KMS would be
+another implementation of the same trait; it is deliberately not this one,
+because it would break both that rule and the air-gapped story. The bindings
+are hand-rolled over `dlopen`, in the spirit of the HTTP and DER code: the
+seven calls sealing needs, not a binding crate that drags in the other
+sixty-one.
+
+```bash
+./target/debug/probant-ledger seal \
+    --wal /tmp/demo/wal --chain-id demo \
+    --store /tmp/demo/ledger \
+    --hsm-module /usr/lib/pkcs11/vendor.so \
+    --hsm-key-label seal-prod \
+    --hsm-pin-file /etc/probant/hsm-pin \
+    --key-id seal-prod
+```
+
+The key pair (Ed25519, both halves under the same label) is provisioned with
+the vendor's tooling; the ledger only ever asks the token to sign, over a
+read-only session. When the module exposes several tokens, `--hsm-token-label`
+or `--hsm-slot` picks one; the PIN comes from a file or `PROBANT_HSM_PIN`,
+never from an argument (arguments end up in `ps` and shell history).
+Everything that can be misconfigured fails at startup with the vendor's error
+code in clear text — wrong PIN, absent key, or a key of the wrong type: a
+P-256 key under the right label is refused as such rather than left to die in
+signature verification. In `run` mode the PIN is presented exactly once, at
+startup: a retry loop that re-presented a wrong PIN every interval would walk
+the token to `CKR_PIN_LOCKED`.
+
+What the HSM buys: a compromised ledger host can sign *now*, but cannot
+exfiltrate the key and re-seal history *later, offline, at leisure*. What it
+does not buy: the HSM signs what it is handed and cannot know whether a
+checkpoint honestly summarizes the WAL — that remains the ledger's divergence
+detection, one host over from the gateway.
 
 ### RFC 3161 anchoring
 
@@ -428,8 +468,8 @@ invalidated".
 (separate process, separate key), but the gateway's `--evidence-out`
 convenience path still signs with a local key — fine for demos, and its
 warning says so, but it should eventually be reduced to an unsealed export or
-removed. The other half of the same debt: the only `Sealer` implementation is
-a seed file; the KMS/HSM implementation behind the trait is still to write.
+removed. (The other half of this debt is paid: `Pkcs11Sealer` puts the
+production key behind an HSM.)
 
 **Configuration reloads are not recorded.** An auditor asking "which keys were
 trusted when this action happened?" gets only an indirect answer: the bundle
@@ -445,7 +485,7 @@ parsing in the verifier. Not a priority before the first design partner.
 ## Tests
 
 ```bash
-cargo test --workspace     # 120 tests
+cargo test --workspace     # 127 tests
 ```
 
 Five families, each with a distinct role:
@@ -467,7 +507,11 @@ Five families, each with a distinct role:
   truncated logs, edited or spirited-away checkpoints and rebound key ids are
   detected; a torn final store line survives a crash; anchors round-trip into
   the evidence pack and foreign tokens do not attach. Each control has its
-  paired legitimate-path test.
+  paired legitimate-path test. `tests/pkcs11_softhsm.rs` runs the same
+  pipeline against a real PKCS#11 token — wrong PIN, absent key and
+  wrong-type key refused by name, then an evidence pack sealed and verified
+  end to end; it needs a provisioned token (`source
+  scripts/pkcs11-test-env.sh`, SoftHSM) and passes vacuously without one.
 - `probant-proxy` — unit tests on expiry, delegation renewal and rotation recovery (at
   startup and mid-session), plus `tests/e2e.rs` which runs the real binary in
   front of an MCP server and checks that the refused call **never reaches the

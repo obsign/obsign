@@ -17,9 +17,9 @@
 //!   pass, before a single new seal is produced.
 //!
 //! Signing goes through the [`Sealer`] trait. [`FileSealer`] (a seed on disk)
-//! is the development implementation; production holds the key in a KMS/HSM
-//! behind the same trait, so the key material never enters this process's
-//! memory either.
+//! is the development implementation; `Pkcs11Sealer` is the production one,
+//! holding the key in an HSM behind the vendor's PKCS#11 module, so the key
+//! material never enters this process's memory either.
 //!
 //! The ledger makes no network calls, like every other component. RFC 3161
 //! anchoring works by files — a request artifact carried to the TSA, a
@@ -28,11 +28,15 @@
 
 mod anchor;
 mod pass;
+#[cfg(unix)]
+mod pkcs11;
 mod sealer;
 mod store;
 
 pub use anchor::{timestamp_request, validate_response};
 pub use pass::{export, seal_pass};
+#[cfg(unix)]
+pub use pkcs11::{Pkcs11Sealer, TokenSelector};
 pub use sealer::{sign_checkpoint, FileSealer, Sealer};
 pub use store::Store;
 
@@ -91,4 +95,12 @@ pub enum Error {
 
     #[error("invalid signing seed: {0}")]
     BadSeed(String),
+
+    /// Anything the HSM side refuses or garbles, vendor return code included.
+    /// One variant, not a taxonomy: the operator's next step is the same
+    /// (read the message, check the token), and `run` treats every sealer
+    /// construction failure as fatal anyway — retrying PINs against an HSM
+    /// walks it toward lock-out.
+    #[error("pkcs#11: {0}")]
+    Pkcs11(String),
 }
