@@ -593,11 +593,19 @@ signing key (its only output is the WAL, every seal comes from the ledger),
 `Pkcs11Sealer` puts the production sealing key behind a KMS/HSM, and
 configuration reloads are recorded in the chain (tag 8).
 
-**Dependency tree.** `audit-core` pulls in 36 transitive crates, `probant`
-39 — argument parsing in the verifier is hand-rolled, so `clap` and its
-subtree are gone from the auditor's build. The stated goal is a tree an
-auditor reads end to end; the remaining lever is manual `serde`
-implementations. Not a priority before the first design partner.
+**Dependency tree.** Measured as unique crates in `cargo tree -e normal`.
+The tree that carries the trust story is the auditor's: `probant` builds
+from 31 crates (`audit-core` 29) — argument parsing is hand-rolled, so
+`clap` and its subtree are gone from that build. Of the 31, five are the
+`serde` derive machinery (`serde_derive`, `syn`, `quote`, `proc-macro2`,
+`unicode-ident`); manual `serde` implementations in `audit-core` — the
+remaining lever — would leave ~26, nearly all of it the cryptography itself
+(`curve25519-dalek`, `sha2` and their arithmetic support). The gateway is a
+different story and deliberately so: `probant-proxy` builds from 114 crates,
+dominated by two justified subtrees — Cedar (68 crates; a closed decision)
+and `jsonwebtoken`→`ring` (34; enterprise IdPs sign RS256/ES256, and
+hand-rolling RSA verification is not an option). Neither reaches the
+auditor's binary. Not a priority before the first design partner.
 
 ## Tests
 
