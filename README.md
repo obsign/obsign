@@ -669,7 +669,7 @@ auditor's binary. Not a priority before the first design partner.
 ## Tests
 
 ```bash
-cargo test --workspace     # 285 tests
+cargo test --workspace     # 294 tests
 ```
 
 Six families, each with a distinct role:
