@@ -64,6 +64,9 @@ whole point of the split is that whoever compromises the gateway cannot
 re-seal history. Same rule in Docker: the gateway container gets the WAL
 volume read-write and no key material; the ledger container gets the WAL
 read-only and the key (or the HSM), and writes its own store volume.
+Do not give the ledger container a `restart: always` policy: it exits
+non-zero on divergence so that someone is told — see
+[alerting.md](alerting.md) for the supervisor pattern.
 
 ```bash
 docker run --rm \

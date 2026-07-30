@@ -363,6 +363,9 @@ boundary and compares it to the sealed head. A rewritten WAL — even one whose
 chain was entirely recomputed and is internally consistent — is refused with
 `DivergedLog`, and `run` mode exits non-zero on it: divergence never
 self-heals, and looping over it would turn an incident into a heartbeat.
+Exiting is only half of alerting — who gets told is the supervisor's job;
+the air-gap-compatible pattern (systemd `OnFailure=`, not a webhook) is in
+[docs/alerting.md](docs/alerting.md).
 
 The key file is development-grade by construction. Signing goes through the
 `Sealer` trait, which is the KMS/HSM boundary — and the production
