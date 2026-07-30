@@ -56,6 +56,7 @@ pub struct TimestampInfo {
 
 // OID content bytes (without tag/length).
 const OID_ID_CT_TST_INFO: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x10, 0x01, 0x04];
+const OID_SIGNED_DATA: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x07, 0x02];
 
 const TAG_INTEGER: u8 = 0x02;
 const TAG_OCTET_STRING: u8 = 0x04;
@@ -104,7 +105,7 @@ impl<'a> Der<'a> {
                 (len, 2 + k)
             }
         };
-        if b.len() < header + len {
+        if len > b.len().saturating_sub(header) {
             return Err(Error::BadDer("value overruns the buffer".into()));
         }
         self.b = &b[header + len..];
@@ -167,7 +168,9 @@ pub fn parse_timestamp_response(der: &[u8]) -> Result<TimestampInfo, Error> {
 
     let mut content_info = Der::new(resp.expect(TAG_SEQUENCE, "ContentInfo")?);
     resp.finish("TimeStampResp body")?;
-    content_info.expect(TAG_OID, "contentType")?;
+    if content_info.expect(TAG_OID, "contentType")? != OID_SIGNED_DATA {
+        return Err(Error::BadDer("contentType is not id-signedData".into()));
+    }
     let wrapped = content_info.expect(TAG_CONTEXT_0, "content [0]")?;
     content_info.finish("ContentInfo")?;
     let mut outer = Der::new(wrapped);
@@ -198,12 +201,17 @@ pub fn parse_timestamp_response(der: &[u8]) -> Result<TimestampInfo, Error> {
     let mut imprint = Der::new(tst.expect(TAG_SEQUENCE, "MessageImprint")?);
     imprint.expect(TAG_SEQUENCE, "hashAlgorithm")?;
     let hashed = imprint.expect(TAG_OCTET_STRING, "hashedMessage")?;
+    imprint.finish("MessageImprint")?;
     tst.expect(TAG_INTEGER, "TSTInfo.serialNumber")?;
 
-    let gen_time = match tst.tlv() {
-        Ok((TAG_GENERALIZED_TIME, v)) => Some(String::from_utf8_lossy(v).into_owned()),
-        _ => None,
-    };
+    // genTime is mandatory in RFC 3161 and sits right after serialNumber; a
+    // token where something else parses at that position is malformed, not a
+    // token without a time — `None` stays reserved for the anchor formats
+    // that never carried one.
+    let gen_time = Some(String::from_utf8_lossy(
+        tst.expect(TAG_GENERALIZED_TIME, "TSTInfo.genTime")?,
+    )
+    .into_owned());
 
     Ok(TimestampInfo {
         status,
@@ -233,7 +241,7 @@ pub(crate) mod testutil {
         out
     }
 
-    const OID_SIGNED_DATA: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x07, 0x02];
+    use super::OID_SIGNED_DATA;
     const OID_SHA256: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01];
     const OID_DEMO_POLICY: &[u8] = &[0x2A, 0x03, 0x04];
 

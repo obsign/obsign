@@ -455,6 +455,50 @@ fn requests_without_a_session_are_refused() {
 }
 
 #[test]
+fn an_id_less_act_is_arbitrated_not_smuggled() {
+    // Regression: request-shaped messages sent without an id took the
+    // notification fast path and were forwarded raw — no policy, no record.
+    // JSON-RPC says a server should not execute them, but the invariant must
+    // not depend on the wrapped server's parser.
+    let gw = start("noid", false, &[]);
+    let (sid, _) = initialize(&gw, &[]);
+
+    // A forbidden act is refused in the server's place, null id and all.
+    let r = post(
+        &gw,
+        &[("Mcp-Session-Id", &sid)],
+        json!({"jsonrpc":"2.0","method":"tools/call",
+               "params":{"name":"delete_production_db","arguments":{}}}),
+    );
+    assert_eq!(r.status, 200);
+    assert_eq!(r.body.pointer("/result/isError"), Some(&Value::Bool(true)));
+
+    // An allowed act forwards — records written first, nothing to wait for.
+    let r = post(
+        &gw,
+        &[("Mcp-Session-Id", &sid)],
+        json!({"jsonrpc":"2.0","method":"tools/call",
+               "params":{"name":"ticket_update","arguments":{}}}),
+    );
+    assert_eq!(r.status, 202);
+
+    let r = http(&gw, "DELETE", &[("Mcp-Session-Id", &sid)], "");
+    assert_eq!(r.status, 200);
+
+    // Both acts left their decision in the sealed log.
+    let ev = evidence(&gw, &sid);
+    let outcomes: Vec<String> = ev
+        .records
+        .iter()
+        .filter_map(|r| match &r.payload {
+            Payload::Decision(d) => Some(d.outcome.as_str().to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(outcomes, vec!["deny", "allow"]);
+}
+
+#[test]
 fn sessions_are_isolated_from_each_other() {
     let gw = start("isolation", false, &[]);
 

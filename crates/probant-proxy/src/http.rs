@@ -330,6 +330,50 @@ fn handle_post(
     }
 
     if !has_id {
+        // An arbitrated method with no id is not machinery: JSON-RPC calls
+        // the shape a notification, but a lenient server parser may execute
+        // it anyway — and a `resources/subscribe` processed that way has a
+        // lasting effect. It goes through arbitration like any other act,
+        // exactly as the stdio path does; only the transport answer differs
+        // (nothing to wait for on a pass, the refusal carries a null id).
+        if gateway::arbitrated(method) {
+            let fwd = match gateway::handle_from_agent(msg, &sess.state, &sess.ctx, bearer) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("[probant] audit write failed, call refused: {e}");
+                    respond_json(
+                        stream,
+                        500,
+                        "Internal Server Error",
+                        &[],
+                        &rpc_error(&Value::Null, -32603, "audit log unavailable"),
+                    )?;
+                    return Ok(Next::KeepAlive);
+                }
+            };
+            return match fwd {
+                Forward::Reply(resp) => {
+                    respond_json(stream, 200, "OK", &[], resp.as_bytes())?;
+                    Ok(Next::KeepAlive)
+                }
+                Forward::Pass(raw) => match forward_raw(&sess, &raw) {
+                    Ok(()) => {
+                        respond(stream, 202, "Accepted", &[], None, b"")?;
+                        Ok(Next::KeepAlive)
+                    }
+                    Err(_) => {
+                        respond_json(
+                            stream,
+                            502,
+                            "Bad Gateway",
+                            &[],
+                            &rpc_error(&Value::Null, -32603, "wrapped MCP server is gone"),
+                        )?;
+                        Ok(Next::KeepAlive)
+                    }
+                },
+            };
+        }
         // Notification, or a response to a server-initiated request: forward,
         // nothing to wait for. 202 per spec.
         return match forward_raw(&sess, &msg.to_string()) {
