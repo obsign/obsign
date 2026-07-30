@@ -1,0 +1,88 @@
+# The README demo in containers. Not a production layout — the demo image
+# carries a shell and a token minter, and the sealing seed is a file. What it
+# does show faithfully: the gateway and the ledger in separate containers
+# (the sealing key never enters the gateway's), the WAL as their only shared
+# surface, and an evidence pack verified offline at the end.
+#
+#   docker compose up -d gateway console
+#   docker compose run --rm demo
+#
+# Production deployment: docs/deploy-docker.md.
+
+services:
+  init:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: demo
+    command: ["init.sh", "/demo"]
+    volumes:
+      - demo:/demo
+
+  gateway:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: demo
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command:
+      [
+        "probant-proxy",
+        "--policy", "/demo/policy-bundle.json",
+        "--trusted-keys", "/demo/trusted-keys.json",
+        "--identity-bundle", "/demo/identity-bundle.json",
+        "--http", "0.0.0.0:8080",
+        "--wal", "/wal",
+        "--env", "prod",
+        "--",
+        "mock-mcp-server",
+      ]
+    volumes:
+      - demo:/demo:ro
+      - wal:/wal
+    ports:
+      - "127.0.0.1:8080:8080"
+
+  # Reads the WAL, holds the sealing seed the gateway never sees.
+  demo:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: demo
+    depends_on:
+      - gateway
+    command: ["run-demo.sh"]
+    volumes:
+      - demo:/demo
+      - wal:/wal:ro
+      - store:/store
+    profiles: ["demo"]
+
+  # Read-only console. No authentication: loopback only, do not repoint.
+  console:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: demo
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    command:
+      [
+        "probant-control", "console",
+        "--wal", "/wal",
+        "--store", "/store",
+        "--listen", "0.0.0.0:9090",
+      ]
+    volumes:
+      - wal:/wal:ro
+      - store:/store:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+
+volumes:
+  demo:
+  wal:
+  store:

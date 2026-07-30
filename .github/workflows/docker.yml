@@ -1,0 +1,75 @@
+# Builds, pushes and signs the four runtime images on every version tag.
+# The images are distroless single-binary; provenance is part of the product:
+# multi-arch manifests, cosign keyless signatures, and a tag that carries the
+# exact source sha. Air-gapped delivery starts from these images too — see
+# docs/deploy-docker.md.
+
+name: docker
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write # cosign keyless signing
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: proxy
+            image: probant-proxy
+          - target: ledger
+            image: probant-ledger
+          - target: control
+            image: probant-control
+          - target: verifier
+            image: probant
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=sha,format=long
+
+      - id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: ${{ matrix.target }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,scope=${{ matrix.target }},mode=max
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Sign the manifest (keyless)
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          for tag in $TAGS; do
+            cosign sign --yes "${tag}@${DIGEST}"
+          done

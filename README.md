@@ -666,6 +666,21 @@ and `jsonwebtoken`→`ring` (34; enterprise IdPs sign RS256/ES256, and
 hand-rolling RSA verification is not an option). Neither reaches the
 auditor's binary. Not a priority before the first design partner.
 
+## Docker
+
+Four distroless single-binary images (gateway, ledger, control plane,
+verifier), multi-arch, cosign-signed, published to GHCR on every version
+tag; the gateway image is a base image the deployment extends with its MCP
+server. Air-gapped delivery works from `docker save` tarballs — the registry
+is a convenience, not a dependency. Deployment guide, including the fsync
+and key-separation caveats that survive containerisation:
+[docs/deploy-docker.md](docs/deploy-docker.md).
+
+```bash
+docker compose up -d gateway console
+docker compose run --rm demo    # the README demo, sealed and verified
+```
+
 ## Tests
 
 ```bash

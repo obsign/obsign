@@ -1,0 +1,9 @@
+target/
+.git/
+.context/
+.playwright-mcp/
+docs/
+*.md
+!README.md
+scripts/
+.github/
