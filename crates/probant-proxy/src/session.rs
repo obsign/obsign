@@ -40,6 +40,11 @@ pub struct Session {
     pub session_id: String,
     pub agent_record_id: String,
     pub pending: HashMap<String, Pending>,
+    /// Server-initiated requests (sampling, elicitation) forwarded to the
+    /// agent, awaiting the agent's response. A separate map from `pending`:
+    /// the two directions use independent JSON-RPC id spaces, and a server
+    /// id colliding with an agent id must not close the wrong effect.
+    pub pending_to_agent: HashMap<String, Pending>,
     /// Call counter, used to build readable identifiers.
     pub counter: u64,
     /// Separate counter for `reload-N` identifiers: reloads are rarer than
@@ -236,6 +241,7 @@ pub fn open(
         session_id,
         agent_record_id: String::new(),
         pending: HashMap::new(),
+        pending_to_agent: HashMap::new(),
         counter: 0,
         reload_counter: 0,
     }

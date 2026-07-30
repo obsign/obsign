@@ -68,12 +68,21 @@ impl ToolRequest {
 /// (`context.target like "docs/*"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Capability {
-    /// `resources/read`, `resources/subscribe`, `resources/unsubscribe`:
-    /// one permission for the three — a subscription is only ever a promise
-    /// of reads, and denying the read must deny the promise too.
+    /// `resources/read`, `resources/subscribe`, `resources/unsubscribe`,
+    /// and `completion/complete` against a resource template: one
+    /// permission for all — a subscription is only ever a promise of
+    /// reads, a completion enumerates the very URIs a read would fetch,
+    /// and denying the read must deny both.
     ResourceRead,
-    /// `prompts/get`.
+    /// `prompts/get`, and `completion/complete` against a prompt.
     PromptGet,
+    /// `sampling/createMessage`, initiated by the *server*: it borrows the
+    /// agent's model, so data crosses the boundary in both directions. The
+    /// resource is the server itself — there is no finer-grained target.
+    Sampling,
+    /// `elicitation/create`, initiated by the *server*: it puts a question
+    /// to the human and carries the answer back. Same shape as sampling.
+    Elicitation,
 }
 
 impl Capability {
@@ -83,6 +92,8 @@ impl Capability {
         match self {
             Capability::ResourceRead => "resource_read",
             Capability::PromptGet => "prompt_get",
+            Capability::Sampling => "sampling",
+            Capability::Elicitation => "elicitation",
         }
     }
 
@@ -91,6 +102,9 @@ impl Capability {
         match self {
             Capability::ResourceRead => "Resource",
             Capability::PromptGet => "Prompt",
+            // Server-initiated channels are granted per server, not per
+            // target: the request names no stable object to key on.
+            Capability::Sampling | Capability::Elicitation => "Server",
         }
     }
 }

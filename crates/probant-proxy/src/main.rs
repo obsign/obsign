@@ -13,9 +13,13 @@
 //!   is filtered, the agent only sees what the policy allows it. What you
 //!   cannot see, you do not attempt.
 //! * acts (`tools/call`, `resources/read`, `resources/subscribe`,
-//!   `resources/unsubscribe`, `prompts/get`): identity verified, policy
-//!   evaluated, act logged, then forwarded or refused.
-//! * everything else — protocol machinery: relayed as-is.
+//!   `resources/unsubscribe`, `prompts/get`, `completion/complete`, and the
+//!   server-initiated `sampling/createMessage` and `elicitation/create`):
+//!   identity verified, policy evaluated, act logged, then forwarded or
+//!   refused.
+//! * a fixed allowlist of protocol machinery: relayed as-is. Everything
+//!   else — vendor methods, future revisions — is refused and recorded:
+//!   the method space is default-deny in both directions.
 //!
 //! **All logging goes to stderr.** stdout is the MCP channel in stdio mode:
 //! one stray `println!` and the protocol is broken.
@@ -31,7 +35,7 @@ mod session;
 use anyhow::{bail, Context as _, Result};
 use auth::Auth;
 use clap::Parser;
-use gateway::{handle_from_agent, handle_from_server, spawn_server, Ctx, Forward};
+use gateway::{handle_from_agent, handle_from_server, spawn_server, Ctx, Downstream, Forward};
 use identity::BundleSource;
 use origin::OriginSigner as _;
 use policy::{Engine, SignedBundle};
@@ -500,8 +504,15 @@ fn run_stdio(
     });
 
     // --- Wrapped MCP server ----------------------------------------------
+    // The child's stdin is shared: the upstream loop forwards the agent's
+    // traffic, and the downstream thread answers the server in the agent's
+    // place when a server-initiated request is refused. The `Option` is the
+    // shutdown lever — clearing it closes the pipe even while the other
+    // holder keeps its clone.
     let mut child = spawn_server(&cli.server_cmd)?;
-    let mut child_stdin = child.stdin.take().expect("child stdin");
+    let child_stdin = Arc::new(Mutex::new(Some(
+        child.stdin.take().expect("child stdin"),
+    )));
     let child_stdout = child.stdout.take().expect("child stdout");
 
     // --- Downstream: server -> agent --------------------------------------
@@ -509,6 +520,7 @@ fn run_stdio(
         let state = Arc::clone(&state);
         let ctx = Arc::clone(&ctx);
         let session_id = session_id.clone();
+        let child_stdin = Arc::clone(&child_stdin);
         std::thread::spawn(move || {
             let reader = BufReader::new(child_stdout);
             let stdout = std::io::stdout();
@@ -518,9 +530,20 @@ fn run_stdio(
                     continue;
                 }
                 let out = match serde_json::from_str::<Value>(&line) {
-                    Ok(msg) => {
-                        handle_from_server(msg, &state, &ctx, &session_id).to_string()
-                    }
+                    Ok(msg) => match handle_from_server(msg, &state, &ctx, &session_id) {
+                        Downstream::Forward(v) => v.to_string(),
+                        Downstream::Reply(v) => {
+                            // Refusal of a server-initiated request: answered
+                            // upstream, nothing reaches the agent.
+                            let mut guard = child_stdin.lock().unwrap();
+                            if let Some(stdin) = guard.as_mut() {
+                                let _ = writeln!(stdin, "{v}");
+                                let _ = stdin.flush();
+                            }
+                            continue;
+                        }
+                        Downstream::Drop => continue,
+                    },
                     // Non-JSON line: relayed as-is rather than breaking a
                     // protocol we do not understand.
                     Err(_) => line.clone(),
@@ -548,8 +571,10 @@ fn run_stdio(
 
         match forward {
             Forward::Pass(raw) => {
-                writeln!(child_stdin, "{raw}")?;
-                child_stdin.flush()?;
+                let mut guard = child_stdin.lock().unwrap();
+                let Some(stdin) = guard.as_mut() else { break };
+                writeln!(stdin, "{raw}")?;
+                stdin.flush()?;
             }
             Forward::Reply(resp) => {
                 // Refusal: we answer in the server's place, the call never
@@ -566,7 +591,7 @@ fn run_stdio(
     // Nothing to seal, nothing to export: the WAL already holds every record,
     // fsynced before the act it describes was forwarded. Sealing is the
     // ledger's job, with a key this process never held.
-    drop(child_stdin);
+    *child_stdin.lock().unwrap() = None;
     let _ = downstream.join();
     let _ = child.wait();
 

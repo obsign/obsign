@@ -329,6 +329,31 @@ fn handle_post(
         present_bearer(&sess, bearer);
     }
 
+    // No method: the agent is *answering* a server-initiated request
+    // (sampling, elicitation). The server does not respond to a response,
+    // so there is nothing to wait for — `forward_and_wait` would block
+    // this POST forever. `handle_from_agent` closes the pending effect
+    // with the response's hash; the bytes are then relayed. 202 per spec.
+    if method.is_none() && has_id {
+        let _ = gateway::handle_from_agent(msg.clone(), &sess.state, &sess.ctx, bearer);
+        return match forward_raw(&sess, &msg.to_string()) {
+            Ok(()) => {
+                respond(stream, 202, "Accepted", &[], None, b"")?;
+                Ok(Next::KeepAlive)
+            }
+            Err(_) => {
+                respond_json(
+                    stream,
+                    502,
+                    "Bad Gateway",
+                    &[],
+                    &rpc_error(&Value::Null, -32603, "wrapped MCP server is gone"),
+                )?;
+                Ok(Next::KeepAlive)
+            }
+        };
+    }
+
     if !has_id {
         // An arbitrated method with no id is not machinery: JSON-RPC calls
         // the shape a notification, but a lenient server parser may execute
@@ -732,7 +757,20 @@ fn dispatch_from_server(
             continue;
         };
 
-        let out = gateway::handle_from_server(msg, &sess.state, &sess.ctx, &sess.id);
+        let out = match gateway::handle_from_server(msg, &sess.state, &sess.ctx, &sess.id) {
+            gateway::Downstream::Forward(v) => v,
+            gateway::Downstream::Reply(v) => {
+                // Refused server-initiated request: answered in the agent's
+                // place, straight back into the child's stdin.
+                let mut guard = sess.child_stdin.lock().unwrap();
+                if let Some(stdin) = guard.as_mut() {
+                    let _ = writeln!(stdin, "{v}");
+                    let _ = stdin.flush();
+                }
+                continue;
+            }
+            gateway::Downstream::Drop => continue,
+        };
 
         if out.get("method").is_some() {
             // Server-initiated request or notification: only the GET stream

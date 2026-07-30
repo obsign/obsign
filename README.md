@@ -21,7 +21,7 @@ policy decides, the log is sealed, and the auditor verifies offline.
 | `policy` | Signed bundles, Cedar evaluation, tool catalogue | done |
 | `identity` | Signed identity bundle, claim mapping, RFC 8693 actor chain, hot rotation | done |
 | `wal` | Durable local log, replay on startup | done |
-| `probant-proxy` | MCP proxy (stdio and Streamable HTTP), discovery filtering (`tools/list`, `resources/list`, `prompts/list`), arbitration of every act (`tools/call`, `resources/read`, `prompts/get`, subscriptions) | done |
+| `probant-proxy` | MCP proxy (stdio and Streamable HTTP), discovery filtering (`tools/list`, `resources/list`, `prompts/list`), arbitration of every act (`tools/call`, `resources/read`, `prompts/get`, subscriptions, `completion/complete`, server-initiated `sampling`/`elicitation`), default-deny method space | done |
 | `ledger` | Sealing away from the gateway, checkpoint store, RFC 3161 anchoring, evidence export | done |
 | `control-plane` | Compiling policies from git, immutable signed releases, fleet evidence export, read-only console | done |
 
@@ -578,6 +578,36 @@ of resource URIs — the server mints them at runtime — so policies match the
 target exactly (`resource == Resource::"docs://runbook"`) or by pattern
 (`context.target like "docs://*"`).
 
+**Completions are held to the permission of what they complete.**
+`completion/complete` enumerates the values of the object it references —
+argument values for a prompt, URI expansions for a resource template. Left
+unarbitrated it would walk around the `resources/list` filter: what the
+listing hides, the completer spells out. It therefore reuses the capability
+of the referenced object (`ref/resource` → `resource_read`, `ref/prompt` →
+`prompt_get`): complete only what you could read, and every attempt is
+recorded.
+
+**The method space is default-deny, in both directions.** A fixed allowlist
+of protocol machinery (`initialize`, `ping`, the three `*/list` discoveries,
+`logging/setLevel`, the defined notifications) is relayed as-is; every
+arbitrated act goes through the gate; anything else — a vendor extension, a
+future protocol revision — is refused with `-32601` and recorded. The
+refusal's `policy_id` is absent: the log tells a scope refusal apart from a
+rule's.
+
+**Server-initiated channels are inside the perimeter.**
+`sampling/createMessage` borrows the agent's model; `elicitation/create` puts
+a question to the human. Both move data across the boundary in the direction
+no policy used to see, so both are arbitrated under their own Cedar actions
+(`sampling`, `elicitation`, granted per server:
+`permit (principal, action == Action::"sampling", resource);`), default deny.
+Refused, the gateway answers the server in the agent's place and records the
+attempt; permitted, the request is recorded before it is forwarded and its
+effect closes on the agent's response — the same call/decision/effect triple
+as an agent act. `ping` and `roots/list` pass (the agent client answers roots
+under its own control); unknown server requests are refused, unknown server
+notifications dropped — and recorded either way.
+
 ## Format compatibility
 
 The `Payload` discriminants and the canonical encoding are **frozen**. Changing
@@ -623,7 +653,7 @@ auditor's binary. Not a priority before the first design partner.
 ## Tests
 
 ```bash
-cargo test --workspace     # 171 tests
+cargo test --workspace     # 285 tests
 ```
 
 Six families, each with a distinct role:
