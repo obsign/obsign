@@ -185,8 +185,15 @@ impl AkPublic {
 
 /// What a parsed `TPMS_ATTEST` yields, for the two statement types used.
 enum Attested {
-    Quote { pcr_digest: Vec<u8> },
-    Certify { name: Vec<u8> },
+    Quote {
+        pcr_digest: Vec<u8>,
+        /// The PCRs the AK actually signed over, as (bank algorithm, index)
+        /// pairs decoded from the quote's `TPML_PCR_SELECTION`.
+        selected: Vec<(u16, u32)>,
+    },
+    Certify {
+        name: Vec<u8>,
+    },
 }
 
 /// Verifies one identity key's attestation, offline and structurally.
@@ -216,10 +223,38 @@ pub fn verify_attestation(entry: &PublicKeyEntry, att: &KeyAttestation) -> Resul
         }
     }
 
-    // The quote must report the ops-expected PCR values.
+    // The quote must report the ops-expected PCR values — and must have
+    // signed over exactly the expected PCRs. Comparing the digest alone
+    // would let a quote over a *different* PCR holding the same value pass,
+    // and with resettable PCRs that value is reproducible at will.
     let quote = verify_signed_attest(&att.quote, &ak)?;
     match quote {
-        Attested::Quote { pcr_digest } => {
+        Attested::Quote {
+            pcr_digest,
+            selected,
+        } => {
+            let mut expected_idx: Vec<u32> =
+                att.expected_pcrs.iter().map(|p| p.index).collect();
+            expected_idx.sort_unstable();
+            expected_idx.dedup();
+            let mut selected_idx = Vec::new();
+            for (alg, idx) in &selected {
+                if *alg != ALG_SHA256 {
+                    return Err(Error::AttestationMismatch(format!(
+                        "the quote selects PCR bank 0x{alg:04X}: only the SHA-256 \
+                         bank is expected"
+                    )));
+                }
+                selected_idx.push(*idx);
+            }
+            selected_idx.sort_unstable();
+            selected_idx.dedup();
+            if selected_idx != expected_idx {
+                return Err(Error::AttestationMismatch(format!(
+                    "the quote signed over PCRs {selected_idx:?}, the enrollment \
+                     expects {expected_idx:?}"
+                )));
+            }
             if pcr_digest != expected_pcr_digest(&att.expected_pcrs)? {
                 return Err(Error::AttestationMismatch(
                     "the quote's PCR digest does not match the enrolled expectations: \
@@ -468,14 +503,29 @@ fn parse_attest(b: &[u8]) -> Result<Attested, Error> {
         }
         ST_ATTEST_QUOTE => {
             // TPML_PCR_SELECTION: count, then that many TPMS_PCR_SELECTION.
+            // The selection is part of what the AK signed: it names WHICH
+            // PCRs the digest covers, so it is surfaced for the caller to
+            // match against the ops-expected indices — a digest alone would
+            // verify against the same value sitting in a different PCR.
             let count = r.u32()?;
+            let mut selected = Vec::new();
             for _ in 0..count {
-                r.u16()?; // hash alg
+                let alg = r.u16()?;
                 let size_of_select = r.u8()? as usize;
-                r.take(size_of_select)?; // pcrSelect bitmap
+                let bitmap = r.take(size_of_select)?;
+                for (byte_idx, byte) in bitmap.iter().enumerate() {
+                    for bit in 0..8 {
+                        if byte & (1 << bit) != 0 {
+                            selected.push((alg, (byte_idx * 8 + bit) as u32));
+                        }
+                    }
+                }
             }
             let pcr_digest = r.tpm2b()?.to_vec();
-            Ok(Attested::Quote { pcr_digest })
+            Ok(Attested::Quote {
+                pcr_digest,
+                selected,
+            })
         }
         other => Err(Error::BadAttestation(format!(
             "unsupported TPMS_ATTEST type 0x{other:04X}"
@@ -556,11 +606,17 @@ pub mod testutil {
     /// A quote reporting `pcrs`, signed by `ak`.
     pub fn quote(ak: &SigningKey, pcrs: &[PcrExpectation]) -> String {
         let mut a = header(ST_ATTEST_QUOTE);
-        // One TPML_PCR_SELECTION entry, SHA-256 bank, 3-byte bitmap (24 PCRs).
+        // One TPML_PCR_SELECTION entry, SHA-256 bank, 3-byte bitmap (24
+        // PCRs) selecting exactly the quoted indices, the way a real TPM
+        // echoes the selection it was asked to quote.
         a.extend_from_slice(&1u32.to_be_bytes());
         a.extend_from_slice(&ALG_SHA256.to_be_bytes());
         a.push(3);
-        a.extend_from_slice(&[0xFF, 0xFF, 0xFF]);
+        let mut bitmap = [0u8; 3];
+        for p in pcrs {
+            bitmap[(p.index / 8) as usize] |= 1 << (p.index % 8);
+        }
+        a.extend_from_slice(&bitmap);
         let digest = expected_pcr_digest(pcrs).unwrap();
         a.extend_from_slice(&tpm2b(&digest));
         sign(ak, a)
@@ -631,6 +687,24 @@ mod tests {
         let pcrs = vec![pcr(0, 10), pcr(7, 11)];
         let att = attestation("id-1", &identity.verifying_key(), &ak, pcrs);
         assert!(verify_attestation(&identity_entry(&identity), &att).is_ok());
+    }
+
+    #[test]
+    fn a_quote_over_a_different_pcr_with_the_same_value_is_rejected() {
+        // The digest matches — same value, wrong register. With resettable
+        // PCRs (16, 23) that value is reproducible by anyone with TPM
+        // access, so the *selection* the AK signed must name the enrolled
+        // index, not merely hash to the enrolled value.
+        let identity = SigningKey::from_bytes(&[1u8; 32]);
+        let ak = SigningKey::from_bytes(&[2u8; 32]);
+        let mut att =
+            attestation("id-1", &identity.verifying_key(), &ak, vec![pcr(16, 10)]);
+        att.expected_pcrs = vec![pcr(23, 10)];
+        let err = verify_attestation(&identity_entry(&identity), &att).unwrap_err();
+        assert!(
+            err.to_string().contains("signed over PCRs"),
+            "got: {err}"
+        );
     }
 
     #[test]

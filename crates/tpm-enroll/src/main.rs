@@ -102,6 +102,22 @@ fn main() -> anyhow::Result<()> {
             .with_context(|| format!("writing {}", out.display()))?;
     }
 
+    // The bundle's origin keys are ed25519-only today: a P-256 identity
+    // entry pasted into deployment/origin-keys.json fails
+    // active_origin_keys() and takes the WHOLE bundle down as
+    // deployment_bundle_invalid. The attestation itself is fine — only the
+    // entry must wait for P-256 origin-key support.
+    if enrollment.algorithm.as_str() != "ed25519" {
+        eprintln!(
+            "[probant-tpm-enroll] warning: this TPM produced a {} identity key; \
+             deployment bundles accept only ed25519 origin keys for now, so do \
+             NOT paste identity_entry into origin-keys.json — the bundle would \
+             stop verifying. Keep the attestation; enroll the entry once P-256 \
+             origin keys are supported.",
+            enrollment.algorithm.as_str()
+        );
+    }
+
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
