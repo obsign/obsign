@@ -1,0 +1,21 @@
+[package]
+name = "tpm-enroll"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Gateway-side TPM enrollment (attestation v3): creates the AK and the identity key in a TPM 2.0, measures the gateway binary into a PCR, and emits the certify + quote attestation the deployment bundle carries. Speaks the TPM2 command stream directly over a socket — swtpm in test, the same marshalling on real transports later — with no TSS stack."
+
+# The house constraint, same as audit-core: the protocol subset is
+# hand-rolled over std::net, no TPM software stack enters the tree.
+[dependencies]
+audit-core = { path = "../audit-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+
+[[bin]]
+name = "probant-tpm-enroll"
+path = "src/main.rs"

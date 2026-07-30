@@ -24,11 +24,29 @@
 //!   software fake. An air-gapped verifier has no vendor PKI; the report says
 //!   so (`attestation_not_rooted`), it does not pretend otherwise.
 //!
-//! Interop note: the AK signs Ed25519, like every key in this system; the
-//! `TPMS_ATTEST` wire format below is the TCG-standard subset the checks
-//! need, bounds-checked in the DER discipline. It has been exercised against
-//! the `#[cfg(test)]` synthesizer, **not** against a real TPM in this tree —
-//! real-hardware interop is the gated, deferred integration point.
+//! Interop note (resolved against a real software TPM — swtpm/libtpms,
+//! driven by `tpm-enroll`): the `TPMS_ATTEST` wire format below is the
+//! TCG-standard subset the checks need, bounds-checked in the DER
+//! discipline, and it parses real TPM output byte-for-byte. Two facts that
+//! only real TPM output could settle, both now settled:
+//!
+//! * **AK algorithm.** The AK signs Ed25519 where the TPM implements EdDSA —
+//!   the system-uniform choice. The libtpms swtpm builds on (0.10) implements
+//!   no EdDSA at all (no `TPM_ALG_EDDSA`, no 25519 curve; an EdDSA
+//!   `CreatePrimary` fails `TPM_RC_SCHEME`), and real silicon rarely does
+//!   better, so the verifier equally accepts an **ECDSA-P256** AK: a 65-byte
+//!   uncompressed `ak_pub` and a raw `r || s` signature over the SHA-256 of
+//!   the attest bytes (see [`crate::p256`]). Which algorithm applies is read
+//!   off the key material, never off attacker-controlled fields.
+//! * **Name binding.** A real `TPM2_Certify` names the key as
+//!   `alg || H(TPMT_PUBLIC)` — the hash of the full marshalled public area,
+//!   not of the bare key. An attestation therefore carries the identity
+//!   key's `TPMT_PUBLIC` (`identity_pub`), from which the verifier both
+//!   recomputes the Name the certify must match and extracts the raw public
+//!   key that must equal the enrolled bundle entry. Attestations without
+//!   `identity_pub` keep verifying under the earlier synthetic binding,
+//!   `alg || H(raw ed25519 key)` — the two forms are documented on
+//!   [`KeyAttestation::identity_pub`].
 
 use crate::checkpoint::PublicKeyEntry;
 use crate::error::Error;
@@ -43,6 +61,21 @@ const ST_ATTEST_CERTIFY: u16 = 0x8017;
 const ST_ATTEST_QUOTE: u16 = 0x8018;
 /// `TPM_ALG_SHA256`, the name algorithm this verifier supports.
 const ALG_SHA256: u16 = 0x000B;
+/// `TPM_ALG_ECC` — the object type of both key shapes this verifier reads.
+const ALG_ECC: u16 = 0x0023;
+/// `TPM_ALG_ECDSA` / `TPM_ALG_EDDSA` — the two signing schemes an identity
+/// key's `TPMT_PUBLIC` may carry (see the module interop note).
+const ALG_ECDSA: u16 = 0x0018;
+const ALG_EDDSA: u16 = 0x0060;
+const ALG_NULL: u16 = 0x0010;
+/// `TPM_ECC_NIST_P256` / `TPM_ECC_25519` curve identifiers.
+const ECC_NIST_P256: u16 = 0x0003;
+const ECC_CURVE_25519: u16 = 0x0040;
+
+/// `algo` string of a P-256 identity key entry (see
+/// [`KeyAttestation::identity_pub`] for when one exists at all).
+pub const ALGO_ECDSA_P256: &str = "ecdsa-p256";
+const ALGO_ED25519: &str = "ed25519";
 
 /// One PCR the quote must report, with the value the ops key expects it to
 /// hold. The gateway-binary PCR is the hash of the released binary — chained
@@ -60,7 +93,10 @@ pub struct PcrExpectation {
 pub struct KeyAttestation {
     /// Which identity key (by id) this attestation binds.
     pub key_id: String,
-    /// AK public key (ed25519, hex): signs the quote and the certify.
+    /// AK public key, hex: signs the quote and the certify. 32 bytes for an
+    /// ed25519 AK; 65 bytes (`04 || x || y`, the uncompressed point) for an
+    /// ECDSA-P256 AK — the fallback for TPMs that implement no EdDSA, which
+    /// includes the swtpm this tree tests against (module interop note).
     pub ak_pub: String,
     /// EK certificate (DER, hex). Chains to the TPM vendor root — validated
     /// out of band, never here.
@@ -73,18 +109,78 @@ pub struct KeyAttestation {
     pub quote: String,
     /// The PCR values the quote must report, ops-signed via the bundle.
     pub expected_pcrs: Vec<PcrExpectation>,
+    /// The identity key's marshalled `TPMT_PUBLIC` (hex) — the structure a
+    /// real TPM hashes into the Name its certify reports.
+    ///
+    /// The two binding forms, in order of preference:
+    ///
+    /// * **Present** (everything a real TPM emits, via `tpm-enroll`): the
+    ///   certify must name `alg || H(these bytes)`, and the raw public key
+    ///   extracted from them must equal the enrolled bundle entry — so the
+    ///   chain entry → public area → Name → AK signature closes with no gap
+    ///   an attacker could stand in.
+    /// * **Absent** (pre-hardware attestations): the certify must name
+    ///   `alg || H(raw ed25519 key)`, the synthetic binding the verifier
+    ///   shipped with. Kept so existing attestations verify unchanged; a
+    ///   real TPM never produces this form.
+    ///
+    /// `serde(default)`: attestations minted before this field parse as the
+    /// legacy form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_pub: Option<String>,
 }
 
-/// The TPM Name of an identity key, as the certify carries it.
+/// The legacy TPM Name of an identity key: `alg || H(raw ed25519 key)`.
 ///
-/// A real TPM Name is `alg || H(TPMT_PUBLIC)`; this verifier binds by
-/// `alg || H(raw ed25519 public key)`, sufficient to prove the certify names
-/// *this* key and no other. (The full-`TPMT_PUBLIC` form is the real-hardware
-/// interop point, gated and unverified here.)
+/// A real TPM names a key `alg || H(TPMT_PUBLIC)` — carried and recomputed
+/// via [`KeyAttestation::identity_pub`]. This synthetic form remains what an
+/// attestation *without* that field must bind, so pre-hardware attestations
+/// keep verifying; it is equally sufficient to prove the certify names
+/// *this* key and no other.
 pub fn identity_name(key: &VerifyingKey) -> Vec<u8> {
     let mut out = ALG_SHA256.to_be_bytes().to_vec();
     out.extend_from_slice(sha256(key.as_bytes()).as_bytes());
     out
+}
+
+/// The AK's public key, in whichever of the two accepted shapes the hex
+/// material decodes to. The shape decides the signature check: ed25519 over
+/// the attest bytes, ECDSA-P256 over their SHA-256 (a TPM signs digests).
+enum AkPublic {
+    Ed25519(VerifyingKey),
+    /// Uncompressed point, `04 || x || y`. Curve membership is checked at
+    /// every verification by [`crate::p256::verify_ecdsa_p256`].
+    EcdsaP256(Vec<u8>),
+}
+
+fn parse_ak(hexed: &str) -> Result<AkPublic, Error> {
+    let raw = hex::decode(hexed).map_err(|_| Error::BadHex(hexed.to_string()))?;
+    match raw.len() {
+        32 => {
+            let arr: [u8; 32] = raw.try_into().expect("checked length");
+            Ok(AkPublic::Ed25519(
+                VerifyingKey::from_bytes(&arr).map_err(|_| Error::BadKey(hexed.to_string()))?,
+            ))
+        }
+        65 if raw[0] == 0x04 => Ok(AkPublic::EcdsaP256(raw)),
+        _ => Err(Error::BadKey(hexed.to_string())),
+    }
+}
+
+impl AkPublic {
+    fn verify(&self, attest: &[u8], sig: &[u8; 64]) -> Result<(), Error> {
+        let ok = match self {
+            AkPublic::Ed25519(vk) => vk.verify(attest, &Signature::from_bytes(sig)).is_ok(),
+            AkPublic::EcdsaP256(point) => {
+                crate::p256::verify_ecdsa_p256(point, sha256(attest).as_bytes(), sig)
+            }
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err(Error::BadAttestation("AK signature does not verify".into()))
+        }
+    }
 }
 
 /// What a parsed `TPMS_ATTEST` yields, for the two statement types used.
@@ -100,14 +196,14 @@ enum Attested {
 /// expected measurements — subject to the out-of-band EK-root check the
 /// caller must still surface.
 pub fn verify_attestation(entry: &PublicKeyEntry, att: &KeyAttestation) -> Result<(), Error> {
-    let ak = parse_ed25519(&att.ak_pub)?;
-    let identity = entry.to_verifying_key()?;
+    let ak = parse_ak(&att.ak_pub)?;
+    let expected_name = expected_identity_name(entry, att)?;
 
     // The certify must bind THIS identity key.
     let certify = verify_signed_attest(&att.certify, &ak)?;
     match certify {
         Attested::Certify { name } => {
-            if name != identity_name(&identity) {
+            if name != expected_name {
                 return Err(Error::AttestationMismatch(
                     "the certify names a different key than the enrolled identity key".into(),
                 ));
@@ -147,6 +243,134 @@ pub fn verify_attestation(entry: &PublicKeyEntry, att: &KeyAttestation) -> Resul
     Ok(())
 }
 
+/// The Name the certify must report for this enrollment — and, when the
+/// attestation carries the identity key's `TPMT_PUBLIC`, the proof that the
+/// public area is the enrolled key's and not a substitute.
+///
+/// Two forms (documented on [`KeyAttestation::identity_pub`]):
+///
+/// * `identity_pub` present — the real-TPM form: parse the public area,
+///   require the raw key inside it to equal the bundle entry (same bytes,
+///   consistent `algo`), and return `alg || H(TPMT_PUBLIC)`.
+/// * absent — the legacy synthetic form: `alg || H(raw ed25519 key)`.
+fn expected_identity_name(entry: &PublicKeyEntry, att: &KeyAttestation) -> Result<Vec<u8>, Error> {
+    let Some(tp_hex) = &att.identity_pub else {
+        return Ok(identity_name(&entry.to_verifying_key()?));
+    };
+    let tp = hex::decode(tp_hex).map_err(|_| Error::BadHex(tp_hex.clone()))?;
+    let parsed = parse_tpmt_public(&tp)?;
+    if parsed.name_alg != ALG_SHA256 {
+        return Err(Error::BadAttestation(format!(
+            "unsupported TPMT_PUBLIC name algorithm 0x{:04X}",
+            parsed.name_alg
+        )));
+    }
+    let entry_raw =
+        hex::decode(&entry.public_key).map_err(|_| Error::BadHex(entry.public_key.clone()))?;
+    let (raw, algo) = match &parsed.key {
+        TpmPublicKey::Ed25519(raw) => (&raw[..], ALGO_ED25519),
+        TpmPublicKey::EcdsaP256(point) => (&point[..], ALGO_ECDSA_P256),
+    };
+    if entry.algo != algo {
+        return Err(Error::AttestationMismatch(format!(
+            "the identity TPMT_PUBLIC holds a {algo} key but the enrolled entry says {}",
+            entry.algo
+        )));
+    }
+    if raw != entry_raw {
+        return Err(Error::AttestationMismatch(
+            "the identity TPMT_PUBLIC holds a different key than the enrolled entry".into(),
+        ));
+    }
+    let mut name = parsed.name_alg.to_be_bytes().to_vec();
+    name.extend_from_slice(sha256(&tp).as_bytes());
+    Ok(name)
+}
+
+/// What a `TPMT_PUBLIC` yields: its name algorithm and the raw key inside.
+struct TpmtPublic {
+    name_alg: u16,
+    key: TpmPublicKey,
+}
+
+enum TpmPublicKey {
+    /// Raw 32-byte ed25519 public key (the `x` of a curve-25519 EdDSA point).
+    Ed25519([u8; 32]),
+    /// Uncompressed P-256 point, `04 || x || y`, 65 bytes.
+    EcdsaP256(Vec<u8>),
+}
+
+/// Parses the marshalled `TPMT_PUBLIC` of an ECC signing key — the exact
+/// bytes the TPM hashes into the key's Name, so the parse must consume them
+/// all: trailing bytes would mean naming something this parser did not read.
+fn parse_tpmt_public(b: &[u8]) -> Result<TpmtPublic, Error> {
+    let mut r = Reader::new(b);
+    let object_type = r.u16()?;
+    if object_type != ALG_ECC {
+        return Err(Error::BadAttestation(format!(
+            "unsupported TPMT_PUBLIC type 0x{object_type:04X}: only ECC signing keys are attested"
+        )));
+    }
+    let name_alg = r.u16()?;
+    r.u32()?; // objectAttributes: named by the certify, not re-judged here
+    r.skip_tpm2b()?; // authPolicy
+    let symmetric = r.u16()?;
+    if symmetric != ALG_NULL {
+        // A signing key carries no symmetric parameters; anything else is a
+        // storage-key shape this parser does not model.
+        return Err(Error::BadAttestation(
+            "TPMT_PUBLIC carries symmetric parameters: not a signing key".into(),
+        ));
+    }
+    let scheme = r.u16()?;
+    if scheme != ALG_NULL {
+        r.u16()?; // the scheme's hash algorithm
+    }
+    let curve = r.u16()?;
+    let kdf = r.u16()?;
+    if kdf != ALG_NULL {
+        return Err(Error::BadAttestation(
+            "TPMT_PUBLIC carries a KDF: not a signing key".into(),
+        ));
+    }
+    let x = r.tpm2b()?;
+    let y = r.tpm2b()?;
+    if r.remaining() != 0 {
+        return Err(Error::BadAttestation(
+            "trailing bytes after TPMT_PUBLIC".into(),
+        ));
+    }
+    let key = match (scheme, curve) {
+        (ALG_EDDSA, ECC_CURVE_25519) => {
+            let raw: [u8; 32] = x.try_into().map_err(|_| {
+                Error::BadAttestation("ed25519 TPMT_PUBLIC point is not 32 bytes".into())
+            })?;
+            TpmPublicKey::Ed25519(raw)
+        }
+        (ALG_ECDSA, ECC_NIST_P256) => {
+            if x.len() > 32 || y.len() > 32 {
+                return Err(Error::BadAttestation(
+                    "P-256 TPMT_PUBLIC coordinate longer than 32 bytes".into(),
+                ));
+            }
+            // Fixed-width coordinates: a TPM may in principle emit short
+            // ones, the curve check downstream needs exactly 32 + 32.
+            let mut point = vec![0x04];
+            point.extend_from_slice(&[0u8; 32][..32 - x.len()]);
+            point.extend_from_slice(x);
+            point.extend_from_slice(&[0u8; 32][..32 - y.len()]);
+            point.extend_from_slice(y);
+            TpmPublicKey::EcdsaP256(point)
+        }
+        (s, c) => {
+            return Err(Error::BadAttestation(format!(
+                "unsupported TPMT_PUBLIC scheme/curve 0x{s:04X}/0x{c:04X}"
+            )))
+        }
+    };
+    Ok(TpmtPublic { name_alg, key })
+}
+
 /// The aggregate the TPM quote reports: the hash of the selected PCR values
 /// concatenated in index order. The verifier recomputes it from the
 /// ops-signed expectations and compares.
@@ -162,23 +386,19 @@ fn expected_pcr_digest(pcrs: &[PcrExpectation]) -> Result<Vec<u8>, Error> {
 }
 
 /// Splits `attest || sig`, verifies the AK signature over the attest bytes,
-/// and parses the attest.
-fn verify_signed_attest(hexed: &str, ak: &VerifyingKey) -> Result<Attested, Error> {
+/// and parses the attest. The signature is always the trailing 64 bytes:
+/// an ed25519 signature, or ECDSA-P256 `r || s` each 32 bytes.
+fn verify_signed_attest(hexed: &str, ak: &AkPublic) -> Result<Attested, Error> {
     let raw = hex::decode(hexed).map_err(|_| Error::BadHex(hexed.to_string()))?;
     if raw.len() < 64 {
-        return Err(Error::BadAttestation("attest blob shorter than a signature".into()));
+        return Err(Error::BadAttestation(
+            "attest blob shorter than a signature".into(),
+        ));
     }
     let (attest, sig) = raw.split_at(raw.len() - 64);
     let sig: [u8; 64] = sig.try_into().expect("checked length");
-    ak.verify(attest, &Signature::from_bytes(&sig))
-        .map_err(|_| Error::BadAttestation("AK signature does not verify".into()))?;
+    ak.verify(attest, &sig)?;
     parse_attest(attest)
-}
-
-fn parse_ed25519(hexed: &str) -> Result<VerifyingKey, Error> {
-    let raw = hex::decode(hexed).map_err(|_| Error::BadHex(hexed.to_string()))?;
-    let arr: [u8; 32] = raw.try_into().map_err(|_| Error::BadKeyLength)?;
-    VerifyingKey::from_bytes(&arr).map_err(|_| Error::BadKey(hexed.to_string()))
 }
 
 /// Bounds-checked reader over a byte slice, no recursion — the `rfc3161`
@@ -215,6 +435,9 @@ impl<'a> Reader<'a> {
     /// Skips a `TPM2B_*` without copying.
     fn skip_tpm2b(&mut self) -> Result<(), Error> {
         self.tpm2b().map(|_| ())
+    }
+    fn remaining(&self) -> usize {
+        self.b.len().saturating_sub(self.pos)
     }
 }
 
@@ -294,10 +517,40 @@ pub mod testutil {
 
     /// A certify naming `identity`, signed by `ak`.
     pub fn certify(ak: &SigningKey, identity: &VerifyingKey) -> String {
+        certify_naming(ak, &identity_name(identity))
+    }
+
+    /// A certify carrying an arbitrary Name, signed by `ak`.
+    pub fn certify_naming(ak: &SigningKey, name: &[u8]) -> String {
         let mut a = header(ST_ATTEST_CERTIFY);
-        a.extend_from_slice(&tpm2b(&identity_name(identity))); // name
+        a.extend_from_slice(&tpm2b(name)); // name
         a.extend_from_slice(&tpm2b(&[])); // qualifiedName
         sign(ak, a)
+    }
+
+    /// The marshalled `TPMT_PUBLIC` of an ed25519 identity key, the shape an
+    /// EdDSA-capable TPM emits: ECC object, EdDSA scheme, curve 25519, the
+    /// raw key as the point's x coordinate.
+    pub fn tpmt_public_ed25519(identity: &VerifyingKey) -> Vec<u8> {
+        let mut v = ALG_ECC.to_be_bytes().to_vec();
+        v.extend_from_slice(&ALG_SHA256.to_be_bytes()); // nameAlg
+        v.extend_from_slice(&0x0004_0072u32.to_be_bytes()); // attributes: signing key
+        v.extend_from_slice(&tpm2b(&[])); // authPolicy
+        v.extend_from_slice(&ALG_NULL.to_be_bytes()); // symmetric
+        v.extend_from_slice(&ALG_EDDSA.to_be_bytes()); // scheme
+        v.extend_from_slice(&ALG_SHA256.to_be_bytes()); // scheme hash
+        v.extend_from_slice(&ECC_CURVE_25519.to_be_bytes()); // curve
+        v.extend_from_slice(&ALG_NULL.to_be_bytes()); // kdf
+        v.extend_from_slice(&tpm2b(identity.as_bytes())); // unique.x
+        v.extend_from_slice(&tpm2b(&[])); // unique.y
+        v
+    }
+
+    /// The Name a real TPM computes for a public area.
+    pub fn name_of(tpmt_public: &[u8]) -> Vec<u8> {
+        let mut name = ALG_SHA256.to_be_bytes().to_vec();
+        name.extend_from_slice(sha256(tpmt_public).as_bytes());
+        name
     }
 
     /// A quote reporting `pcrs`, signed by `ak`.
@@ -313,7 +566,8 @@ pub mod testutil {
         sign(ak, a)
     }
 
-    /// A complete, valid attestation for `identity`, signed by a fresh AK.
+    /// A complete, valid attestation for `identity`, signed by a fresh AK —
+    /// the legacy form, no `TPMT_PUBLIC` carried.
     pub fn attestation(
         key_id: &str,
         identity: &VerifyingKey,
@@ -327,7 +581,23 @@ pub mod testutil {
             certify: certify(ak, identity),
             quote: quote(ak, &pcrs),
             expected_pcrs: pcrs,
+            identity_pub: None,
         }
+    }
+
+    /// The real-TPM form: carries the identity key's `TPMT_PUBLIC`, and the
+    /// certify names `alg || H(TPMT_PUBLIC)` as real hardware does.
+    pub fn attestation_with_public(
+        key_id: &str,
+        identity: &VerifyingKey,
+        ak: &SigningKey,
+        pcrs: Vec<PcrExpectation>,
+    ) -> KeyAttestation {
+        let tpmt = tpmt_public_ed25519(identity);
+        let mut att = attestation(key_id, identity, ak, pcrs);
+        att.certify = certify_naming(ak, &name_of(&tpmt));
+        att.identity_pub = Some(hex::encode(tpmt));
+        att
     }
 }
 
@@ -441,6 +711,175 @@ mod tests {
         let att = attestation("id-1", &identity.verifying_key(), &ak, vec![]);
         assert!(matches!(
             verify_attestation(&identity_entry(&identity), &att),
+            Err(Error::AttestationMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn the_tpmt_public_form_verifies() {
+        // The real-TPM binding: the certify names alg || H(TPMT_PUBLIC), the
+        // attestation carries the public area, the verifier closes the loop.
+        let identity = SigningKey::from_bytes(&[1u8; 32]);
+        let ak = SigningKey::from_bytes(&[2u8; 32]);
+        let att = attestation_with_public("id-1", &identity.verifying_key(), &ak, vec![pcr(0, 10)]);
+        assert!(verify_attestation(&identity_entry(&identity), &att).is_ok());
+    }
+
+    #[test]
+    fn a_tpmt_public_of_another_key_is_rejected() {
+        // The certify honestly names the key inside the carried TPMT_PUBLIC —
+        // but that key is not the enrolled one. The substitution attack the
+        // pubkey-equality check exists for.
+        let enrolled = SigningKey::from_bytes(&[1u8; 32]);
+        let attacker = SigningKey::from_bytes(&[9u8; 32]);
+        let ak = SigningKey::from_bytes(&[2u8; 32]);
+        let att = attestation_with_public("id-1", &attacker.verifying_key(), &ak, vec![pcr(0, 10)]);
+        let err = verify_attestation(&identity_entry(&enrolled), &att).unwrap_err();
+        assert!(matches!(err, Error::AttestationMismatch(_)));
+    }
+
+    #[test]
+    fn a_swapped_tpmt_public_breaks_the_name() {
+        // The carried TPMT_PUBLIC holds the right key, but the certify was
+        // made over a different public area: the recomputed Name disagrees.
+        let identity = SigningKey::from_bytes(&[1u8; 32]);
+        let ak = SigningKey::from_bytes(&[2u8; 32]);
+        let mut att =
+            attestation_with_public("id-1", &identity.verifying_key(), &ak, vec![pcr(0, 10)]);
+        // Flip one bit inside the carried public area (an attribute byte, so
+        // the extracted key still matches the entry).
+        let mut tp = hex::decode(att.identity_pub.as_ref().unwrap()).unwrap();
+        tp[5] ^= 0x01;
+        att.identity_pub = Some(hex::encode(tp));
+        let err = verify_attestation(&identity_entry(&identity), &att).unwrap_err();
+        assert!(matches!(err, Error::AttestationMismatch(_)));
+    }
+
+    #[test]
+    fn a_legacy_named_certify_cannot_claim_the_tpmt_public_form() {
+        // certify names the legacy raw-key form while the attestation
+        // carries a TPMT_PUBLIC: the two binding forms must not cross.
+        let identity = SigningKey::from_bytes(&[1u8; 32]);
+        let ak = SigningKey::from_bytes(&[2u8; 32]);
+        let mut att =
+            attestation_with_public("id-1", &identity.verifying_key(), &ak, vec![pcr(0, 10)]);
+        att.certify = certify(&ak, &identity.verifying_key());
+        let err = verify_attestation(&identity_entry(&identity), &att).unwrap_err();
+        assert!(matches!(err, Error::AttestationMismatch(_)));
+    }
+
+    #[test]
+    fn a_malformed_tpmt_public_does_not_panic() {
+        let identity = SigningKey::from_bytes(&[1u8; 32]);
+        let ak = SigningKey::from_bytes(&[2u8; 32]);
+        let good =
+            attestation_with_public("id-1", &identity.verifying_key(), &ak, vec![pcr(0, 10)]);
+        let tp = hex::decode(good.identity_pub.as_ref().unwrap()).unwrap();
+        // Truncations at every length, trailing garbage, and junk: every
+        // shape must be a clean refusal.
+        for cut in 0..tp.len() {
+            let mut att = good.clone();
+            att.identity_pub = Some(hex::encode(&tp[..cut]));
+            assert!(
+                verify_attestation(&identity_entry(&identity), &att).is_err(),
+                "truncation at {cut} was accepted"
+            );
+        }
+        let mut trailing = tp.clone();
+        trailing.push(0);
+        let mut att = good.clone();
+        att.identity_pub = Some(hex::encode(trailing));
+        assert!(matches!(
+            verify_attestation(&identity_entry(&identity), &att),
+            Err(Error::BadAttestation(_))
+        ));
+        let mut att = good;
+        att.identity_pub = Some("zz".into());
+        assert!(matches!(
+            verify_attestation(&identity_entry(&identity), &att),
+            Err(Error::BadHex(_))
+        ));
+    }
+
+    #[test]
+    fn attestation_json_without_identity_pub_still_parses() {
+        // The serialized form of a pre-hardware attestation has no
+        // identity_pub field: it must deserialize and verify as before.
+        let identity = SigningKey::from_bytes(&[1u8; 32]);
+        let ak = SigningKey::from_bytes(&[2u8; 32]);
+        let att = attestation("id-1", &identity.verifying_key(), &ak, vec![pcr(0, 10)]);
+        let json = serde_json::to_string(&att).unwrap();
+        assert!(
+            !json.contains("identity_pub"),
+            "absent field must not serialize"
+        );
+        let back: KeyAttestation = serde_json::from_str(&json).unwrap();
+        assert!(verify_attestation(&identity_entry(&identity), &back).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod swtpm_fixture_tests {
+    //! Real TPM output, captured once from `tpm-enroll` against a swtpm
+    //! (libtpms 0.10) and embedded — so the ECDSA-P256 path and the
+    //! real Name binding are exercised on every `cargo test`, with no TPM
+    //! anywhere near the test run. The gated integration test in
+    //! `tpm-enroll` regenerates this material live.
+
+    use super::*;
+    use crate::checkpoint::KeyRole;
+
+    /// Emitted by `probant-tpm-enroll` pointed at a fresh swtpm: PCR 16
+    /// extended with sha256("gateway-binary"), then certify + quote.
+    const FIXTURE_ATTESTATION: &str = include_str!("../tests/fixtures/swtpm-attestation.json");
+    const FIXTURE_ENTRY: &str = include_str!("../tests/fixtures/swtpm-identity-entry.json");
+
+    fn fixture() -> (PublicKeyEntry, KeyAttestation) {
+        let entry: PublicKeyEntry = serde_json::from_str(FIXTURE_ENTRY).unwrap();
+        assert_eq!(
+            entry.role,
+            KeyRole::Origin,
+            "fixture entry is an origin key"
+        );
+        (entry, serde_json::from_str(FIXTURE_ATTESTATION).unwrap())
+    }
+
+    #[test]
+    fn real_swtpm_output_verifies() {
+        let (entry, att) = fixture();
+        verify_attestation(&entry, &att).unwrap();
+    }
+
+    #[test]
+    fn real_swtpm_output_rejects_tampering() {
+        let (entry, good) = fixture();
+
+        // Corrupt one byte of the quote's ECDSA signature.
+        let mut att = good.clone();
+        let mut raw = hex::decode(&att.quote).unwrap();
+        let n = raw.len();
+        raw[n - 1] ^= 0x01;
+        att.quote = hex::encode(raw);
+        assert!(matches!(
+            verify_attestation(&entry, &att),
+            Err(Error::BadAttestation(_))
+        ));
+
+        // Claim a different PCR value than the TPM measured.
+        let mut att = good.clone();
+        att.expected_pcrs[0].digest = hex::encode([0u8; 32]);
+        assert!(matches!(
+            verify_attestation(&entry, &att),
+            Err(Error::AttestationMismatch(_))
+        ));
+
+        // Enroll a different key than the TPM certified.
+        let mut entry2 = entry;
+        let mut key = hex::decode(&entry2.public_key).unwrap();
+        key[10] ^= 0x01;
+        entry2.public_key = hex::encode(key);
+        assert!(matches!(
+            verify_attestation(&entry2, &good),
             Err(Error::AttestationMismatch(_))
         ));
     }

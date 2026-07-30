@@ -1,0 +1,6 @@
+{
+  "algo": "ecdsa-p256",
+  "key_id": "gw-swtpm-fixture",
+  "public_key": "0496577d32ee084ef6fbb60f8399745a95bb3874abbd1962fcbae5b9e501b76152aadab70935d7855d6c2b1ca25a9e3f8afdb30ddd8122012c5ed707e7828a5fbb",
+  "role": "origin"
+}
