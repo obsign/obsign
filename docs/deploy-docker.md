@@ -82,6 +82,15 @@ compose file in this repo binds it to `127.0.0.1` — keep that property.
 **Both runtime users are `nonroot` (uid 65532).** Pre-created host
 directories mounted as volumes must be writable by that uid.
 
+## Rolling out argument rules (`obsign-policy/2`)
+
+The control plane emits bundle format `/2` the moment one tool in
+`tools.json` declares `policy_args` — and a pre-upgrade gateway **refuses a
+`/2` bundle at startup** rather than silently enforcing less than the bundle
+says. The cutover order is therefore fixed: upgrade every gateway image
+first, publish the first bundle that declares arguments second. A fleet that
+never declares arguments keeps receiving `/1` and needs nothing.
+
 ## HSM (PKCS#11) and TPM
 
 The vendor's PKCS#11 module is loaded at runtime with `dlopen`: mount the

@@ -119,6 +119,142 @@ fn compilation_is_deterministic_and_verifiable() {
 }
 
 #[test]
+fn argument_declarations_bump_the_bundle_format() {
+    // No tool declares policy_args: v1, pre-upgrade gateways keep working.
+    let dir = tmp("fmt-v1");
+    write_source_tree(&dir);
+    let compiled = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap();
+    assert_eq!(compiled.policy.bundle.format, obsign_policy::FORMAT);
+
+    // One declaration: v2 — an old gateway must refuse this bundle rather
+    // than silently enforce less than it says.
+    let dir = tmp("fmt-v2");
+    write_source_tree(&dir);
+    std::fs::write(
+        dir.join("tools.json"),
+        serde_json::json!([
+            {"name": "ticket_update", "server": "mcp://crm",
+             "required_scope": "support:ticket_update",
+             "policy_args": [{"name": "ticket", "kind": "string"}]}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("fail-mode.json"),
+        serde_json::json!({"default": "closed"}).to_string(),
+    )
+    .unwrap();
+    let compiled = compile(&SourceTree::load(&dir).unwrap(), "v2", &ops()).unwrap();
+    assert_eq!(compiled.policy.bundle.format, obsign_policy::FORMAT_V2);
+    assert_eq!(compiled.policy.bundle.tools[0].policy_args.len(), 1);
+}
+
+#[test]
+fn a_typoed_argument_rule_is_rejected_at_compile_time() {
+    // The smoke evaluation: a rule reading an argument nobody declares
+    // must fail in CI, naming the rule — not months later as a fail-mode
+    // event on a live gateway.
+    let dir = tmp("arg-typo");
+    write_source_tree(&dir);
+    std::fs::write(
+        dir.join("tools.json"),
+        serde_json::json!([
+            {"name": "send_message", "server": "mcp://chat",
+             "policy_args": [{"name": "channel", "kind": "string"}]}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("fail-mode.json"),
+        serde_json::json!({"default": "closed"}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("policies/00-base.cedar"),
+        r##"
+        @id("support_channel_only")
+        forbid (principal, action == Action::"tool_call", resource)
+        when { context.args.chanel != "#support" };
+
+        @id("allow_all")
+        permit (principal, action == Action::"tool_call", resource);
+        "##,
+    )
+    .unwrap();
+
+    let err = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap_err();
+    match err {
+        Error::Source(msg) => {
+            assert!(msg.contains("support_channel_only"), "must name the rule: {msg}");
+            assert!(msg.contains("send_message"), "must name the tool: {msg}");
+        }
+        other => panic!("expected Source, got {other}"),
+    }
+
+    // The same tree with the typo fixed compiles.
+    std::fs::write(
+        dir.join("policies/00-base.cedar"),
+        r##"
+        @id("support_channel_only")
+        forbid (principal, action == Action::"tool_call", resource)
+        when { context.args.channel != "#support" };
+
+        @id("allow_all")
+        permit (principal, action == Action::"tool_call", resource);
+        "##,
+    )
+    .unwrap();
+    compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap();
+}
+
+#[test]
+fn a_v1_tree_erroring_under_the_synthetic_context_still_compiles() {
+    // The smoke evaluation runs ONLY when a tool declares arguments. A
+    // pre-existing v1 catalogue with no policy_args must keep compiling even
+    // if a rule would error under the synthetic zero-value context (e.g. a
+    // rule the customer deliberately runs fail-open, recorded as a
+    // degradation at runtime). Blocking its publish would override the
+    // customer's fail-mode choice — exactly what smoke_check must not do.
+    let dir = tmp("v1-synthetic-error");
+    write_source_tree(&dir);
+    // No policy_args anywhere → stays v1, smoke_check does not run.
+    std::fs::write(
+        dir.join("tools.json"),
+        serde_json::json!([
+            {"name": "ticket_update", "server": "mcp://crm",
+             "required_scope": "support:ticket_update"}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("fail-mode.json"),
+        serde_json::json!({"default": "open"}).to_string(),
+    )
+    .unwrap();
+    // A rule that references an attribute absent from the synthetic context
+    // (principal has no attributes) — an evaluation error under smoke_check,
+    // tolerated at runtime via the fail mode.
+    std::fs::write(
+        dir.join("policies/00-base.cedar"),
+        r##"
+        @id("dept_gate")
+        forbid (principal, action == Action::"tool_call", resource)
+        when { principal.department == "eng" };
+
+        @id("allow_all")
+        permit (principal, action == Action::"tool_call", resource);
+        "##,
+    )
+    .unwrap();
+
+    let compiled = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap();
+    assert_eq!(compiled.policy.bundle.format, obsign_policy::FORMAT);
+}
+
+#[test]
 fn a_rule_without_id_is_rejected_at_compile_time() {
     let dir = tmp("no-id");
     write_source_tree(&dir);

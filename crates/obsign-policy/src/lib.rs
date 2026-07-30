@@ -12,7 +12,9 @@
 pub mod bundle;
 pub mod engine;
 
-pub use bundle::{Bundle, FailBehaviour, FailMode, SignedBundle, ToolDef, FORMAT};
+pub use bundle::{
+    ArgKind, ArgSpec, Bundle, FailBehaviour, FailMode, SignedBundle, ToolDef, FORMAT, FORMAT_V2,
+};
 pub use engine::{Capability, Engine, ToolRequest, Verdict};
 
 use thiserror::Error as ThisError;
@@ -24,6 +26,9 @@ pub enum Error {
 
     #[error("unknown bundle format: {0}")]
     UnknownFormat(String),
+
+    #[error("bundle: {0}")]
+    Bundle(String),
 
     #[error("cedar: {0}")]
     Cedar(String),

@@ -122,11 +122,17 @@ pub(crate) fn arbitrated(method: Option<&str>) -> bool {
 }
 
 /// The policy request for one act, under the delegation in force.
+///
+/// `args` is the call's `arguments` object for a tool call, `Null` for a
+/// capability access (the target already travels in `tool`). The engine
+/// reads only the fields the tool's `policy_args` declare; the values stay
+/// in memory for the decision — the log keeps `args_hash`.
 fn request(
     deleg: &obsign_identity::Delegation,
     ctx: &Ctx,
     session_id: &str,
     tool: String,
+    args: Value,
 ) -> ToolRequest {
     ToolRequest {
         principal: deleg.subject.clone(),
@@ -140,6 +146,7 @@ fn request(
         has_human_delegation: deleg.has_human(),
         delegation_depth: deleg.delegation_depth() as u32,
         principal_kind: deleg.kind.as_str().to_string(),
+        args,
     }
 }
 
@@ -387,6 +394,16 @@ pub(crate) fn handle_from_agent(
         );
     }
 
+    // The call's arguments, extracted once and reused: the engine reads the
+    // declared subset for the verdict below, and the *same* value is hashed
+    // into the record, so the log pins exactly what the policy saw — no
+    // Null-vs-`{}` divergence between the two. Absent → an empty object.
+    let arguments = params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let arguments_hash = content_hash(arguments.to_string().as_bytes());
+
     // --- Verdict ------------------------------------------------------------
     let verdict = match &auth_error {
         // Missing authority: it is not the policy that forbids, it is the
@@ -398,12 +415,19 @@ pub(crate) fn handle_from_agent(
             reason: Some(e.to_string()),
         },
         None => match &act {
-            Act::Tool { tool } => ctx
-                .engine
-                .evaluate(&request(&deleg, ctx, &s.session_id, tool.clone())),
-            Act::Capability { cap, target, .. } => ctx
-                .engine
-                .evaluate_capability(*cap, &request(&deleg, ctx, &s.session_id, target.clone())),
+            // `arguments` is moved into the request here — the only arm that
+            // reads it; `arguments_hash` was taken above for the record.
+            Act::Tool { tool } => ctx.engine.evaluate(&request(
+                &deleg,
+                ctx,
+                &s.session_id,
+                tool.clone(),
+                arguments,
+            )),
+            Act::Capability { cap, target, .. } => ctx.engine.evaluate_capability(
+                *cap,
+                &request(&deleg, ctx, &s.session_id, target.clone(), Value::Null),
+            ),
             // Not a policy decision: the engine is never consulted, because
             // there is nothing it could meaningfully permit. The absent
             // policy_id is what tells the log this refusal came from the
@@ -427,14 +451,7 @@ pub(crate) fn handle_from_agent(
         Act::Tool { tool } => Payload::ToolCall(ToolCall {
             server: SERVER.to_string(),
             tool: tool.clone(),
-            args_hash: content_hash(
-                params
-                    .get("arguments")
-                    .cloned()
-                    .unwrap_or(json!({}))
-                    .to_string()
-                    .as_bytes(),
-            ),
+            args_hash: arguments_hash,
             args_sealed: None,
         }),
         Act::Capability { method, target, .. } => Payload::McpAccess(McpAccess {
@@ -684,15 +701,19 @@ pub(crate) fn handle_from_server(
     );
     let listings: [Listing; 3] = [
         ("/result/tools", "name", "tools/list", &|name, deleg| {
+            // `evaluate_listing`, not `evaluate`: a listing carries no
+            // arguments, and an argument-restricted tool is still a tool
+            // the agent may legitimately call. Argument rules are enforced
+            // on the call path.
             ctx.engine
-                .evaluate(&request(deleg, ctx, session_id, name.to_string()))
+                .evaluate_listing(&request(deleg, ctx, session_id, name.to_string(), Value::Null))
                 .is_allowed()
         }),
         ("/result/resources", "uri", "resources/list", &|uri, deleg| {
             ctx.engine
                 .evaluate_capability(
                     Capability::ResourceRead,
-                    &request(deleg, ctx, session_id, uri.to_string()),
+                    &request(deleg, ctx, session_id, uri.to_string(), Value::Null),
                 )
                 .is_allowed()
         }),
@@ -700,7 +721,7 @@ pub(crate) fn handle_from_server(
             ctx.engine
                 .evaluate_capability(
                     Capability::PromptGet,
-                    &request(deleg, ctx, session_id, name.to_string()),
+                    &request(deleg, ctx, session_id, name.to_string(), Value::Null),
                 )
                 .is_allowed()
         }),
@@ -833,9 +854,10 @@ fn handle_server_initiated(
             policy_id: None,
             reason: Some("delegation expired".to_string()),
         },
-        Some(cap) => ctx
-            .engine
-            .evaluate_capability(cap, &request(&deleg, ctx, session_id, SERVER.to_string())),
+        Some(cap) => ctx.engine.evaluate_capability(
+            cap,
+            &request(&deleg, ctx, session_id, SERVER.to_string(), Value::Null),
+        ),
     };
 
     let call_id = s.next_call_id();
@@ -955,6 +977,7 @@ mod tests {
                 server: "mcp://test".into(),
                 destructive: false,
                 required_scope: None,
+                policy_args: Vec::new(),
             }],
             fail_mode: FailMode {
                 default: FailBehaviour::Closed,

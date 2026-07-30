@@ -18,7 +18,7 @@ policy decides, the log is sealed, and the auditor verifies offline.
 |---|---|---|
 | `obsign-audit-core` | Record format, hash chain, Merkle, signed sealing, verification | done |
 | `obsign` | Offline verifier — the CLI the auditor runs | done |
-| `obsign-policy` | Signed bundles, Cedar evaluation, tool catalogue | done |
+| `obsign-policy` | Signed bundles, Cedar evaluation, tool catalogue, argument rules (`context.args`) | done |
 | `obsign-identity` | Signed identity bundle, claim mapping, RFC 8693 actor chain, hot rotation | done |
 | `obsign-wal` | Durable local log, replay on startup | done |
 | `obsign-proxy` | MCP proxy (stdio and Streamable HTTP), discovery filtering (`tools/list`, `resources/list`, `prompts/list`), arbitration of every act (`tools/call`, `resources/read`, `prompts/get`, subscriptions, `completion/complete`, server-initiated `sampling`/`elicitation`), default-deny method space | done |
@@ -36,6 +36,8 @@ printf '%s\n' \
  '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"delete_production_db","arguments":{"database":"customers"}}}' \
  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ticket_update","arguments":{"ticket":"T-8821"}}}' \
+ '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"send_message","arguments":{"channel":"#support","text":"T-8821 updated"}}}' \
+ '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"send_message","arguments":{"channel":"#all-hands","text":"T-8821 updated"}}}' \
  | ./target/debug/obsign-proxy \
      --policy /tmp/demo/policy-bundle.json \
      --trusted-keys /tmp/demo/trusted-keys.json \
@@ -52,10 +54,21 @@ What happens:
 [obsign] REFUSED delete_production_db: forbidden by an explicit rule
 [obsign] tools/list: 2 hidden — delete_production_db, exfiltrate_secrets
 [server] EXECUTING ticket_update
+[server] EXECUTING send_message
+[obsign] REFUSED send_message: forbidden by an explicit rule
 ```
 
 The MCP server never saw the destructive call. `exfiltrate_secrets`, which the
 server advertises but the signed catalogue does not describe, is refused too.
+And `send_message` was executed exactly once: the same tool, two verdicts —
+the difference is an *argument*. The catalogue declares which arguments the
+policy may read (`policy_args`), and the rule decides on the value:
+
+```cedar
+@id("support_channel_only")
+forbid (principal, action == Action::"tool_call", resource == Tool::"send_message")
+when { context.args.channel != "#support" };
+```
 
 The resulting log:
 
@@ -68,8 +81,19 @@ seq=4   dec-1    decision       DENY <forbid_destructive_prod>
 seq=5   eff-1    effect         blocked
 seq=6   call-2   tool_call      ticket_update
 seq=7   dec-2    decision       ALLOW <allow_scoped>
-seq=8   eff-2    effect         ok
+seq=8   call-3   tool_call      send_message
+seq=9   dec-3    decision       ALLOW <allow_unscoped>
+seq=10  eff-2    effect         ok
+seq=11  call-4   tool_call      send_message
+seq=12  dec-4    decision       DENY <support_channel_only>
+seq=13  eff-4    effect         blocked
+seq=14  eff-3    effect         ok
 ```
+
+(Effects close out of order — the blocked one is written at decision time,
+the ok ones when the server answers. `eff-N` binds to `call-N` by
+construction, so the log stays unambiguous whatever the interleaving; the
+channel value itself appears nowhere, the record keeps `args_hash`.)
 
 The WAL under `/tmp/demo/wal` is the gateway's only output. It holds no
 signing key — sealing that log into an evidence pack, with a key the gateway
@@ -553,6 +577,23 @@ is refused, even if the MCP server advertises it. An updated — or
 compromised — server can publish new tools at any time; if they are not in the
 catalogue, nobody approved their use.
 
+**Arguments are policy inputs — by declaration, not by default.** The
+catalogue can declare, per tool, which arguments the policy may read
+(`policy_args`: a name, a JSON pointer, a type, an optional default); the
+gateway extracts exactly those and Cedar sees them as `context.args`. That is
+where real refusals live — "`send_message`, but only to `#support`" — and
+what tool-level rules cannot say. The declared allowlist is also the privacy
+boundary: values exist in memory for the decision, the log keeps `args_hash`,
+and a field nobody declared is never even read. Extraction is total — every
+declared arg arrives extracted, defaulted, or the call is refused *before*
+Cedar runs — so a crafted argument shape is a plain recorded denial, never an
+evaluation error: the fail mode stays reserved for failures of our machinery,
+out of the agent's reach. One deliberate asymmetry: `tools/list` evaluates
+without arguments (a listing has none), so an argument-restricted tool stays
+visible — visibility and permission are different questions, and the call
+path is the enforcement point. Declarations require `obsign-policy/2`;
+design: `docs/design/argument-policy-v1.md`.
+
 **Stable rule identifiers, enforced.** Cedar numbers its rules `policy0`,
 `policy1`… by file order. Since that identifier is engraved in the log,
 inserting a rule at the top would silently rename all the following ones and
@@ -626,9 +667,13 @@ that test fails, the question is not "how do I update the constants" but
 Signed *bundles* evolve differently: their format string is part of the
 signed bytes, so a revision is a new string, and every revision an artifact
 was published under keeps verifying with the signing bytes of its day.
-Exercised once: `obsign-identity/2` extended the signed bytes with the
-machine markers; a `/1` bundle keeps its hash and signature, and a `/1` file
-carrying the fields only `/2` signs is refused rather than trusted.
+Exercised twice: `obsign-identity/2` extended the signed bytes with the
+machine markers, and `obsign-policy/2` with the argument declarations. Both
+follow the same two rules: a `/1` bundle keeps its hash and signature, and a
+`/1` file carrying fields only `/2` signs is refused rather than trusted —
+otherwise those fields would be unsigned authority. The control plane emits
+`/2` only when a tool actually declares arguments, so a fleet that never
+uses the feature never forces a gateway upgrade.
 
 ## Known debt
 
@@ -684,7 +729,7 @@ docker compose run --rm demo    # the README demo, sealed and verified
 ## Tests
 
 ```bash
-cargo test --workspace     # 294 tests
+cargo test --workspace     # 319 tests
 ```
 
 Six families, each with a distinct role:
@@ -700,7 +745,12 @@ Six families, each with a distinct role:
   account) and rotation (badly signed bundle rejected, truncated or deleted
   file survived, bounded frequency).
 - `obsign-policy/tests/delegation.rs` — a service account cannot destroy, a delegated
-  human can, and a chain that is too deep is refused.
+  human can, and a chain that is too deep is refused. `tests/args.rs` — the
+  argument rules: right channel through, wrong channel refused by its rule,
+  crafted shape / float / oversize input refused at extraction even on a
+  fail-open tool, an argument-driven evaluation error denied instead of
+  failing open, a v1 bundle with injected declarations fails signature
+  verification, and the smoke evaluation names the rule with the typo.
 - `obsign-ledger/tests/ledger.rs` — the rewritten-WAL attack (internally consistent
   chain, diverging from sealed history) is refused before any new seal;
   truncated logs, edited or spirited-away checkpoints and rebound key ids are
@@ -725,7 +775,7 @@ Six families, each with a distinct role:
   startup and mid-session, applied reloads and rejected ones both surfacing as
   `config_reload` records), plus `tests/e2e.rs` which runs the real binary in
   front of an MCP server and checks that the refused call **never reaches the
-  server**. Two of those tests are regressions found by a manual demo, not by
+  server** — refused on its name or on its arguments alike. Two of those tests are regressions found by a manual demo, not by
   unit tests: duplicated effect identifiers when two calls are in flight, and
   unstable Cedar rule identifiers. `tests/http.rs` covers the Streamable HTTP
   transport with a hand-written HTTP client — deliberately not a client

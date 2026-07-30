@@ -26,17 +26,45 @@ pub struct Compiled {
 /// gateway uses (`Engine::load`, `KeyStore::from_set`) is the point: what
 /// passes here cannot fail there, because it *is* there.
 pub fn compile(tree: &SourceTree, source_ref: &str, ops: &OpsKey) -> Result<Compiled, Error> {
+    // v2 only when some tool declares argument policy: a fleet that never
+    // uses the feature keeps emitting v1, which pre-upgrade gateways still
+    // load — the cutover is self-serve, per repository.
+    let uses_args = tree.tools.iter().any(|t| !t.policy_args.is_empty());
+    let format = if uses_args {
+        obsign_policy::FORMAT_V2
+    } else {
+        obsign_policy::FORMAT
+    };
     let bundle = Bundle {
-        format: obsign_policy::FORMAT.to_string(),
+        format: format.to_string(),
         version: format!("policies@{source_ref}"),
         cedar: tree.cedar.clone(),
         tools: tree.tools.clone(),
         fail_mode: tree.fail_mode.clone(),
     };
-    // Cedar syntax, mandatory @id on every rule, unique ids — exactly the
-    // checks the gateway runs at startup, moved to compile time.
-    obsign_policy::Engine::load(&bundle)
+    // Cedar syntax, mandatory @id on every rule, unique ids, argument
+    // declarations — exactly the checks the gateway runs at startup, moved
+    // to compile time.
+    let engine = obsign_policy::Engine::load(&bundle)
         .map_err(|e| Error::Source(format!("policies: {e}")))?;
+    // One synthetic evaluation per tool: a typo'd `context.args.<name>`
+    // fails here, naming the rule, instead of surfacing months later as a
+    // fail-mode event on a live gateway.
+    //
+    // Gated on the argument feature: the synthetic context evaluates real
+    // policies under zero values, so a rule that only errors under those
+    // synthetic inputs (e.g. `ip(context.args.src)` seen as `ip("")`, or an
+    // arithmetic overflow) would be a false positive. Existing v1 trees
+    // that never used arguments compiled without this check and must keep
+    // doing so — blocking their publish would override the fail-mode choice
+    // this same check's own contract says it must not touch. The check
+    // exists to catch typos in *argument* rules, so it runs exactly when a
+    // tool declares arguments.
+    if uses_args {
+        engine
+            .smoke_check()
+            .map_err(|e| Error::Source(format!("policies: {e}")))?;
+    }
 
     let vk = ops.signing_key().verifying_key();
 

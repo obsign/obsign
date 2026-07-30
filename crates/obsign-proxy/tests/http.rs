@@ -11,7 +11,7 @@ use obsign_audit_core::record::Payload;
 use base64::Engine as _;
 use ed25519_dalek::SigningKey;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use obsign_policy::bundle::{Bundle, FailBehaviour, FailMode, ToolDef, FORMAT};
+use obsign_policy::bundle::{ArgKind, ArgSpec, Bundle, FailBehaviour, FailMode, ToolDef, FORMAT_V2};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -30,10 +30,14 @@ const PKCS8_PREFIX: &[u8] = &[
 
 const IDENTITY_SEED: [u8; 32] = [0x22; 32];
 
-const CEDAR: &str = r#"
+const CEDAR: &str = r##"
 @id("forbid_destructive_prod")
 forbid (principal, action == Action::"tool_call", resource)
 when { resource.destructive && context.env == "prod" };
+
+@id("support_channel_only")
+forbid (principal, action == Action::"tool_call", resource == Tool::"send_message")
+when { context.args.channel != "#support" };
 
 @id("allow_scoped")
 permit (principal, action == Action::"tool_call", resource)
@@ -42,7 +46,7 @@ when { resource.required_scope != "" && context.scopes.contains(resource.require
 @id("allow_unscoped")
 permit (principal, action == Action::"tool_call", resource)
 when { resource.required_scope == "" };
-"#;
+"##;
 
 fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
@@ -138,7 +142,7 @@ fn start(name: &str, oidc: bool, extra: &[&str]) -> Gateway {
 
     let key = SigningKey::from_bytes(&[0x11; 32]);
     let bundle = Bundle {
-        format: FORMAT.to_string(),
+        format: FORMAT_V2.to_string(),
         version: "policies@test".to_string(),
         cedar: CEDAR.to_string(),
         tools: vec![
@@ -147,18 +151,33 @@ fn start(name: &str, oidc: bool, extra: &[&str]) -> Gateway {
                 server: "mcp://test".into(),
                 destructive: true,
                 required_scope: Some("db:admin".into()),
+                policy_args: Vec::new(),
             },
             ToolDef {
                 name: "ticket_update".into(),
                 server: "mcp://test".into(),
                 destructive: false,
                 required_scope: Some("support:ticket_update".into()),
+                policy_args: Vec::new(),
             },
             ToolDef {
                 name: "search_docs".into(),
                 server: "mcp://test".into(),
                 destructive: false,
                 required_scope: None,
+                policy_args: Vec::new(),
+            },
+            ToolDef {
+                name: "send_message".into(),
+                server: "mcp://test".into(),
+                destructive: false,
+                required_scope: None,
+                policy_args: vec![ArgSpec {
+                    name: "channel".into(),
+                    at: None,
+                    kind: ArgKind::String,
+                    default: None,
+                }],
             },
         ],
         fail_mode: FailMode {
@@ -434,6 +453,60 @@ fn session_lifecycle_enforces_and_seals() {
     // The session is really gone.
     let r = call(&gw, &sid, &[], 9, "ticket_update");
     assert_eq!(r.status, 404);
+}
+
+#[test]
+fn argument_rules_apply_over_http() {
+    let gw = start("args", false, &[]);
+    let (sid, _) = initialize(&gw, &[]);
+
+    // Visible despite the channel restriction: a listing carries no
+    // arguments, and the tool is still legitimately callable. Enforcement
+    // is the call path's job.
+    let r = post(
+        &gw,
+        &[("Mcp-Session-Id", &sid)],
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+    );
+    let tools: Vec<&str> = r
+        .body
+        .pointer("/result/tools")
+        .and_then(Value::as_array)
+        .unwrap()
+        .iter()
+        .map(|t| t.get("name").and_then(Value::as_str).unwrap())
+        .collect();
+    assert!(
+        tools.contains(&"send_message"),
+        "an argument-restricted tool must stay listed: {tools:?}"
+    );
+
+    // Conforming call: through. Wrong channel: refused by the rule.
+    // Crafted shape: refused at extraction, before Cedar.
+    let msg = |id: u64, args: Value| {
+        json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
+               "params":{"name":"send_message","arguments":args}})
+    };
+    let r = post(
+        &gw,
+        &[("Mcp-Session-Id", &sid)],
+        msg(3, json!({"channel": "#support", "text": "hi"})),
+    );
+    assert_eq!(r.body.pointer("/result/isError"), Some(&Value::Bool(false)));
+
+    let r = post(
+        &gw,
+        &[("Mcp-Session-Id", &sid)],
+        msg(4, json!({"channel": "#general", "text": "hi"})),
+    );
+    assert_eq!(r.body.pointer("/result/isError"), Some(&Value::Bool(true)));
+
+    let r = post(
+        &gw,
+        &[("Mcp-Session-Id", &sid)],
+        msg(5, json!({"channel": {"id": "C0123"}})),
+    );
+    assert_eq!(r.body.pointer("/result/isError"), Some(&Value::Bool(true)));
 }
 
 #[test]

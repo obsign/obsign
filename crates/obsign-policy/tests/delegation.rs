@@ -45,6 +45,7 @@ fn tool_def(name: &str, destructive: bool) -> ToolDef {
         server: "mcp://t".into(),
         destructive,
         required_scope: None,
+        policy_args: Vec::new(),
     }
 }
 

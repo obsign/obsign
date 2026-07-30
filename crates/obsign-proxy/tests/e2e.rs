@@ -14,7 +14,9 @@ use obsign_audit_core::record::Payload;
 use base64::Engine as _;
 use ed25519_dalek::SigningKey;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use obsign_policy::bundle::{Bundle, FailBehaviour, FailMode, ToolDef, FORMAT};
+use obsign_policy::bundle::{
+    ArgKind, ArgSpec, Bundle, FailBehaviour, FailMode, ToolDef, FORMAT, FORMAT_V2,
+};
 use serde_json::{json, Value};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -199,6 +201,7 @@ fn tool(name: &str, destructive: bool, scope: Option<&str>) -> ToolDef {
         server: "mcp://test".into(),
         destructive,
         required_scope: scope.map(String::from),
+        policy_args: Vec::new(),
     }
 }
 
@@ -222,11 +225,6 @@ fn run_with(
     traffic: &[&str],
     key_mode: KeyMode,
 ) -> Fixture {
-    let dir = std::env::temp_dir().join(format!("obsign-e2e-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-
-    let key = SigningKey::from_bytes(&[0x11; 32]);
     let bundle = Bundle {
         format: FORMAT.to_string(),
         version: "policies@test".to_string(),
@@ -241,6 +239,23 @@ fn run_with(
             tools: Default::default(),
         },
     };
+    run_bundle_with(name, bundle, ident, traffic, key_mode)
+}
+
+/// Same harness, caller-supplied bundle — for catalogues the standard
+/// fixture cannot express (argument declarations need `obsign-policy/2`).
+fn run_bundle_with(
+    name: &str,
+    bundle: Bundle,
+    ident: Ident,
+    traffic: &[&str],
+    key_mode: KeyMode,
+) -> Fixture {
+    let dir = std::env::temp_dir().join(format!("obsign-e2e-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let key = SigningKey::from_bytes(&[0x11; 32]);
     let signed = bundle.sign("policy-key", &key);
     let keys = keyring(&key);
 
@@ -415,6 +430,80 @@ fn destructive_tool_in_prod_is_blocked_before_the_server() {
         f.stderr.contains("[server] EXECUTING ticket_update"),
         "the allowed call should have been executed"
     );
+}
+
+#[test]
+fn argument_rule_blocks_before_the_server() {
+    // "send_message, but only to #support" — the refusal class that lives
+    // in the arguments, not the tool name. Same crucial assertion as the
+    // destructive test: the non-conforming calls never reach the server.
+    let cedar = r##"
+    @id("support_channel_only")
+    forbid (principal, action == Action::"tool_call", resource == Tool::"send_message")
+    when { context.args.channel != "#support" };
+
+    @id("allow_all")
+    permit (principal, action == Action::"tool_call", resource);
+    "##;
+    let bundle = Bundle {
+        format: FORMAT_V2.to_string(),
+        version: "policies@test".to_string(),
+        cedar: cedar.to_string(),
+        tools: vec![ToolDef {
+            name: "send_message".into(),
+            server: "mcp://test".into(),
+            destructive: false,
+            required_scope: None,
+            policy_args: vec![ArgSpec {
+                name: "channel".into(),
+                at: None,
+                kind: ArgKind::String,
+                default: None,
+            }],
+        }],
+        fail_mode: FailMode {
+            default: FailBehaviour::Closed,
+            tools: Default::default(),
+        },
+    };
+    let traffic: &[&str] = &[
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+        r##"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"send_message","arguments":{"channel":"#support","text":"hi"}}}"##,
+        r##"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"send_message","arguments":{"channel":"#annonces-direction","text":"hi"}}}"##,
+        r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"send_message","arguments":{}}}"#,
+        r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"send_message","arguments":{"channel":{"id":"C0123"}}}}"#,
+    ];
+    let f = run_bundle_with("args", bundle, declared(), traffic, KeyMode::None);
+
+    // Conforming call: executed. Wrong channel, missing channel, crafted
+    // shape: all errored back to the agent.
+    assert_eq!(f.reply(2).pointer("/result/isError"), Some(&Value::Bool(false)));
+    for id in [3, 4, 5] {
+        assert_eq!(
+            f.reply(id).pointer("/result/isError"),
+            Some(&Value::Bool(true)),
+            "id={id} should have been refused"
+        );
+    }
+
+    assert_eq!(
+        f.stderr.matches("[server] EXECUTING send_message").count(),
+        1,
+        "exactly the conforming call must reach the server:\n{}",
+        f.stderr
+    );
+
+    // The rule denial carries its @id; the two malformed-argument refusals
+    // come from the gate itself — policy_id absent, like an
+    // out-of-catalogue tool.
+    let d = f.decisions();
+    assert_eq!(d[0], ("allow".to_string(), Some("allow_all".to_string())));
+    assert_eq!(
+        d[1],
+        ("deny".to_string(), Some("support_channel_only".to_string()))
+    );
+    assert_eq!(d[2], ("deny".to_string(), None));
+    assert_eq!(d[3], ("deny".to_string(), None));
 }
 
 #[test]

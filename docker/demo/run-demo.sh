@@ -47,6 +47,17 @@ echo "[demo] scoped call — allowed:"
 post '{"jsonrpc":"2.0","id":4,"method":"tools/call",
        "params":{"name":"ticket_update","arguments":{"ticket":"T-8821"}}}'
 
+echo "[demo] argument rule — send_message to #support goes through:"
+post '{"jsonrpc":"2.0","id":5,"method":"tools/call",
+       "params":{"name":"send_message",
+                 "arguments":{"channel":"#support","text":"ticket T-8821 updated"}}}'
+
+echo "[demo] same tool, wrong channel — refused on its arguments, and the"
+echo "[demo] refusal lands in the log under its rule id (support_channel_only):"
+post '{"jsonrpc":"2.0","id":6,"method":"tools/call",
+       "params":{"name":"send_message",
+                 "arguments":{"channel":"#all-hands","text":"ticket T-8821 updated"}}}'
+
 echo "[demo] closing the session (completes the log)"
 curl -s -X DELETE "$GW" -H "$AUTH" -H "Mcp-Session-Id: $SID" > /dev/null
 

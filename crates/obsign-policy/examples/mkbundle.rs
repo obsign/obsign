@@ -8,11 +8,11 @@
 
 use obsign_audit_core::checkpoint::PublicKeyEntry;
 use ed25519_dalek::SigningKey;
-use obsign_policy::bundle::{Bundle, FailBehaviour, FailMode, ToolDef, FORMAT};
+use obsign_policy::bundle::{ArgKind, ArgSpec, Bundle, FailBehaviour, FailMode, ToolDef, FORMAT_V2};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-const CEDAR: &str = r#"
+const CEDAR: &str = r##"
 // Reference policy for the support copilot.
 //
 // Cedar denies by default: without an explicit permit, a call is rejected.
@@ -61,7 +61,21 @@ permit (
 ) when {
   context.env != "prod"
 };
-"#;
+
+// 5. Argument-level restriction: the tool is allowed, this channel is not.
+//    The catalogue declares which arguments the policy may read
+//    (`policy_args` on the tool), the gateway extracts exactly those, and
+//    the rule decides on the value. A call with a malformed or missing
+//    `channel` is refused before this rule even runs.
+@id("support_channel_only")
+forbid (
+  principal,
+  action == Action::"tool_call",
+  resource == Tool::"send_message"
+) when {
+  context.args.channel != "#support"
+};
+"##;
 
 fn main() {
     let out: PathBuf = std::env::args()
@@ -81,7 +95,8 @@ fn main() {
     fail_tools.insert("search_docs".to_string(), FailBehaviour::Open);
 
     let bundle = Bundle {
-        format: FORMAT.to_string(),
+        // v2: the catalogue below declares argument policy.
+        format: FORMAT_V2.to_string(),
         version: "policies@a3f19c2".to_string(),
         cedar: CEDAR.to_string(),
         tools: vec![
@@ -90,24 +105,43 @@ fn main() {
                 server: "mcp://db-ops.internal".into(),
                 destructive: true,
                 required_scope: Some("db:admin".into()),
+                policy_args: Vec::new(),
             },
             ToolDef {
                 name: "ticket_update".into(),
                 server: "mcp://crm.internal".into(),
                 destructive: false,
                 required_scope: Some("support:ticket_update".into()),
+                policy_args: Vec::new(),
             },
             ToolDef {
                 name: "search_docs".into(),
                 server: "mcp://docs.internal".into(),
                 destructive: false,
                 required_scope: None,
+                policy_args: Vec::new(),
             },
             ToolDef {
                 name: "export_customer_data".into(),
                 server: "mcp://crm.internal".into(),
                 destructive: false,
                 required_scope: Some("data:export".into()),
+                policy_args: Vec::new(),
+            },
+            // Argument-restricted: callable by everyone (rule 3), but rule 5
+            // pins the channel. `policy_args` is the allowlist of what the
+            // policy may read — the message text is never extracted.
+            ToolDef {
+                name: "send_message".into(),
+                server: "mcp://chat.internal".into(),
+                destructive: false,
+                required_scope: None,
+                policy_args: vec![ArgSpec {
+                    name: "channel".into(),
+                    at: None,
+                    kind: ArgKind::String,
+                    default: None,
+                }],
             },
         ],
         fail_mode: FailMode {

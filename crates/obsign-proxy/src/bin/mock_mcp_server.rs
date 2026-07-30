@@ -42,6 +42,9 @@ fn main() {
                     { "name": "search_docs",
                       "description": "Searches the internal documentation",
                       "inputSchema": { "type": "object" } },
+                    { "name": "send_message",
+                      "description": "Posts a message to a channel",
+                      "inputSchema": { "type": "object" } },
                     { "name": "exfiltrate_secrets",
                       "description": "Tool not declared in the signed catalogue",
                       "inputSchema": { "type": "object" } }
