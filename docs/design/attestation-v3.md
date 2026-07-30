@@ -1,5 +1,57 @@
 # Remote attestation — v3 design
 
+Status: **verification layer AND enrollment signer implemented, exercised
+end-to-end against swtpm** (2026-07-30, branch `los-angeles`, 263 tests).
+The §8-item-3 piece the first landing deferred now exists: `tpm-enroll`
+(binary `probant-tpm-enroll`) speaks the TPM2 command stream directly over
+swtpm's TCP sockets — hand-rolled marshalling of Startup, GetCapability,
+CreatePrimary, PCR_Extend/Read, Certify, Quote, FlushContext plus the swtpm
+control channel (CMD_INIT), no TSS stack — creates the AK and the identity
+key, measures the gateway binary hash into a PCR, and emits the
+`KeyAttestation` that `audit_core::verify_attestation` accepts. A gated
+integration test (`crates/tpm-enroll/tests/swtpm.rs`, the SoftHSM pattern:
+skips vacuously without `swtpm` on PATH) provisions its own swtpm, enrolls,
+verifies the real output offline, and proves tamper cases against it; real
+swtpm output is also embedded as fixtures in audit-core's unit tests.
+
+The two flagged interop points, resolved by real TPM output:
+
+1. **AK algorithm — ECDSA-P256 on swtpm.** The libtpms build under swtpm
+   0.10 implements **no EdDSA**: `TPM_CAP_ALGS` lists no `TPM_ALG_EDDSA`
+   (0x0060), `TPM_CAP_ECC_CURVES` no 25519 curve (0x0040), and an EdDSA
+   `CreatePrimary` fails with `TPM_RC_SCHEME` (0x2d2, parameter 2). The
+   enroller therefore picks the algorithm off the TPM's capabilities —
+   ed25519 where implemented (system-uniform, the templates exist), else
+   ECDSA-P256 — and the verifier accepts both AK shapes: 32-byte ed25519
+   key with a signature over the attest bytes, or 65-byte uncompressed
+   P-256 point with a raw `r || s` signature over the attest's SHA-256,
+   checked by a hand-rolled verification-only P-256 in `audit_core::p256`
+   (public inputs only, so correctness — pinned by OpenSSL known-answer
+   vectors and the swtpm fixtures — is the whole requirement).
+2. **Name binding — the real form, `alg || H(TPMT_PUBLIC)`.** Confirmed:
+   swtpm's certify names exactly `0x000B || SHA256(marshalled TPMT_PUBLIC)`.
+   `KeyAttestation` gained `identity_pub` (the identity key's marshalled
+   `TPMT_PUBLIC`, hex, `serde(default)`, covered by the ops signature via
+   `opt_str` in `signing_bytes`): when present the verifier recomputes the
+   Name from it *and* requires the raw key extracted from it to equal the
+   enrolled bundle entry; when absent the original synthetic binding
+   `alg || H(raw ed25519 key)` still applies, so pre-hardware attestations
+   and the synthesizer tests verify unchanged.
+
+Remaining, named, untested: **real silicon.** swtpm proves the wire format
+and the ceremony against an independent TPM 2.0 implementation, not against
+hardware: no vendor EK certificate has been chained (a fresh swtpm carries
+none; `ek_cert` rides opaquely, the out-of-band stance unchanged), and the
+ed25519 template/signature path — the preferred algorithm where EdDSA-capable
+TPMs exist — has no EdDSA implementation to run against yet. Note the
+system-uniformity consequence meanwhile: a P-256 identity key verifies
+through the attestation layer (fixtures prove it), but the rest of the
+system signs ed25519, so on an EdDSA-less TPM the *identity key in the
+bundle* cannot yet be the TPM-resident key; closing that (P-256 session
+certificates, or EdDSA hardware) is a follow-on decision, not taken here.
+
+*The first-landing status follows.*
+
 Status: **verification layer implemented** (2026-07-30, branch
 `wal-origin-auth-design`, 221 tests) — option **(a)** of §10.4. Implements
 §7.5 of [wal-origin-auth.md](wal-origin-auth.md), the horizon v2 §8 did not
@@ -39,7 +91,7 @@ enrollment signer that produces the AK, the `TPM2_Certify` and the
 implementation's* reading of the TCG wire format; only real-hardware output
 can confirm it, and the identity Name is bound as `alg || H(raw pubkey)`
 rather than `alg || H(TPMT_PUBLIC)` — both are the flagged real-TPM interop
-points.
+points. *(Both since resolved — see the current status above.)*
 
 ---
 
