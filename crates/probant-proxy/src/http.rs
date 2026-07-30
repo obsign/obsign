@@ -303,9 +303,9 @@ fn handle_post(
 
     // In OIDC mode a request with no token at all cannot be attributed to
     // anyone; there is nothing meaningful to record. 401 per the MCP
-    // authorization spec. A *presented but invalid* token on `tools/call`
-    // goes through arbitration instead, because a refused attempt must leave
-    // a record.
+    // authorization spec. A *presented but invalid* token on an arbitrated
+    // method goes through arbitration instead, because a refused attempt
+    // must leave a record.
     if matches!(gw.identity, Identity::Oidc { .. }) && bearer.is_none() {
         respond_json(
             stream,
@@ -319,11 +319,13 @@ fn handle_post(
 
     let has_id = msg.get("id").is_some_and(|v| !v.is_null());
 
-    // Requests other than tools/call never reach the auth path inside
-    // `handle_from_agent`, but their *responses* consult the delegation —
-    // tools/list filtering above all. Present the token here so a renewal
-    // takes effect before the request is forwarded, not one call later.
-    if method != Some("tools/call") {
+    // Requests the gateway does not arbitrate never reach the auth path
+    // inside `handle_from_agent`, but their *responses* consult the
+    // delegation — discovery filtering above all. Present the token here so
+    // a renewal takes effect before the request is forwarded, not one call
+    // later. Arbitrated methods present it themselves, under the session
+    // lock, where it belongs.
+    if !gateway::arbitrated(method) {
         present_bearer(&sess, bearer);
     }
 

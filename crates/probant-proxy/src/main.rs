@@ -9,11 +9,13 @@
 //!
 //! Three interceptions, identical on both transports:
 //!
-//! * `tools/list`: the response is filtered, the agent only sees the tools the
-//!   policy allows it. What you cannot see, you do not attempt.
-//! * `tools/call`: identity verified, policy evaluated, act logged, then
-//!   forwarded or refused.
-//! * everything else: relayed as-is.
+//! * discovery (`tools/list`, `resources/list`, `prompts/list`): the response
+//!   is filtered, the agent only sees what the policy allows it. What you
+//!   cannot see, you do not attempt.
+//! * acts (`tools/call`, `resources/read`, `resources/subscribe`,
+//!   `resources/unsubscribe`, `prompts/get`): identity verified, policy
+//!   evaluated, act logged, then forwarded or refused.
+//! * everything else — protocol machinery: relayed as-is.
 //!
 //! **All logging goes to stderr.** stdout is the MCP channel in stdio mode:
 //! one stray `println!` and the protocol is broken.
@@ -45,8 +47,10 @@ use wal::Wal;
     name = "probant-proxy",
     about = "MCP proxy enforcing a signed policy and logging every act",
     long_about = "Sits between an agent and an MCP server (stdio or Streamable\n\
-                  HTTP transport). Filters tools/list, arbitrates tools/call,\n\
-                  and engraves everything into an offline-verifiable audit log."
+                  HTTP transport). Filters discovery (tools/list, resources/list,\n\
+                  prompts/list), arbitrates every act (tools/call, resources/read,\n\
+                  prompts/get, subscriptions), and engraves everything into an\n\
+                  offline-verifiable audit log."
 )]
 struct Cli {
     /// Signed policy bundle (JSON)

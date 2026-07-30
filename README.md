@@ -21,7 +21,7 @@ policy decides, the log is sealed, and the auditor verifies offline.
 | `policy` | Signed bundles, Cedar evaluation, tool catalogue | done |
 | `identity` | Signed identity bundle, claim mapping, RFC 8693 actor chain, hot rotation | done |
 | `wal` | Durable local log, replay on startup | done |
-| `probant-proxy` | MCP proxy (stdio and Streamable HTTP), `tools/list` filtering, `tools/call` arbitration | done |
+| `probant-proxy` | MCP proxy (stdio and Streamable HTTP), discovery filtering (`tools/list`, `resources/list`, `prompts/list`), arbitration of every act (`tools/call`, `resources/read`, `prompts/get`, subscriptions) | done |
 | `ledger` | Sealing away from the gateway, checkpoint store, RFC 3161 anchoring, evidence export | done |
 | `control-plane` | Compiling policies from git, immutable signed releases, fleet evidence export, read-only console | done |
 
@@ -564,9 +564,19 @@ make every earlier record wrong. Every rule must therefore carry an
 we have the trace of an act that did not happen — awkward but defensible. The
 other way round we would have an act with no trace, which ruins the product.
 
-**`tools/list` filtering.** The agent only discovers the tools it can call. An
+**Discovery filtering.** The agent only discovers what it can access —
+`tools/list`, `resources/list` and `prompts/list` are all filtered. An
 invisible tool is never attempted: that many fewer refusals to handle, and that
 much less surface offered to a prompt injection.
+
+**The read channels are arbitrated too.** `resources/read`, `resources/
+subscribe`, `resources/unsubscribe` and `prompts/get` move data exactly as
+`tools/call` does, so they go through the same gate: identity verified, policy
+evaluated (Cedar actions `resource_read` and `prompt_get`, default deny),
+attempt recorded (`mcp_access`), effect recorded. There is no signed catalogue
+of resource URIs — the server mints them at runtime — so policies match the
+target exactly (`resource == Resource::"docs://runbook"`) or by pattern
+(`context.target like "docs://*"`).
 
 ## Format compatibility
 
@@ -574,10 +584,10 @@ The `Payload` discriminants and the canonical encoding are **frozen**. Changing
 them invalidates every already-sealed log. A new payload type takes the next
 free integer; we never renumber.
 
-The rule has already been exercised twice: `Payload::Actor` (tag 7) was added
-after the fact for the actor chain, rather than adding a field to
-`Delegation`, and `Payload::ConfigReload` (tag 8) the same way for
-configuration reloads. The `record_format_is_frozen` test carries reference
+The rule has already been exercised several times: `Payload::Actor` (tag 7)
+was added after the fact for the actor chain, rather than adding a field to
+`Delegation`, then `Payload::ConfigReload` (tag 8), `Payload::SessionCert`
+(tag 9) and `Payload::McpAccess` (tag 10) the same way. The `record_format_is_frozen` test carries reference
 hashes for the existing payloads — none of them moved either time. The day
 that test fails, the question is not "how do I update the constants" but
 "which sealed logs have just been invalidated".

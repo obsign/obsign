@@ -58,6 +58,43 @@ impl ToolRequest {
     }
 }
 
+/// Non-tool MCP capabilities the gateway arbitrates.
+///
+/// Unlike tools there is no signed catalogue to check against — resource
+/// URIs and prompt names are minted by the MCP server at runtime — so
+/// Cedar's default deny is the whole gate: absent an explicit permit for the
+/// action, the access is refused. Policies match the target either exactly
+/// (`resource == Resource::"file:///etc/motd"`) or by pattern
+/// (`context.target like "docs/*"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Capability {
+    /// `resources/read`, `resources/subscribe`, `resources/unsubscribe`:
+    /// one permission for the three — a subscription is only ever a promise
+    /// of reads, and denying the read must deny the promise too.
+    ResourceRead,
+    /// `prompts/get`.
+    PromptGet,
+}
+
+impl Capability {
+    /// Cedar action name. Also the key under which `fail_mode.tools` may
+    /// override the fail behaviour for this capability.
+    pub fn action(&self) -> &'static str {
+        match self {
+            Capability::ResourceRead => "resource_read",
+            Capability::PromptGet => "prompt_get",
+        }
+    }
+
+    /// Cedar entity type of the resource.
+    pub fn entity_type(&self) -> &'static str {
+        match self {
+            Capability::ResourceRead => "Resource",
+            Capability::PromptGet => "Prompt",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Verdict {
     pub outcome: Outcome,
@@ -157,7 +194,16 @@ impl Engine {
 
         match self.authorize(req, def) {
             Ok(v) => v,
-            Err(e) => self.on_failure(req, &e),
+            Err(e) => self.on_failure(&req.tool, &e),
+        }
+    }
+
+    /// Arbitrates a non-tool capability access. The `tool` field of the
+    /// request carries the target — the resource URI or the prompt name.
+    pub fn evaluate_capability(&self, cap: Capability, req: &ToolRequest) -> Verdict {
+        match self.authorize_capability(cap, req) {
+            Ok(v) => v,
+            Err(e) => self.on_failure(cap.action(), &e),
         }
     }
 
@@ -166,21 +212,7 @@ impl Engine {
         let action = uid("Action", "tool_call")?;
         let resource = uid("Tool", &def.name)?;
 
-        // Principal entity: groups become parents, so
-        // `principal in Group::"dba"` works inside policies.
-        let mut group_uids = HashSet::new();
-        let mut group_entities = Vec::new();
-        for g in &req.groups {
-            let g_uid = uid("Group", g)?;
-            group_entities.push(
-                Entity::new(g_uid.clone(), HashMap::new(), HashSet::new())
-                    .map_err(|e| Error::Cedar(e.to_string()))?,
-            );
-            group_uids.insert(g_uid);
-        }
-
-        let principal_entity = Entity::new(principal.clone(), HashMap::new(), group_uids)
-            .map_err(|e| Error::Cedar(e.to_string()))?;
+        let (principal_entity, group_entities) = self.principal_entities(req, &principal)?;
 
         let mut tool_attrs = HashMap::new();
         tool_attrs.insert(
@@ -208,7 +240,75 @@ impl Engine {
         let entities =
             Entities::from_entities(all, None).map_err(|e| Error::Cedar(e.to_string()))?;
 
-        let context = Context::from_pairs([
+        let context = Context::from_pairs(self.context_pairs(req))
+            .map_err(|e| Error::Cedar(e.to_string()))?;
+
+        let request = Request::new(principal, action, resource, context, None)
+            .map_err(|e| Error::Cedar(e.to_string()))?;
+
+        self.decide(&request, &entities)
+    }
+
+    fn authorize_capability(&self, cap: Capability, req: &ToolRequest) -> Result<Verdict, Error> {
+        let principal = uid("User", &req.principal)?;
+        let action = uid("Action", cap.action())?;
+        let resource = uid(cap.entity_type(), &req.tool)?;
+
+        let (principal_entity, group_entities) = self.principal_entities(req, &principal)?;
+
+        // No attributes: a resource URI carries no signed metadata the way a
+        // catalogued tool does. Policies decide on the identifier alone.
+        let resource_entity = Entity::new(resource.clone(), HashMap::new(), HashSet::new())
+            .map_err(|e| Error::Cedar(e.to_string()))?;
+
+        let mut all = vec![principal_entity, resource_entity];
+        all.extend(group_entities);
+        let entities =
+            Entities::from_entities(all, None).map_err(|e| Error::Cedar(e.to_string()))?;
+
+        // The target also goes into the context as a plain string: entity
+        // equality only matches exactly, `context.target like "docs/*"` is
+        // how a policy grants a family of resources.
+        let mut pairs = self.context_pairs(req);
+        pairs.push((
+            "target".to_string(),
+            RestrictedExpression::new_string(req.tool.clone()),
+        ));
+        let context =
+            Context::from_pairs(pairs).map_err(|e| Error::Cedar(e.to_string()))?;
+
+        let request = Request::new(principal, action, resource, context, None)
+            .map_err(|e| Error::Cedar(e.to_string()))?;
+
+        self.decide(&request, &entities)
+    }
+
+    /// Principal and group entities: groups become parents, so
+    /// `principal in Group::"dba"` works inside policies.
+    fn principal_entities(
+        &self,
+        req: &ToolRequest,
+        principal: &EntityUid,
+    ) -> Result<(Entity, Vec<Entity>), Error> {
+        let mut group_uids = HashSet::new();
+        let mut group_entities = Vec::new();
+        for g in &req.groups {
+            let g_uid = uid("Group", g)?;
+            group_entities.push(
+                Entity::new(g_uid.clone(), HashMap::new(), HashSet::new())
+                    .map_err(|e| Error::Cedar(e.to_string()))?,
+            );
+            group_uids.insert(g_uid);
+        }
+
+        let principal_entity = Entity::new(principal.clone(), HashMap::new(), group_uids)
+            .map_err(|e| Error::Cedar(e.to_string()))?;
+        Ok((principal_entity, group_entities))
+    }
+
+    /// Context shared by every arbitration, whatever the action.
+    fn context_pairs(&self, req: &ToolRequest) -> Vec<(String, RestrictedExpression)> {
+        vec![
             (
                 "env".to_string(),
                 RestrictedExpression::new_string(req.env.clone()),
@@ -250,15 +350,13 @@ impl Engine {
                         .map(|s| RestrictedExpression::new_string(s.clone())),
                 ),
             ),
-        ])
-        .map_err(|e| Error::Cedar(e.to_string()))?;
+        ]
+    }
 
-        let request = Request::new(principal, action, resource, context, None)
-            .map_err(|e| Error::Cedar(e.to_string()))?;
-
+    fn decide(&self, request: &Request, entities: &Entities) -> Result<Verdict, Error> {
         let response = self
             .authorizer
-            .is_authorized(&request, &self.policies, &entities);
+            .is_authorized(request, &self.policies, entities);
 
         // An evaluation error (missing attribute, type mismatch) must never
         // be confused with a clean denial: it means the policy is broken, and
@@ -297,8 +395,10 @@ impl Engine {
         })
     }
 
-    fn on_failure(&self, req: &ToolRequest, err: &Error) -> Verdict {
-        match self.fail_mode.for_tool(&req.tool) {
+    /// `key` is the tool name for a tool call, the Cedar action name
+    /// (`resource_read`, `prompt_get`) for a capability access.
+    fn on_failure(&self, key: &str, err: &Error) -> Verdict {
+        match self.fail_mode.for_tool(key) {
             FailBehaviour::Closed => Verdict {
                 outcome: Outcome::Deny,
                 policy_id: None,

@@ -493,6 +493,7 @@ fn kind(rec: &Record) -> &'static str {
         Payload::AgentSession(_) => "agent_session",
         Payload::LlmTurn(_) => "llm_turn",
         Payload::ToolCall(_) => "tool_call",
+        Payload::McpAccess(_) => "mcp_access",
         Payload::Decision(_) => "decision",
         Payload::Effect(_) => "effect",
         Payload::ConfigReload(_) => "config_reload",
@@ -516,6 +517,12 @@ fn summary(rec: &Record) -> String {
         Payload::AgentSession(a) => esc(&a.agent_id),
         Payload::LlmTurn(t) => format!("{} / {}", esc(&t.provider), esc(&t.model)),
         Payload::ToolCall(c) => format!("{} @ {}", esc(&c.tool), esc(&c.server)),
+        Payload::McpAccess(a) => format!(
+            "{} {} @ {}",
+            esc(&a.method),
+            esc(&a.target),
+            esc(&a.server)
+        ),
         Payload::Decision(d) => {
             let mut s = format!("<b>{}</b>", d.outcome.as_str().to_uppercase());
             if let Some(p) = &d.policy_id {

@@ -433,6 +433,24 @@ fn record_format_is_frozen() {
             },
             "2266c6b5d3d5e8d84ecb28263d9946eaf4e70bbfa589d4a10300b643e1fa2e55",
         ),
+        (
+            "mcp_access",
+            Record {
+                seq: 6,
+                ts_ms: 1_700_000_000_006,
+                prev_hash: Hash([0x78; 32]),
+                id: "call-2".into(),
+                parent_id: Some("agent-1".into()),
+                session_id: "s1".into(),
+                payload: Payload::McpAccess(McpAccess {
+                    server: "mcp://x".into(),
+                    method: "resources/read".into(),
+                    target: "db://prod/customers".into(),
+                    params_hash: Hash([0x9A; 32]),
+                }),
+            },
+            "385417e7302da20cb5e9b2ae3f80f7faee4c4f8982f4b543cf77bbcc7e7c8e62",
+        ),
     ];
 
     for (name, rec, expected) in cases {
@@ -496,6 +514,12 @@ fn every_payload_survives_a_json_round_trip() {
             bundle_version: "identity@1".into(),
             bundle_hash: Some(Hash([5; 32])),
             reason: Some("bad signature".into()),
+        }),
+        Payload::McpAccess(McpAccess {
+            server: "mcp://x".into(),
+            method: "prompts/get".into(),
+            target: "summarize".into(),
+            params_hash: Hash([6; 32]),
         }),
     ];
 
