@@ -77,6 +77,9 @@ impl DeploymentBundle {
                     .str(&a.ek_cert)
                     .str(&a.certify)
                     .str(&a.quote);
+                // Presence-tagged (`opt_str`), so an attestation without the
+                // TPMT_PUBLIC cannot be re-read as one with it or vice versa.
+                e.opt_str(a.identity_pub.as_deref());
                 e.u64(a.expected_pcrs.len() as u64);
                 for p in &a.expected_pcrs {
                     e.u64(p.index as u64).str(&p.digest);
