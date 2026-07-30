@@ -188,14 +188,54 @@ pub(crate) fn handle_from_agent(
             );
         }
         if !id.is_null() {
-            s.pending.insert(
-                id.to_string(),
-                Pending {
-                    decision_record_id: decision_id,
-                    effect_record_id: effect_id,
-                    started: Instant::now(),
-                },
-            );
+            match s.pending.entry(id.to_string()) {
+                // The agent reused a JSON-RPC id while its first call is
+                // still in flight. Overwriting the slot would leave two
+                // forwarded calls waiting on one id: whichever response
+                // arrives first would close the wrong Effect record and the
+                // displaced one would never be written. The in-flight call
+                // keeps its slot; this one is refused, with its own Effect,
+                // so every recorded call still ends in exactly one effect.
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    s.write(
+                        effect_id,
+                        Some(decision_id),
+                        Payload::Effect(Effect {
+                            status: EffectStatus::Blocked,
+                            result_hash: None,
+                            latency_ms: 0,
+                        }),
+                    )?;
+                    drop(s);
+                    eprintln!(
+                        "[probant] REFUSED {tool}: JSON-RPC id {id} is already in flight"
+                    );
+                    return Ok(Forward::Reply(
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {
+                                "content": [{
+                                    "type": "text",
+                                    "text": format!(
+                                        "Call refused: JSON-RPC id {id} is already \
+                                         awaiting a response on this session"
+                                    )
+                                }],
+                                "isError": true
+                            }
+                        })
+                        .to_string(),
+                    ));
+                }
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(Pending {
+                        decision_record_id: decision_id,
+                        effect_record_id: effect_id,
+                        started: Instant::now(),
+                    });
+                }
+            }
         }
         return Ok(Forward::Pass(raw));
     }
@@ -332,4 +372,103 @@ pub(crate) fn handle_from_server(
     }
 
     msg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::Auth;
+    use crate::session;
+    use policy::bundle::{Bundle, FailBehaviour, FailMode, ToolDef, FORMAT};
+    use wal::Wal;
+
+    fn ctx() -> Ctx {
+        let bundle = Bundle {
+            format: FORMAT.to_string(),
+            version: "policies@test".to_string(),
+            cedar: "@id(\"allow_all\")\n\
+                    permit (principal, action == Action::\"tool_call\", resource);\n"
+                .to_string(),
+            tools: vec![ToolDef {
+                name: "search_docs".into(),
+                server: "mcp://test".into(),
+                destructive: false,
+                required_scope: None,
+            }],
+            fail_mode: FailMode {
+                default: FailBehaviour::Closed,
+                tools: Default::default(),
+            },
+        };
+        Ctx {
+            engine: Arc::new(Engine::load(&bundle).unwrap()),
+            auth: Arc::new(Mutex::new(Auth::declared("marie", Vec::new(), Vec::new()))),
+            env: "prod".into(),
+            agent_id: "agent-test".into(),
+            bundle_version: "policies@test".into(),
+        }
+    }
+
+    #[test]
+    fn a_reused_in_flight_id_is_refused_and_no_effect_record_is_lost() {
+        // Regression: `pending.insert` used to overwrite the slot when the
+        // agent reused a JSON-RPC id, so the displaced call's Effect record
+        // was never written — a forwarded act with no recorded outcome.
+        let dir = std::env::temp_dir().join(format!(
+            "probant-gw-id-collision-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (wal, chain) = Wal::open(&dir, "t").unwrap();
+        let state = Arc::new(Mutex::new(session::open(chain, wal, "sess".into())));
+        let ctx = ctx();
+
+        let call = json!({
+            "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+            "params": { "name": "search_docs", "arguments": {} }
+        });
+
+        let first = handle_from_agent(call.clone(), &state, &ctx, None).unwrap();
+        assert!(matches!(first, Forward::Pass(_)));
+
+        let second = handle_from_agent(call, &state, &ctx, None).unwrap();
+        match second {
+            Forward::Reply(r) => {
+                assert!(r.contains("isError"), "the agent must see a tool error");
+                assert!(r.contains("already"), "the reason must name the collision");
+            }
+            Forward::Pass(_) => panic!("a colliding id must not be forwarded"),
+        }
+
+        // The in-flight call kept its slot and closes normally.
+        let resp = json!({ "jsonrpc": "2.0", "id": 7, "result": { "content": [] } });
+        handle_from_server(resp, &state, &ctx, "sess");
+
+        let recs = state.lock().unwrap().wal.read_all().unwrap();
+        let calls = recs
+            .iter()
+            .filter(|r| matches!(r.payload, Payload::ToolCall(_)))
+            .count();
+        let effects: Vec<&EffectStatus> = recs
+            .iter()
+            .filter_map(|r| match &r.payload {
+                Payload::Effect(e) => Some(&e.status),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(calls, 2);
+        assert_eq!(
+            effects.len(),
+            2,
+            "every recorded call must end in exactly one effect"
+        );
+        assert!(effects.contains(&&EffectStatus::Blocked));
+        assert!(effects.contains(&&EffectStatus::Ok));
+
+        let ids: std::collections::HashSet<&str> =
+            recs.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids.len(), recs.len(), "record identifiers must stay unique");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

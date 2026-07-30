@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 
 /// A timestamp token attached to a checkpoint in an evidence pack.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Anchor {
     /// `Checkpoint::hash()` of the checkpoint the TSA timestamped.
     pub checkpoint_hash: Hash,

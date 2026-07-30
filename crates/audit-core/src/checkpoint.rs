@@ -123,6 +123,10 @@ pub fn seal_interval(
     })
 }
 
+/// The one pack structure without `deny_unknown_fields`: serde does not
+/// support it in combination with `flatten`, on either side. The exposure is
+/// small — a stray field cannot alter verification, since the signature is
+/// checked over `signing_bytes()`, which is rebuilt from the known fields.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SignedCheckpoint {
     #[serde(flatten)]
@@ -150,6 +154,7 @@ impl SignedCheckpoint {
 
 /// A public key as it appears in an evidence pack.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct PublicKeyEntry {
     pub key_id: String,
     /// Only algorithm accepted for now: `ed25519`.

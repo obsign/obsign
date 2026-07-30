@@ -830,3 +830,70 @@ fn console_is_read_only_and_shows_the_log() {
     );
     assert!(unknown.starts_with("HTTP/1.1 404"));
 }
+
+#[test]
+fn a_request_line_without_newline_cannot_exhaust_the_console() {
+    // Regression: the request line was read with an unbounded read_line — a
+    // client streaming bytes with no newline grew the buffer without limit.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let console = Console {
+        wal_dir: tmp("con-dos"),
+        store_dir: None,
+        dist_dir: None,
+    };
+    std::thread::spawn(move || console.serve_on(listener));
+
+    let mut s = TcpStream::connect(addr).unwrap();
+    let chunk = [b'A'; 1024];
+    // Four times the head cap, no newline anywhere. Write errors are the
+    // server hanging up on us mid-stream, which is the correct behaviour.
+    for _ in 0..32 {
+        if s.write_all(&chunk).is_err() {
+            break;
+        }
+    }
+    let _ = s.shutdown(std::net::Shutdown::Write);
+
+    let mut out = String::new();
+    let _ = s.read_to_string(&mut out);
+    assert!(
+        out.starts_with("HTTP/1.1 431"),
+        "got: {}",
+        &out[..out.len().min(60)]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Release
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_tampered_release_manifest_is_resigned_not_republished() {
+    // A rollback reuses the manifest archived in releases/<version>/. Those
+    // bytes become the *current* manifest the fleet trusts, so they must
+    // verify at republish time — a signature broken since the original
+    // publish is re-signed fresh, never propagated.
+    let dist = tmp("tampered-manifest-dist");
+    let src = tmp("tampered-manifest-src");
+    write_source_tree(&src);
+    let compiled = compile(&SourceTree::load(&src).unwrap(), "v1", &ops()).unwrap();
+    publish(&dist, &compiled, &ops(), 1_000).unwrap();
+
+    let archived = dist.join("releases").join("v1").join("manifest.json");
+    let mut signed: SignedManifest =
+        serde_json::from_str(&std::fs::read_to_string(&archived).unwrap()).unwrap();
+    let flipped = if signed.signature.starts_with('0') { "1" } else { "0" };
+    signed.signature.replace_range(0..1, flipped);
+    std::fs::write(&archived, serde_json::to_string(&signed).unwrap()).unwrap();
+
+    let published = publish(&dist, &compiled, &ops(), 2_000).unwrap();
+    assert!(published.reused, "same artifacts: still a re-publish");
+
+    let current: SignedManifest =
+        serde_json::from_str(&std::fs::read_to_string(dist.join("manifest.json")).unwrap())
+            .unwrap();
+    current
+        .verify(&ops().signing_key().verifying_key())
+        .expect("the current manifest must always carry a valid signature");
+}

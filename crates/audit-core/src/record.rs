@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 /// The first one serves the auditor, the second one serves the investigation.
 /// They are independent: a record can be intact and orphaned.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Record {
     /// Position in the chain, strictly increasing, no gaps.
     pub seq: u64,
@@ -146,6 +147,7 @@ impl Payload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Delegation {
     /// `sub` of the OIDC token, after signature verification.
     pub principal_sub: String,
@@ -189,6 +191,7 @@ impl ApprovalMode {
 /// that an agent was acting in her name: the attribution chain is inferred
 /// rather than attested.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Actor {
     /// From outermost (the one acting) to innermost (the original
     /// principal). A single element means there is no delegation.
@@ -230,6 +233,7 @@ impl PrincipalKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct AgentSession {
     pub agent_id: String,
     pub agent_version: String,
@@ -240,6 +244,7 @@ pub struct AgentSession {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct LlmTurn {
     pub provider: String,
     pub model: String,
@@ -256,6 +261,7 @@ pub struct LlmTurn {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ToolCall {
     pub server: String,
     pub tool: String,
@@ -267,12 +273,14 @@ pub struct ToolCall {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct SealedRef {
     pub key_id: String,
     pub blob_ref: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Decision {
     pub outcome: Outcome,
     /// The Cedar rule that decided. None when no rule matched (we then fell
@@ -305,6 +313,7 @@ impl Outcome {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Effect {
     pub status: EffectStatus,
     pub result_hash: Option<Hash>,
@@ -347,6 +356,7 @@ impl EffectStatus {
 /// but the attempt itself is exactly what an investigation wants to see:
 /// dropping a rogue JWKS on disk is an attack, not noise.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigReload {
     /// Same serde constraint as `Actor::principal_kind`: `Payload` is tagged
     /// with `kind`, so no field here may bear that name.

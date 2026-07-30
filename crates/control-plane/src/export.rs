@@ -25,6 +25,7 @@ use crate::{write_atomic, Error, OpsKey};
 pub const FORMAT: &str = "probant-export/1";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ExportManifest {
     pub format: String,
     pub ts_ms: i64,
@@ -33,6 +34,7 @@ pub struct ExportManifest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct PackEntry {
     pub chain_id: String,
     /// File name inside the export directory.
@@ -79,6 +81,7 @@ impl ExportManifest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct SignedExportManifest {
     pub manifest: ExportManifest,
     pub key_id: String,
