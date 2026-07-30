@@ -150,14 +150,26 @@ fn the_wire_format_agrees_with_go_tpm_in_both_directions() {
 
     // -- Direction one: our encoder, go-tpm's decoder. -------------------
 
+    // enroll() picked its algorithm off the TPM's capabilities (Ed25519
+    // where libtpms implements it, ECDSA-P256 otherwise); the assertions on
+    // the enrolled key must follow that choice, not assume P-256. The
+    // template round-trips cover both algorithms either way.
+    let (want_scheme, want_curve) = match enrollment.algorithm {
+        tpm::KeyAlg::Ed25519 => (tpm::ALG_EDDSA, tpm::ECC_CURVE_25519),
+        tpm::KeyAlg::EcdsaP256 => (tpm::ALG_ECDSA, tpm::ECC_NIST_P256),
+    };
+    let templates = [
+        tpm::ak_template(tpm::KeyAlg::EcdsaP256),
+        tpm::identity_template(tpm::KeyAlg::EcdsaP256),
+        tpm::ak_template(tpm::KeyAlg::Ed25519),
+        tpm::identity_template(tpm::KeyAlg::Ed25519),
+    ];
     let identity_pub = att.identity_pub.as_ref().expect("identity_pub").clone();
+    let mut publics_in = vec![identity_pub.clone()];
+    // The templates we send in CreatePrimary, empty unique included.
+    publics_in.extend(templates.iter().map(hex::encode));
     let input = serde_json::json!({
-        "publics": [
-            identity_pub,
-            // The templates we send in CreatePrimary, empty unique included.
-            hex::encode(tpm::ak_template(tpm::KeyAlg::EcdsaP256)),
-            hex::encode(tpm::identity_template(tpm::KeyAlg::EcdsaP256)),
-        ],
+        "publics": publics_in,
         "attests": [
             attest_of(&att.certify),
             attest_of(&att.quote),
@@ -169,19 +181,26 @@ fn the_wire_format_agrees_with_go_tpm_in_both_directions() {
     // go-tpm: the two implementations parse the structure the same way.
     let publics = decoded["publics"].as_array().expect("publics");
     assert_eq!(publics[0]["reencoded"], serde_json::json!(identity_pub));
-    assert_eq!(
-        publics[1]["reencoded"].as_str().unwrap(),
-        hex::encode(tpm::ak_template(tpm::KeyAlg::EcdsaP256)),
-        "AK template must round-trip through go-tpm"
-    );
-    assert_eq!(
-        publics[2]["reencoded"].as_str().unwrap(),
-        hex::encode(tpm::identity_template(tpm::KeyAlg::EcdsaP256)),
-        "identity template must round-trip through go-tpm"
-    );
+    for (i, template) in templates.iter().enumerate() {
+        assert_eq!(
+            publics[i + 1]["reencoded"].as_str().unwrap(),
+            hex::encode(template),
+            "template {i} must round-trip through go-tpm"
+        );
+    }
     assert_eq!(publics[0]["type"], "0x0023", "TPM_ALG_ECC");
-    assert_eq!(publics[0]["scheme"], 0x0018, "TPM_ALG_ECDSA");
-    assert_eq!(publics[0]["curve"], 0x0003, "TPM_ECC_NIST_P256");
+    assert_eq!(
+        publics[0]["scheme"],
+        serde_json::json!(want_scheme),
+        "scheme of the enrolled algorithm {:?}",
+        enrollment.algorithm
+    );
+    assert_eq!(
+        publics[0]["curve"],
+        serde_json::json!(want_curve),
+        "curve of the enrolled algorithm {:?}",
+        enrollment.algorithm
+    );
 
     // Both TPMS_ATTEST structures re-encode byte-identically, carry the
     // right magic and type, and go-tpm's reading of their contents matches
@@ -217,6 +236,12 @@ fn the_wire_format_agrees_with_go_tpm_in_both_directions() {
     eprintln!("direction one: go-tpm agrees with every structure we marshalled");
 
     // -- Direction two: go-tpm's encoder, our decoder. --------------------
+
+    // This direction is P-256 by necessity, not omission: go-tpm v0.3.3's
+    // signature marshalling covers RSA and ECDSA only, so an EdDSA ceremony
+    // cannot be driven from its side. Ed25519 encoding is covered by the
+    // template round-trips above and by the swtpm test where libtpms
+    // implements it.
 
     // swtpm serves one data client at a time: hand the socket to Go.
     drop(conn);
