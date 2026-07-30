@@ -145,6 +145,13 @@ HTTP does not touch the "no network calls" invariant, which bans *outbound*
 dependencies (JWKS fetches, ledger round trips): identity and policy still
 arrive as signed files.
 
+The transport is plain HTTP by the same argument — no TLS stack in the
+auditable tree — and the bearer token must therefore never cross a network
+in clear: TLS terminates in a reverse proxy in front, and the gateway
+listens only where TLS ends. Tested nginx and Caddy configurations, the
+proxy contract (SSE buffering, timeouts, the `Origin` allowlist), and the
+probes to check a deployment: [docs/deploy-tls.md](docs/deploy-tls.md).
+
 ## Identity: proven or declared
 
 This is the distinction the whole attribution chain rests on. A log that traces

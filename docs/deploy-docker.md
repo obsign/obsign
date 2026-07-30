@@ -81,6 +81,11 @@ docker run --rm \
        --key /run/secrets/seal-seed.hex --key-id seal-prod
 ```
 
+**The gateway's HTTP port is plaintext.** Tokens travel in the
+`Authorization` header, so the port is published on loopback above — never
+on a routable address. In front of real clients, terminate TLS in a reverse
+proxy on the same host or compose network: [deploy-tls.md](deploy-tls.md).
+
 **The console has no authentication.** Publish its port on loopback or a
 private network only (auth on the console is the commercial layer). The
 compose file in this repo binds it to `127.0.0.1` — keep that property.
