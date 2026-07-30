@@ -2,8 +2,8 @@
 
 ## Where interop evidence stands
 
-The TPM 2.0 marshalling in `tpm-enroll` and the `TPMS_ATTEST` /
-`TPMT_PUBLIC` parsing in `audit-core` are hand-rolled. Three independent
+The TPM 2.0 marshalling in `obsign-tpm-enroll` and the `TPMS_ATTEST` /
+`TPMT_PUBLIC` parsing in `obsign-audit-core` are hand-rolled. Three independent
 lines of evidence say our reading of the TCG format is the consensus one:
 
 1. **swtpm/libtpms** (`tests/swtpm.rs`): a full enrollment ceremony against
@@ -12,7 +12,7 @@ lines of evidence say our reading of the TCG format is the consensus one:
    we marshal decodes and re-encodes byte-identically under Google's
    go-tpm — an independent implementation exercised against real hardware
    fleets — and an enrollment marshalled entirely *by* go-tpm verifies
-   under `audit_core::verify_attestation`. This rules out a shared private
+   under `obsign_audit_core::verify_attestation`. This rules out a shared private
    dialect between our encoder and our parser.
 3. **Real silicon** — this document. The one thing the first two cannot
    prove: the behavior of an actual discrete/firmware TPM (provisioned
@@ -35,7 +35,7 @@ scripts/real-tpm-enroll.sh
 or by hand:
 
 ```sh
-cargo build --release -p tpm-enroll
+cargo build --release -p obsign-tpm-enroll
 sudo target/release/obsign-tpm-enroll \
     --tpm /dev/tpmrm0 \
     --key-id lab-hw-1 \
@@ -44,7 +44,7 @@ sudo target/release/obsign-tpm-enroll \
     --out attestation.json
 ```
 
-The binary self-verifies the attestation with `audit-core` before emitting
+The binary self-verifies the attestation with `obsign-audit-core` before emitting
 anything: **exit 0 with JSON on stdout is the pass**. Keep the emitted
 `attestation.json` and the machine/TPM identification (`tpm2_getcap
 properties-fixed | grep -A2 MANUFACTURER`) as the interop record — the

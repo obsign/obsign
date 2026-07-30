@@ -1,5 +1,5 @@
-use audit_core::record::{ConfigKind, ConfigReload, PrincipalKind, ReloadStatus};
-use identity::{BundleSource, Delegation, ReloadOutcome};
+use obsign_audit_core::record::{ConfigKind, ConfigReload, PrincipalKind, ReloadStatus};
+use obsign_identity::{BundleSource, Delegation, ReloadOutcome};
 use std::path::{Path, PathBuf};
 
 /// Source of the identity the agent acts under.
@@ -262,7 +262,7 @@ fn verify_token(
 ) -> Result<Delegation, String> {
     match source.verifier().verify(token) {
         Ok(d) => Ok(d),
-        Err(identity::Error::UnknownKid(kid)) => {
+        Err(obsign_identity::Error::UnknownKid(kid)) => {
             match source.reload(now_ms) {
                 ReloadOutcome::Reloaded {
                     version,
@@ -314,7 +314,7 @@ fn verify_token(
 mod tests {
     use super::*;
     use crate::testutil::{mint, mint_at, keyring, write_bundle, ISSUER};
-    use identity::BundleSource;
+    use obsign_identity::BundleSource;
 
     /// Bundle that only knows `k1`.
     fn source(name: &str) -> (BundleSource, PathBuf) {
@@ -454,7 +454,7 @@ mod tests {
 mod rotation_tests {
     use super::*;
     use crate::testutil::{mint, keyring, write_bundle, ISSUER};
-    use identity::BundleSource;
+    use obsign_identity::BundleSource;
 
     fn paths(name: &str) -> (PathBuf, PathBuf) {
         let pid = std::process::id();
@@ -525,7 +525,7 @@ mod rotation_tests {
         let raw = std::fs::read(&bp).unwrap();
         assert_eq!(
             reloads[0].bundle_hash,
-            Some(audit_core::content_hash(&raw)),
+            Some(obsign_audit_core::content_hash(&raw)),
             "the record must name the exact bytes now in force"
         );
         cleanup(&bp, &tp);
@@ -559,7 +559,7 @@ mod rotation_tests {
         );
         assert_eq!(
             reloads[0].bundle_hash,
-            Some(audit_core::content_hash(b"not a bundle")),
+            Some(obsign_audit_core::content_hash(b"not a bundle")),
             "the record must name the rejected bytes"
         );
         assert!(reloads[0].reason.is_some());
@@ -590,8 +590,8 @@ mod rotation_tests {
         // every reload, so the attempt fails and the previous configuration
         // stays in force.
         use ed25519_dalek::SigningKey;
-        use identity::bundle::{IdentityBundle, FORMAT};
-        use identity::{ClaimMap, JwkSet};
+        use obsign_identity::bundle::{IdentityBundle, FORMAT};
+        use obsign_identity::{ClaimMap, JwkSet};
         use serde_json::json;
 
         let (bp, tp) = paths("pirate");

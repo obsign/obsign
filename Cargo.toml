@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/audit-core", "crates/obsign", "crates/policy", "crates/wal", "crates/obsign-proxy", "crates/identity", "crates/ledger", "crates/control-plane", "crates/pkcs11", "crates/tpm-enroll"]
+members = ["crates/obsign-audit-core", "crates/obsign", "crates/obsign-policy", "crates/obsign-wal", "crates/obsign-proxy", "crates/obsign-identity", "crates/obsign-ledger", "crates/obsign-control-plane", "crates/obsign-pkcs11", "crates/obsign-tpm-enroll"]
 
 [workspace.package]
 version = "0.1.0"

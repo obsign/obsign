@@ -16,20 +16,20 @@ policy decides, the log is sealed, and the auditor verifies offline.
 
 | Crate | Role | State |
 |---|---|---|
-| `audit-core` | Record format, hash chain, Merkle, signed sealing, verification | done |
+| `obsign-audit-core` | Record format, hash chain, Merkle, signed sealing, verification | done |
 | `obsign` | Offline verifier — the CLI the auditor runs | done |
-| `policy` | Signed bundles, Cedar evaluation, tool catalogue | done |
-| `identity` | Signed identity bundle, claim mapping, RFC 8693 actor chain, hot rotation | done |
-| `wal` | Durable local log, replay on startup | done |
+| `obsign-policy` | Signed bundles, Cedar evaluation, tool catalogue | done |
+| `obsign-identity` | Signed identity bundle, claim mapping, RFC 8693 actor chain, hot rotation | done |
+| `obsign-wal` | Durable local log, replay on startup | done |
 | `obsign-proxy` | MCP proxy (stdio and Streamable HTTP), discovery filtering (`tools/list`, `resources/list`, `prompts/list`), arbitration of every act (`tools/call`, `resources/read`, `prompts/get`, subscriptions, `completion/complete`, server-initiated `sampling`/`elicitation`), default-deny method space | done |
-| `ledger` | Sealing away from the gateway, checkpoint store, RFC 3161 anchoring, evidence export | done |
-| `control-plane` | Compiling policies from git, immutable signed releases, fleet evidence export, read-only console | done |
+| `obsign-ledger` | Sealing away from the gateway, checkpoint store, RFC 3161 anchoring, evidence export | done |
+| `obsign-control-plane` | Compiling policies from git, immutable signed releases, fleet evidence export, read-only console | done |
 
 ## Demo — the gateway at work
 
 ```bash
 cargo build --workspace
-cargo run -p policy --example mkbundle -- /tmp/demo
+cargo run -p obsign-policy --example mkbundle -- /tmp/demo
 cargo run -p obsign-proxy --example mint_demo_token -- /tmp/demo 1800 user
 
 printf '%s\n' \
@@ -492,7 +492,7 @@ commercial layer's job, not a reason to weaken the core.
 ## Demo — verification
 
 ```bash
-cargo run -p audit-core --example gen_sample -- /tmp/sample
+cargo run -p obsign-audit-core --example gen_sample -- /tmp/sample
 cargo run -p obsign -- verify /tmp/sample/evidence.json \
     --trusted-keys /tmp/sample/trusted-keys.json
 ```
@@ -543,7 +543,7 @@ different batches with the same root.
 **Domain separation.** Records, leaves, internal nodes and checkpoints are
 hashed with distinct prefixes, so none can be presented as another.
 
-**A single implementation.** `audit-core` is the only place a hash is computed.
+**A single implementation.** `obsign-audit-core` is the only place a hash is computed.
 The gateway, the ledger, the control plane and the `obsign` CLI all depend on it.
 Two implementations would diverge, and the day the export says "valid" while
 the verifier says "tampered", the product is worth nothing.
@@ -654,10 +654,10 @@ passes into an `mcp_access` record.
 
 **Dependency tree.** Measured as unique crates in `cargo tree -e normal`.
 The tree that carries the trust story is the auditor's: `obsign` builds
-from 31 crates (`audit-core` 29) — argument parsing is hand-rolled, so
+from 31 crates (`obsign-audit-core` 29) — argument parsing is hand-rolled, so
 `clap` and its subtree are gone from that build. Of the 31, five are the
 `serde` derive machinery (`serde_derive`, `syn`, `quote`, `proc-macro2`,
-`unicode-ident`); manual `serde` implementations in `audit-core` — the
+`unicode-ident`); manual `serde` implementations in `obsign-audit-core` — the
 remaining lever — would leave ~26, nearly all of it the cryptography itself
 (`curve25519-dalek`, `sha2` and their arithmetic support). The gateway is a
 different story and deliberately so: `obsign-proxy` builds from 114 crates,
@@ -689,19 +689,19 @@ cargo test --workspace     # 294 tests
 
 Six families, each with a distinct role:
 
-- `audit-core/tests/tamper.rs` — does not check that the code works but that it
+- `obsign-audit-core/tests/tamper.rs` — does not check that the code works but that it
   **detects**: modified verdict, deleted record, permuted order, wholly
   rewritten chain, spirited-away checkpoint. Plus the frozen-format reference
   vectors.
-- `identity` — forged signature, modified payload, different issuer or
+- `obsign-identity` — forged signature, modified payload, different issuer or
   audience, expired token, unknown or missing `kid`, algorithm confusion, HMAC
   key forbidden in a JWKS; plus claim mapping (nested Keycloak roles, `scope`
   vs `scp`), the actor chain (single `act`, multi-hop, bounded nesting, service
   account) and rotation (badly signed bundle rejected, truncated or deleted
   file survived, bounded frequency).
-- `policy/tests/delegation.rs` — a service account cannot destroy, a delegated
+- `obsign-policy/tests/delegation.rs` — a service account cannot destroy, a delegated
   human can, and a chain that is too deep is refused.
-- `ledger/tests/ledger.rs` — the rewritten-WAL attack (internally consistent
+- `obsign-ledger/tests/ledger.rs` — the rewritten-WAL attack (internally consistent
   chain, diverging from sealed history) is refused before any new seal;
   truncated logs, edited or spirited-away checkpoints and rebound key ids are
   detected; a torn final store line survives a crash; anchors round-trip into
@@ -711,7 +711,7 @@ Six families, each with a distinct role:
   wrong-type key refused by name, then an evidence pack sealed and verified
   end to end; it needs a provisioned token (`source
   scripts/pkcs11-test-env.sh`, SoftHSM) and passes vacuously without one.
-- `control-plane/tests/control_plane.rs` — every refusal has its paired
+- `obsign-control-plane/tests/control_plane.rs` — every refusal has its paired
   legitimate path: a rule without `@id`, a duplicate tool, a fail-mode
   override with a typo and an unusable JWKS are compile errors; a published
   version cannot change content but rollback (republishing an old sha) works;

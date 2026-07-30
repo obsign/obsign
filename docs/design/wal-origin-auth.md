@@ -103,7 +103,7 @@ sig = Ed25519-sign(origin_key,
                    digest(domain::ORIGIN_RECORD, chain_id || record.hash()))
 ```
 
-- New domain byte `ORIGIN_RECORD = 0x0A` in `audit_core::hash::domain`
+- New domain byte `ORIGIN_RECORD = 0x0A` in `obsign_audit_core::hash::domain`
   (0x09 is taken by `SignedChainHead` on the high-water-mark branch).
 - `chain_id` is length-prefixed through the canonical `Encoder`, then the
   record hash: `e.str(chain_id).hash(&record.hash())`. The record hash
@@ -235,7 +235,7 @@ chains are session-scoped and short-lived; rotate between sessions.
 
 ### 3.6 Enforcement point 3 — the offline verifier
 
-`audit_core::evidence::verify` learns three findings:
+`obsign_audit_core::evidence::verify` learns three findings:
 
 - `origin_invalid` (**error**): a signature present but cryptographically
   wrong under a trusted origin key, or half of the sig/key-id pair alone.
@@ -292,7 +292,7 @@ that refuses to adopt the tail.
 
 Order chosen so each step lands green on its own:
 
-1. **audit-core**: `domain::ORIGIN_RECORD`, `SignedRecord`, `KeyRole` on
+1. **obsign-audit-core**: `domain::ORIGIN_RECORD`, `SignedRecord`, `KeyRole` on
    `PublicKeyEntry` (serde-default), origin signing-bytes helper next to the
    one implementation of the proof (nothing else may recompute it).
    Evidence: `Vec<SignedRecord>` + the three findings + role checks.

@@ -36,15 +36,15 @@ use anyhow::{bail, Context as _, Result};
 use auth::Auth;
 use clap::Parser;
 use gateway::{handle_from_agent, handle_from_server, spawn_server, Ctx, Downstream, Forward};
-use identity::BundleSource;
+use obsign_identity::BundleSource;
 use origin::OriginSigner as _;
-use policy::{Engine, SignedBundle};
+use obsign_policy::{Engine, SignedBundle};
 use serde_json::Value;
 use session::now_ms;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use wal::Wal;
+use obsign_wal::Wal;
 
 #[derive(Parser)]
 #[command(
@@ -196,7 +196,7 @@ fn main() -> Result<()> {
     )
     .context("unreadable policy bundle")?;
 
-    let trusted: Vec<audit_core::checkpoint::PublicKeyEntry> = serde_json::from_str(
+    let trusted: Vec<obsign_audit_core::checkpoint::PublicKeyEntry> = serde_json::from_str(
         &std::fs::read_to_string(&cli.trusted_keys)
             .with_context(|| format!("lecture de {}", cli.trusted_keys.display()))?,
     )
@@ -313,7 +313,7 @@ fn run_http(
     addr: &str,
     engine: Arc<Engine>,
     bundle_version: String,
-    trusted: Vec<audit_core::checkpoint::PublicKeyEntry>,
+    trusted: Vec<obsign_audit_core::checkpoint::PublicKeyEntry>,
     keys: Arc<origin::GatewayKeys>,
 ) -> Result<()> {
     // Options that only mean something on stdio are refused, not ignored: an
@@ -393,9 +393,9 @@ fn build_hsm_identity(cli: &Cli, module: &std::path::Path) -> Result<origin::Pkc
         .as_deref()
         .context("--identity-hsm-module needs --identity-hsm-key-label")?;
     let token = match (cli.identity_hsm_slot, &cli.identity_hsm_token_label) {
-        (Some(slot), None) => pkcs11::TokenSelector::Slot(slot),
-        (None, Some(label)) => pkcs11::TokenSelector::Label(label.clone()),
-        (None, None) => pkcs11::TokenSelector::Only,
+        (Some(slot), None) => obsign_pkcs11::TokenSelector::Slot(slot),
+        (None, Some(label)) => obsign_pkcs11::TokenSelector::Label(label.clone()),
+        (None, None) => obsign_pkcs11::TokenSelector::Only,
         (Some(_), Some(_)) => unreachable!("clap: conflicts_with"),
     };
     let pin = match &cli.identity_hsm_pin_file {
@@ -418,7 +418,7 @@ fn run_stdio(
     cli: &Cli,
     engine: Arc<Engine>,
     bundle_version: String,
-    trusted: Vec<audit_core::checkpoint::PublicKeyEntry>,
+    trusted: Vec<obsign_audit_core::checkpoint::PublicKeyEntry>,
     keys: Arc<origin::GatewayKeys>,
 ) -> Result<()> {
     // --- Identity -------------------------------------------------------
@@ -450,7 +450,7 @@ fn run_stdio(
     // the trusted set is rebuilt from the certificates already in the chain,
     // so a tail signed by a *previous* session key — which this process no
     // longer holds — is adopted iff the identity key vouched for it.
-    let existing = wal::read(&cli.wal, &cli.chain_id).context("reading the log")?;
+    let existing = obsign_wal::read(&cli.wal, &cli.chain_id).context("reading the log")?;
     let setup = keys.open_session(&cli.chain_id, &existing, now_ms())?;
     let (wal, chain) = match &setup.resume_trust {
         Some(map) => Wal::open_authenticated(&cli.wal, &cli.chain_id, map)
@@ -606,7 +606,7 @@ fn run_stdio(
 /// option.
 fn build_auth(
     cli: &Cli,
-    trusted: &[audit_core::checkpoint::PublicKeyEntry],
+    trusted: &[obsign_audit_core::checkpoint::PublicKeyEntry],
 ) -> Result<Arc<Mutex<Auth>>> {
     let oidc_configured = cli.identity_bundle.is_some() || cli.token_file.is_some();
 

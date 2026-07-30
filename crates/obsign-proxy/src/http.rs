@@ -31,7 +31,7 @@ use crate::auth::Auth;
 use crate::gateway::{self, Ctx, Forward};
 use crate::session::{self, now_ms};
 use anyhow::{Context as _, Result};
-use identity::BundleSource;
+use obsign_identity::BundleSource;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -40,7 +40,7 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::Duration;
-use wal::Wal;
+use obsign_wal::Wal;
 
 /// The single MCP endpoint.
 const ENDPOINT: &str = "/mcp";
@@ -76,8 +76,8 @@ pub enum Identity {
 
 /// Everything fixed for the gateway's lifetime, shared by all sessions.
 pub struct Gateway {
-    pub engine: Arc<policy::Engine>,
-    pub trusted: Vec<audit_core::checkpoint::PublicKeyEntry>,
+    pub engine: Arc<obsign_policy::Engine>,
+    pub trusted: Vec<obsign_audit_core::checkpoint::PublicKeyEntry>,
     pub bundle_version: String,
     pub identity: Identity,
     pub env: String,
@@ -625,7 +625,7 @@ fn open_session(
         // the authenticated one: a pre-created file squatting this chain id
         // would otherwise be adopted as history. Under the two-tier scheme
         // the session key is generated and certified here, per chain.
-        let existing = wal::read(&gw.wal_dir, &chain_id).context("reading the log")?;
+        let existing = obsign_wal::read(&gw.wal_dir, &chain_id).context("reading the log")?;
         let setup = gw
             .keys
             .open_session(&chain_id, &existing, session::now_ms())?;
@@ -806,9 +806,9 @@ fn dispatch_from_server(
                             let _ = s.write(
                                 p.effect_record_id,
                                 Some(p.decision_record_id),
-                                audit_core::record::Payload::Effect(
-                                    audit_core::record::Effect {
-                                        status: audit_core::record::EffectStatus::Blocked,
+                                obsign_audit_core::record::Payload::Effect(
+                                    obsign_audit_core::record::Effect {
+                                        status: obsign_audit_core::record::EffectStatus::Blocked,
                                         result_hash: None,
                                         latency_ms: p.started.elapsed().as_millis()
                                             as u64,

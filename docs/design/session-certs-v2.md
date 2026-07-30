@@ -12,8 +12,8 @@ their recommended defaults:
   record, sealed and unstrippable.
 - **(2) dev custody = file seed;** production = PKCS#11 (`Pkcs11IdentitySigner`),
   verified against a real SoftHSM token.
-- **(3) shared `pkcs11` crate:** the ledger's hand-rolled bindings were
-  lifted into a new `pkcs11` crate; `Pkcs11Sealer` (sealing role) and
+- **(3) shared `obsign-pkcs11` crate:** the ledger's hand-rolled bindings were
+  lifted into a new `obsign-pkcs11` crate; `Pkcs11Sealer` (sealing role) and
   `Pkcs11IdentitySigner` (identity role) are thin wrappers over the one
   audited `Pkcs11Signer` — with an internal sign-lock and `unsafe impl
   Send+Sync` so the identity signer is shareable across HTTP session threads.
@@ -240,12 +240,12 @@ trusted time. The pack already carries RFC 3161 anchors over checkpoints:
 
 Each step green on its own, the established discipline:
 
-1. **audit-core**: `domain::SESSION_CERT` (0x0C), `Payload::SessionCert`
+1. **obsign-audit-core**: `domain::SESSION_CERT` (0x0C), `Payload::SessionCert`
    (tag 9) + its encoding, `session_cert_signing_bytes`, a
    `SessionCert::verify(identity_vk)` helper. The frozen-format reference
    vector in `tamper.rs` gains a `session_cert` case and every existing hash
    must stay put — the tripwire that proves tag 9 touched nothing.
-2. **audit-core evidence**: resolve session certs before the origin pass, the
+2. **obsign-audit-core evidence**: resolve session certs before the origin pass, the
    two findings, anchored-time window check. Tamper tests: forged cert,
    cert for the wrong chain, unenrolled identity key, a record signed by a
    session key with no cert.
@@ -282,14 +282,14 @@ path, envelope, bundle, and seal are untouched. Tests are the bulk, as ever.
    the per-record one; the identity seed is dev-only scaffolding for the
    hardware path.
 3. **Where the identity signer + shared PKCS#11 lives.** The PKCS#11 bindings
-   are currently private to the `ledger` crate (`Pkcs11Sealer`). v2 needs
+   are currently private to the `obsign-ledger` crate (`Pkcs11Sealer`). v2 needs
    them for the *gateway's* identity signer too. Options: (a) lift the
    PKCS#11 module into a small shared crate both depend on; (b) duplicate the
    bindings in the proxy (the tamper-test precedent for deliberately not
    sharing forgery helpers — but this is infrastructure, not a forgery
-   helper). *Recommended: (a)*, a `pkcs11` support crate — the bindings are
+   helper). *Recommended: (a)*, a `obsign-pkcs11` support crate — the bindings are
    audited infrastructure, and two hand-rolled copies drifting is the exact
-   single-implementation-of-the-proof risk audit-core exists to avoid.
+   single-implementation-of-the-proof risk obsign-audit-core exists to avoid.
 4. **Certificate lifetime default.** How long is `not_after - not_before`?
    *Recommended: bounded to the session, with a generous ceiling* (e.g. the
    session's expected max lifetime, hours not days) — the whole value is that

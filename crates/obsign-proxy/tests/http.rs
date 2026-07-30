@@ -6,12 +6,12 @@
 //! hand. Deliberate: the gateway's HTTP layer is hand-written, so the tests
 //! must not share its assumptions through a common client library.
 
-use audit_core::evidence::{self, Evidence};
-use audit_core::record::Payload;
+use obsign_audit_core::evidence::{self, Evidence};
+use obsign_audit_core::record::Payload;
 use base64::Engine as _;
 use ed25519_dalek::SigningKey;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use policy::bundle::{Bundle, FailBehaviour, FailMode, ToolDef, FORMAT};
+use obsign_policy::bundle::{Bundle, FailBehaviour, FailMode, ToolDef, FORMAT};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -48,16 +48,16 @@ fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
-fn keyring(policy_key: &SigningKey) -> Vec<audit_core::checkpoint::PublicKeyEntry> {
+fn keyring(policy_key: &SigningKey) -> Vec<obsign_audit_core::checkpoint::PublicKeyEntry> {
     let ik = SigningKey::from_bytes(&IDENTITY_SEED);
     vec![
-        audit_core::checkpoint::PublicKeyEntry {
+        obsign_audit_core::checkpoint::PublicKeyEntry {
             key_id: "policy-key".to_string(),
             algo: "ed25519".to_string(),
             public_key: hex::encode(policy_key.verifying_key().to_bytes()),
             role: Default::default(),
         },
-        audit_core::checkpoint::PublicKeyEntry {
+        obsign_audit_core::checkpoint::PublicKeyEntry {
             key_id: "identity-key".to_string(),
             algo: "ed25519".to_string(),
             public_key: hex::encode(ik.verifying_key().to_bytes()),
@@ -68,7 +68,7 @@ fn keyring(policy_key: &SigningKey) -> Vec<audit_core::checkpoint::PublicKeyEntr
 
 fn identity_bundle_json() -> String {
     let vk = SigningKey::from_bytes(&[9u8; 32]).verifying_key();
-    let jwks: identity::JwkSet = serde_json::from_value(json!({
+    let jwks: obsign_identity::JwkSet = serde_json::from_value(json!({
         "keys": [{
             "kty": "OKP", "crv": "Ed25519", "kid": "k1",
             "alg": "EdDSA", "x": b64(vk.as_bytes()),
@@ -76,13 +76,13 @@ fn identity_bundle_json() -> String {
     }))
     .unwrap();
 
-    let bundle = identity::IdentityBundle {
-        format: identity::bundle::FORMAT.to_string(),
+    let bundle = obsign_identity::IdentityBundle {
+        format: obsign_identity::bundle::FORMAT.to_string(),
         version: "identity@test".to_string(),
         issuer: ISSUER.to_string(),
         audience: AUDIENCE.to_string(),
         jwks,
-        claims: identity::ClaimMap::default(),
+        claims: obsign_identity::ClaimMap::default(),
     };
     let signed = bundle.sign("identity-key", &SigningKey::from_bytes(&IDENTITY_SEED));
     serde_json::to_string(&signed).unwrap()
@@ -343,22 +343,22 @@ fn evidence(gw: &Gateway, sid: &str) -> Evidence {
         .unwrap()
         .as_millis() as i64;
     let chain_id = format!("http-{sid}");
-    let records = wal::read(&gw.dir.join("wal"), &chain_id).unwrap_or_else(|e| {
+    let records = obsign_wal::read(&gw.dir.join("wal"), &chain_id).unwrap_or_else(|e| {
         panic!("reading the WAL for session {sid}: {e}")
     });
-    let mut store = ledger::Store::open(&gw.dir.join("ledger").join(sid), &chain_id)
+    let mut store = obsign_ledger::Store::open(&gw.dir.join("ledger").join(sid), &chain_id)
         .expect("opening the store");
-    let sealer = ledger::FileSealer::from_seed([0x33; 32], "seal-ledger");
-    ledger::seal_pass(
+    let sealer = obsign_ledger::FileSealer::from_seed([0x33; 32], "seal-ledger");
+    obsign_ledger::seal_pass(
         &records,
         &mut store,
         &sealer,
-        &ledger::OriginPolicy::permissive(),
+        &obsign_ledger::OriginPolicy::permissive(),
         now,
         1,
     )
     .expect("sealing the log");
-    ledger::export(records, &store, &[], None)
+    obsign_ledger::export(records, &store, &[], None)
 }
 
 // ===========================================================================
@@ -714,7 +714,7 @@ fn concurrent_identities_keep_their_own_attribution_subtrees() {
     let report = evidence::verify(&ev, &keys);
     assert!(report.is_valid(), "findings: {:?}", report.findings);
 
-    let by_id: std::collections::HashMap<&str, &audit_core::record::Record> =
+    let by_id: std::collections::HashMap<&str, &obsign_audit_core::record::Record> =
         ev.records.iter().map(|r| (r.id.as_str(), &r.record)).collect();
 
     let mut checked = 0;

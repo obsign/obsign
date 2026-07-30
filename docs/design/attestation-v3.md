@@ -2,17 +2,17 @@
 
 Status: **verification layer AND enrollment signer implemented, exercised
 end-to-end against swtpm** (2026-07-30, branch `los-angeles`, 263 tests).
-The §8-item-3 piece the first landing deferred now exists: `tpm-enroll`
+The §8-item-3 piece the first landing deferred now exists: `obsign-tpm-enroll`
 (binary `obsign-tpm-enroll`) speaks the TPM2 command stream directly over
 swtpm's TCP sockets — hand-rolled marshalling of Startup, GetCapability,
 CreatePrimary, PCR_Extend/Read, Certify, Quote, FlushContext plus the swtpm
 control channel (CMD_INIT), no TSS stack — creates the AK and the identity
 key, measures the gateway binary hash into a PCR, and emits the
-`KeyAttestation` that `audit_core::verify_attestation` accepts. A gated
-integration test (`crates/tpm-enroll/tests/swtpm.rs`, the SoftHSM pattern:
+`KeyAttestation` that `obsign_audit_core::verify_attestation` accepts. A gated
+integration test (`crates/obsign-tpm-enroll/tests/swtpm.rs`, the SoftHSM pattern:
 skips vacuously without `swtpm` on PATH) provisions its own swtpm, enrolls,
 verifies the real output offline, and proves tamper cases against it; real
-swtpm output is also embedded as fixtures in audit-core's unit tests.
+swtpm output is also embedded as fixtures in obsign-audit-core's unit tests.
 
 The two flagged interop points, resolved by real TPM output:
 
@@ -25,7 +25,7 @@ The two flagged interop points, resolved by real TPM output:
    ECDSA-P256 — and the verifier accepts both AK shapes: 32-byte ed25519
    key with a signature over the attest bytes, or 65-byte uncompressed
    P-256 point with a raw `r || s` signature over the attest's SHA-256,
-   checked by a hand-rolled verification-only P-256 in `audit_core::p256`
+   checked by a hand-rolled verification-only P-256 in `obsign_audit_core::p256`
    (public inputs only, so correctness — pinned by OpenSSL known-answer
    vectors and the swtpm fixtures — is the whole requirement).
 2. **Name binding — the real form, `alg || H(TPMT_PUBLIC)`.** Confirmed:
@@ -62,7 +62,7 @@ enrollment signer is deferred — **there is no TPM/`swtpm` on this machine, so
 the hardware enroll/quote path is not exercised here.** What is built and
 tested:
 
-- **audit-core**: `KeyAttestation` + `PcrExpectation`, a bounds-checked
+- **obsign-audit-core**: `KeyAttestation` + `PcrExpectation`, a bounds-checked
   `TPMS_ATTEST` parser (quote + certify, no recursion — the `rfc3161`
   discipline), `verify_attestation` doing the offline structural checks, and
   the `#[cfg(test)]` synthesizer. The attestation rides `DeploymentBundle`
@@ -272,7 +272,7 @@ The verification layer is testable **without a TPM** and is where the
 security logic lives; the signing/enrollment path needs a TPM (or `swtpm`)
 and, on this machine, cannot be exercised (§10.4). Split accordingly:
 
-1. **audit-core**: `KeyAttestation` on `PublicKeyEntry` (serde-default),
+1. **obsign-audit-core**: `KeyAttestation` on `PublicKeyEntry` (serde-default),
    `TPMS_ATTEST` parsing (bounds-checked, no-recursion, the RFC 3161 DER
    discipline), the offline checks in `evidence::verify`, the three findings,
    `--require-attestation` plumbed through `VerifyOptions`. **Tests: a

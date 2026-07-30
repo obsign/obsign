@@ -5,11 +5,11 @@
 //! with the attacker's own key, embedded in the pack itself — coming out
 //! with exit 0. These tests run the real binary on real files.
 
-use audit_core::checkpoint::{KeyRole, PublicKeyEntry};
-use audit_core::evidence::{Evidence, FORMAT};
-use audit_core::origin::SignedRecord;
-use audit_core::record::{Effect, EffectStatus, Payload};
-use audit_core::ChainWriter;
+use obsign_audit_core::checkpoint::{KeyRole, PublicKeyEntry};
+use obsign_audit_core::evidence::{Evidence, FORMAT};
+use obsign_audit_core::origin::SignedRecord;
+use obsign_audit_core::record::{Effect, EffectStatus, Payload};
+use obsign_audit_core::ChainWriter;
 use ed25519_dalek::SigningKey;
 use std::path::PathBuf;
 use std::process::{Command, Output};

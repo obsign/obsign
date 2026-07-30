@@ -2,7 +2,7 @@
 """Demonstrates hot rotation of the identity provider's keys.
 
     cargo build --workspace
-    cargo run -p policy --example mkbundle -- /tmp/rot
+    cargo run -p obsign-policy --example mkbundle -- /tmp/rot
     python3 scripts/demo-rotation.py /tmp/rot
 
 The gateway starts with a bundle that only knows `k1` and a short-lived token.

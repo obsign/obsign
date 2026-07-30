@@ -1,0 +1,26 @@
+[package]
+name = "obsign-ledger"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Sealing service: signs checkpoints with a key the gateway never holds, anchors them per RFC 3161, exports evidence packs."
+
+[dependencies]
+obsign-audit-core = { path = "../obsign-audit-core" }
+obsign-pkcs11 = { path = "../obsign-pkcs11" }
+obsign-wal = { path = "../obsign-wal" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ed25519-dalek = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+
+# dlopen/dlsym for the PKCS#11 module. Already in the tree via getrandom:
+# a direct use, not a new dependency.
+[target.'cfg(unix)'.dependencies]
+
+[[bin]]
+name = "obsign-ledger"
+path = "src/main.rs"

@@ -10,8 +10,8 @@
 //!   3 consistent but unproven — self-referential verification).
 
 use anyhow::{Context, Result};
-use audit_core::checkpoint::PublicKeyEntry;
-use audit_core::evidence::{self, Evidence, Severity, VerifyOptions};
+use obsign_audit_core::checkpoint::PublicKeyEntry;
+use obsign_audit_core::evidence::{self, Evidence, Severity, VerifyOptions};
 use std::path::PathBuf;
 use std::process::ExitCode;
 

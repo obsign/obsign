@@ -6,11 +6,11 @@ license.workspace = true
 description = "MCP proxy enforcing a signed policy and logging every act."
 
 [dependencies]
-audit-core = { path = "../audit-core" }
-policy = { path = "../policy" }
-wal = { path = "../wal" }
-identity = { path = "../identity" }
-pkcs11 = { path = "../pkcs11" }
+obsign-audit-core = { path = "../obsign-audit-core" }
+obsign-policy = { path = "../obsign-policy" }
+obsign-wal = { path = "../obsign-wal" }
+obsign-identity = { path = "../obsign-identity" }
+obsign-pkcs11 = { path = "../obsign-pkcs11" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
@@ -23,7 +23,7 @@ hex = { workspace = true }
 # stay separate hosts.
 ed25519-dalek = { workspace = true }
 # Session identifiers for the Streamable HTTP transport. Already in the tree
-# through audit-core's ed25519-dalek, so declaring it adds no crate.
+# through obsign-audit-core's ed25519-dalek, so declaring it adds no crate.
 getrandom = { workspace = true }
 
 # Token minting for tests only. Deliberately in dev-dependencies rather than
@@ -34,8 +34,8 @@ getrandom = { workspace = true }
 [dev-dependencies]
 jsonwebtoken = "9"
 base64 = "0.22"
-policy = { path = "../policy" }
-ledger = { path = "../ledger" }
+obsign-policy = { path = "../obsign-policy" }
+obsign-ledger = { path = "../obsign-ledger" }
 
 [[bin]]
 name = "obsign-proxy"

@@ -5,11 +5,11 @@
 //! forge tokens inside the production binary. For a proof product, that
 //! surface has no business in the shipped artifact.
 
-use audit_core::checkpoint::PublicKeyEntry;
+use obsign_audit_core::checkpoint::PublicKeyEntry;
 use base64::Engine;
 use ed25519_dalek::SigningKey;
-use identity::bundle::{IdentityBundle, FORMAT};
-use identity::{ClaimMap, JwkSet};
+use obsign_identity::bundle::{IdentityBundle, FORMAT};
+use obsign_identity::{ClaimMap, JwkSet};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde_json::json;
 use std::path::PathBuf;

@@ -105,16 +105,16 @@ pub struct DeploymentBundle {
 }
 ```
 
-- New domain byte `DEPLOYMENT_BUNDLE = 0x0B` in `audit_core::hash::domain`
+- New domain byte `DEPLOYMENT_BUNDLE = 0x0B` in `obsign_audit_core::hash::domain`
   (0x0A is `ORIGIN_RECORD`, 0x09 stays reserved for `SignedChainHead`).
 - `signing_bytes` follows the identity bundle exactly: format, version, then
   the key entries in `key_id` order (each `key_id`, `algo`, `public_key`,
   `role.as_str()`), domain-separated. `SignedDeploymentBundle { bundle,
   key_id, signature }`, verified under the ops verifying key — a byte-for-byte
   clone of `SignedIdentityBundle`, deliberately.
-- Lives in `identity` crate next to `IdentityBundle`? **No** — it lives in a
-  small new home so `identity` (which is about *humans*/IdP) does not gain a
-  concept about *gateways*. Proposed: `audit_core::deployment` (audit-core
+- Lives in `obsign-identity` crate next to `IdentityBundle`? **No** — it lives in a
+  small new home so `obsign-identity` (which is about *humans*/IdP) does not gain a
+  concept about *gateways*. Proposed: `obsign_audit_core::deployment` (obsign-audit-core
   already owns `PublicKeyEntry` and `KeyRole`, and both the ledger and the
   verifier depend on it, which is where the resolution logic must sit — the
   single-implementation-of-the-proof rule).
@@ -249,7 +249,7 @@ the intended, visible consequence.
 
 Each step green on its own, same discipline as v0:
 
-1. **audit-core**: `domain::DEPLOYMENT_BUNDLE`, `deployment.rs`
+1. **obsign-audit-core**: `domain::DEPLOYMENT_BUNDLE`, `deployment.rs`
    (`DeploymentBundle`, `SignedDeploymentBundle`, `signing_bytes`, verify).
    Tests: signature round-trip, foreign-key refusal, role-confusion refusal,
    frozen signing-bytes vector.

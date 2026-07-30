@@ -8,12 +8,12 @@
 
 use crate::session::{self, now_ms, Pending};
 use anyhow::{Context as _, Result};
-use audit_core::content_hash;
-use audit_core::record::{
+use obsign_audit_core::content_hash;
+use obsign_audit_core::record::{
     Decision as DecisionRec, Effect, EffectStatus, McpAccess, Outcome, Payload, ToolCall,
 };
 use crate::auth::Auth;
-use policy::{Capability, Engine, ToolRequest};
+use obsign_policy::{Capability, Engine, ToolRequest};
 use serde_json::{json, Value};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -123,7 +123,7 @@ pub(crate) fn arbitrated(method: Option<&str>) -> bool {
 
 /// The policy request for one act, under the delegation in force.
 fn request(
-    deleg: &identity::Delegation,
+    deleg: &obsign_identity::Delegation,
     ctx: &Ctx,
     session_id: &str,
     tool: String,
@@ -392,7 +392,7 @@ pub(crate) fn handle_from_agent(
         // Missing authority: it is not the policy that forbids, it is the
         // delegation that is no longer valid. The log must tell the two
         // apart, hence the absent policy_id.
-        Some(e) => policy::Verdict {
+        Some(e) => obsign_policy::Verdict {
             outcome: Outcome::Deny,
             policy_id: None,
             reason: Some(e.to_string()),
@@ -408,7 +408,7 @@ pub(crate) fn handle_from_agent(
             // there is nothing it could meaningfully permit. The absent
             // policy_id is what tells the log this refusal came from the
             // gateway's scope, not from a rule.
-            Act::OutOfScope { .. } => policy::Verdict {
+            Act::OutOfScope { .. } => obsign_policy::Verdict {
                 outcome: Outcome::Deny,
                 policy_id: None,
                 reason: Some(
@@ -680,7 +680,7 @@ pub(crate) fn handle_from_server(
         &'a str,
         &'a str,
         &'a str,
-        &'a dyn Fn(&str, &identity::Delegation) -> bool,
+        &'a dyn Fn(&str, &obsign_identity::Delegation) -> bool,
     );
     let listings: [Listing; 3] = [
         ("/result/tools", "name", "tools/list", &|name, deleg| {
@@ -820,7 +820,7 @@ fn handle_server_initiated(
     let deleg = ctx.auth.lock().unwrap().delegation().clone();
 
     let verdict = match cap {
-        None => policy::Verdict {
+        None => obsign_policy::Verdict {
             outcome: Outcome::Deny,
             policy_id: None,
             reason: Some(
@@ -828,7 +828,7 @@ fn handle_server_initiated(
                     .to_string(),
             ),
         },
-        Some(_) if deleg.is_expired(now_ms()) => policy::Verdict {
+        Some(_) if deleg.is_expired(now_ms()) => obsign_policy::Verdict {
             outcome: Outcome::Deny,
             policy_id: None,
             reason: Some("delegation expired".to_string()),
@@ -942,8 +942,8 @@ mod tests {
     use super::*;
     use crate::auth::Auth;
     use crate::session;
-    use policy::bundle::{Bundle, FailBehaviour, FailMode, ToolDef, FORMAT};
-    use wal::Wal;
+    use obsign_policy::bundle::{Bundle, FailBehaviour, FailMode, ToolDef, FORMAT};
+    use obsign_wal::Wal;
 
     fn ctx_with(cedar: &str) -> Ctx {
         let bundle = Bundle {

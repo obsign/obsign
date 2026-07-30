@@ -3,7 +3,7 @@
 #
 # Run from the repo root on a Linux machine with a TPM 2.0. Performs the
 # preflight checks, then a full enrollment against /dev/tpmrm0. The enroller
-# self-verifies with audit-core before emitting: exit 0 is the pass.
+# self-verifies with obsign-audit-core before emitting: exit 0 is the pass.
 
 set -euo pipefail
 
@@ -26,7 +26,7 @@ else
 fi
 
 say "building the enroller"
-cargo build --release -p tpm-enroll
+cargo build --release -p obsign-tpm-enroll
 
 EK_ARGS=()
 if command -v tpm2_getekcertificate >/dev/null 2>&1; then
@@ -51,5 +51,5 @@ say "enrolling: PCR 16, binary hash $HASH"
     ${EK_ARGS[@]+"${EK_ARGS[@]}"} \
     --out "$OUT"
 
-say "PASS — attestation self-verified by audit-core, written to $OUT"
+say "PASS — attestation self-verified by obsign-audit-core, written to $OUT"
 say "record the machine + TPM in docs/real-tpm-interop.md"

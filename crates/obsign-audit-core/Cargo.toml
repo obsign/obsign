@@ -1,0 +1,17 @@
+[package]
+name = "obsign-audit-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Audit record format, hash chain and verification. The single implementation, shared by the gateway, the ledger and the offline verifier."
+
+# Deliberate design constraint: minimal dependency tree.
+# An auditor must be able to read this list end to end.
+# No async, no web framework, no ORM -- ever.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+ed25519-dalek = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }

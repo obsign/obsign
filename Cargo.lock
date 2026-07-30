@@ -101,18 +101,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "audit-core"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -339,26 +327,6 @@ name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
-
-[[package]]
-name = "control-plane"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "audit-core",
- "base64",
- "clap",
- "ed25519-dalek",
- "hex",
- "identity",
- "ledger",
- "policy",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
- "wal",
-]
 
 [[package]]
 name = "core-foundation-sys"
@@ -684,20 +652,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 
 [[package]]
-name = "identity"
-version = "0.1.0"
-dependencies = [
- "audit-core",
- "base64",
- "ed25519-dalek",
- "hex",
- "jsonwebtoken",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
 name = "indexmap"
 version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -806,22 +760,6 @@ checksum = "b5baa5e9ff84f1aefd264e6869907646538a52147a755d494517a8007fb48733"
 dependencies = [
  "regex-automata",
  "rustversion",
-]
-
-[[package]]
-name = "ledger"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "audit-core",
- "clap",
- "ed25519-dalek",
- "hex",
- "pkcs11",
- "serde",
- "serde_json",
- "thiserror",
- "wal",
 ]
 
 [[package]]
@@ -987,10 +925,94 @@ name = "obsign"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "audit-core",
  "ed25519-dalek",
  "hex",
+ "obsign-audit-core",
  "serde_json",
+]
+
+[[package]]
+name = "obsign-audit-core"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
+name = "obsign-control-plane"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "clap",
+ "ed25519-dalek",
+ "hex",
+ "obsign-audit-core",
+ "obsign-identity",
+ "obsign-ledger",
+ "obsign-policy",
+ "obsign-wal",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
+name = "obsign-identity"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "ed25519-dalek",
+ "hex",
+ "jsonwebtoken",
+ "obsign-audit-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "obsign-ledger"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "ed25519-dalek",
+ "hex",
+ "obsign-audit-core",
+ "obsign-pkcs11",
+ "obsign-wal",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "obsign-pkcs11"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "libc",
+ "thiserror",
+]
+
+[[package]]
+name = "obsign-policy"
+version = "0.1.0"
+dependencies = [
+ "cedar-policy",
+ "ed25519-dalek",
+ "hex",
+ "obsign-audit-core",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -998,20 +1020,43 @@ name = "obsign-proxy"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "audit-core",
  "base64",
  "clap",
  "ed25519-dalek",
  "getrandom",
  "hex",
- "identity",
  "jsonwebtoken",
- "ledger",
- "pkcs11",
- "policy",
+ "obsign-audit-core",
+ "obsign-identity",
+ "obsign-ledger",
+ "obsign-pkcs11",
+ "obsign-policy",
+ "obsign-wal",
  "serde",
  "serde_json",
- "wal",
+]
+
+[[package]]
+name = "obsign-tpm-enroll"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "hex",
+ "obsign-audit-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "obsign-wal"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "obsign-audit-core",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
@@ -1091,15 +1136,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
-name = "pkcs11"
-version = "0.1.0"
-dependencies = [
- "hex",
- "libc",
- "thiserror",
-]
-
-[[package]]
 name = "pkcs8"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1107,19 +1143,6 @@ checksum = "f950b2377845cebe5cf8b5165cb3cc1a5e0fa5cfa3e1f7f55707d8fd82e0a7b7"
 dependencies = [
  "der",
  "spki",
-]
-
-[[package]]
-name = "policy"
-version = "0.1.0"
-dependencies = [
- "audit-core",
- "cedar-policy",
- "ed25519-dalek",
- "hex",
- "serde",
- "serde_json",
- "thiserror",
 ]
 
 [[package]]
@@ -1616,19 +1639,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
-name = "tpm-enroll"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "audit-core",
- "clap",
- "hex",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
 name = "typed-arena"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1706,16 +1716,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "wal"
-version = "0.1.0"
-dependencies = [
- "audit-core",
- "ed25519-dalek",
- "serde_json",
- "thiserror",
-]
 
 [[package]]
 name = "walkdir"

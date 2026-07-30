@@ -3,7 +3,7 @@
 # exports the variables they read. Source it, do not run it:
 #
 #   source scripts/pkcs11-test-env.sh
-#   cargo test -p ledger --test pkcs11_softhsm
+#   cargo test -p obsign-ledger --test pkcs11_softhsm
 #
 # Needs softhsm2-util and pkcs11-tool (brew install softhsm opensc /
 # apt install softhsm2 opensc). Everything lands in a fresh temp directory;

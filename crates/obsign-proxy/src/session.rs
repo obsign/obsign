@@ -1,10 +1,10 @@
 use crate::origin::OriginSigner;
-use audit_core::record::*;
-use audit_core::{content_hash, origin_signing_bytes, ChainWriter, SignedRecord};
+use obsign_audit_core::record::*;
+use obsign_audit_core::{content_hash, origin_signing_bytes, ChainWriter, SignedRecord};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use wal::Wal;
+use obsign_wal::Wal;
 
 pub fn now_ms() -> i64 {
     SystemTime::now()
@@ -79,7 +79,7 @@ impl Session {
         id: impl Into<String>,
         parent: Option<String>,
         payload: Payload,
-    ) -> Result<Record, wal::Error> {
+    ) -> Result<Record, obsign_wal::Error> {
         let sid = self.session_id.clone();
         let rec = self.chain.append(now_ms(), id, parent, sid, payload);
         let sr = match &self.origin {
@@ -127,7 +127,7 @@ impl Session {
 pub fn record_config_reloads(
     s: &mut Session,
     reloads: Vec<ConfigReload>,
-) -> Result<(), wal::Error> {
+) -> Result<(), obsign_wal::Error> {
     for reload in reloads {
         s.reload_counter += 1;
         let id = format!("reload-{}", s.reload_counter);
@@ -144,8 +144,8 @@ pub fn record_config_reloads(
 /// From here every record resolves to a key the identity key vouched for.
 pub fn record_session_cert(
     s: &mut Session,
-    cert: audit_core::record::SessionCert,
-) -> Result<(), wal::Error> {
+    cert: obsign_audit_core::record::SessionCert,
+) -> Result<(), obsign_wal::Error> {
     s.write("session-cert", None, Payload::SessionCert(cert))?;
     Ok(())
 }
@@ -160,7 +160,7 @@ pub fn record_session_cert(
 pub fn record_deployment_bundle(
     s: &mut Session,
     trust: &crate::origin::DeploymentTrust,
-) -> Result<(), wal::Error> {
+) -> Result<(), obsign_wal::Error> {
     s.reload_counter += 1;
     let id = format!("deployment-{}", s.reload_counter);
     s.write(
@@ -187,10 +187,10 @@ pub fn record_deployment_bundle(
 pub fn record_delegation(
     s: &mut Session,
     generation: u64,
-    deleg: &identity::Delegation,
+    deleg: &obsign_identity::Delegation,
     agent_id: &str,
     bundle_version: &str,
-) -> Result<(), wal::Error> {
+) -> Result<(), obsign_wal::Error> {
     let deleg_id = format!("deleg-{generation}");
     let agent_rec_id = format!("agent-{generation}");
 
@@ -270,7 +270,7 @@ mod tests {
 
         let (wal, chain) = Wal::open(&dir, "t").unwrap();
         let mut s = open(chain, wal, "sess".into(), Some(signer));
-        let deleg = identity::Delegation {
+        let deleg = obsign_identity::Delegation {
             subject: "u:test".into(),
             issuer: "cli://declared".into(),
             scopes: vec![],

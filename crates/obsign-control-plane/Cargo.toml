@@ -1,0 +1,32 @@
+[package]
+name = "obsign-control-plane"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Compiles policy sources from git into signed bundles, publishes atomic releases, exports evidence dossiers, serves a read-only console."
+
+# Same discipline as the rest of the workspace: no async runtime, no web
+# framework, no template engine. The console is a handful of hand-rendered
+# HTML pages on std::net — the operator-facing half of the product must be
+# auditable with the same effort as the gateway.
+[dependencies]
+obsign-audit-core = { path = "../obsign-audit-core" }
+obsign-policy = { path = "../obsign-policy" }
+obsign-identity = { path = "../obsign-identity" }
+obsign-wal = { path = "../obsign-wal" }
+obsign-ledger = { path = "../obsign-ledger" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+ed25519-dalek = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+
+[dev-dependencies]
+base64 = "0.22"
+
+[[bin]]
+name = "obsign-control"
+path = "src/main.rs"

@@ -1,0 +1,15 @@
+[package]
+name = "obsign-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Signed policy bundles and Cedar evaluation of tool calls."
+
+[dependencies]
+obsign-audit-core = { path = "../obsign-audit-core" }
+cedar-policy = "4"
+serde = { workspace = true }
+serde_json = { workspace = true }
+ed25519-dalek = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }

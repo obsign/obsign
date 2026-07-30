@@ -1,6 +1,6 @@
 //! Where the gateway's origin key lives.
 //!
-//! The mirror of `ledger::Sealer`, deliberately the same shape: everything
+//! The mirror of `obsign_ledger::Sealer`, deliberately the same shape: everything
 //! above the trait manipulates signed records, everything below decides
 //! where the private key material sits. The MVP holds a seed in a file; the
 //! roadmap (hardware identity key certifying per-session memory keys)
@@ -12,9 +12,9 @@
 //! a compromised gateway process — the gateway *is* the origin.
 
 use anyhow::{bail, Context as _, Result};
-use audit_core::checkpoint::{KeyRole, PublicKeyEntry};
-use audit_core::record::SessionCert;
-use audit_core::{
+use obsign_audit_core::checkpoint::{KeyRole, PublicKeyEntry};
+use obsign_audit_core::record::SessionCert;
+use obsign_audit_core::{
     content_hash, key_id_for, session_cert_signing_bytes, Hash, SignedDeploymentBundle,
 };
 use ed25519_dalek::{Signer as _, SigningKey, VerifyingKey};
@@ -168,10 +168,10 @@ impl IdentitySigner for FileIdentitySigner {
 
 /// Production identity signer: the key lives in a PKCS#11 token (HSM/TPM/
 /// smartcard) and never enters this process. Wraps the same
-/// [`pkcs11::Pkcs11Signer`] the ledger's sealing key uses — one audited FFI,
+/// [`obsign_pkcs11::Pkcs11Signer`] the ledger's sealing key uses — one audited FFI,
 /// two roles.
 pub struct Pkcs11IdentitySigner {
-    inner: pkcs11::Pkcs11Signer,
+    inner: obsign_pkcs11::Pkcs11Signer,
     key_id: String,
 }
 
@@ -179,14 +179,14 @@ impl Pkcs11IdentitySigner {
     #[allow(clippy::too_many_arguments)]
     pub fn open(
         module: &Path,
-        token: &pkcs11::TokenSelector,
+        token: &obsign_pkcs11::TokenSelector,
         pin: &str,
         key_label: &str,
     ) -> Result<Self> {
         // The key id is derived from the public key, like the file signer's,
         // so the same key always enrolls under the same id whatever the
         // custody.
-        let inner = pkcs11::Pkcs11Signer::open(module, token, pin, key_label, "identity")
+        let inner = obsign_pkcs11::Pkcs11Signer::open(module, token, pin, key_label, "identity")
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         let vk = pubkey_from_bytes(&inner.public_key_bytes())?;
         let key_id = key_id_for(&vk);
@@ -301,17 +301,17 @@ pub fn certify_session(
 /// itself — a tail whose certificate the identity key did not sign is
 /// foreign.
 pub fn resume_session_trust(
-    existing: &[audit_core::SignedRecord],
+    existing: &[obsign_audit_core::SignedRecord],
     chain_id: &str,
     identity_active: &BTreeMap<String, VerifyingKey>,
     new_session: &SessionKey,
 ) -> BTreeMap<String, VerifyingKey> {
     let mut trusted = BTreeMap::new();
     for sr in existing {
-        if let audit_core::record::Payload::SessionCert(cert) = &sr.record.payload {
+        if let obsign_audit_core::record::Payload::SessionCert(cert) = &sr.record.payload {
             if let Some(id_vk) = identity_active.get(&cert.identity_key_id) {
                 if let Ok(session_vk) =
-                    audit_core::verify_session_cert(chain_id, cert, id_vk)
+                    obsign_audit_core::verify_session_cert(chain_id, cert, id_vk)
                 {
                     trusted.insert(key_id_for(&session_vk), session_vk);
                 }
@@ -406,7 +406,7 @@ impl GatewayKeys {
     pub fn open_session(
         &self,
         chain_id: &str,
-        existing: &[audit_core::SignedRecord],
+        existing: &[obsign_audit_core::SignedRecord],
         now_ms: i64,
     ) -> Result<SessionSetup> {
         match &self.signing {
@@ -518,7 +518,7 @@ impl DeploymentTrust {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use audit_core::checkpoint::KeyRole;
+    use obsign_audit_core::checkpoint::KeyRole;
 
     #[test]
     fn the_public_entry_carries_the_origin_role() {
@@ -541,9 +541,9 @@ mod tests {
         let identity = FileIdentitySigner::from_seed([7u8; 32]);
         let (session, cert) =
             certify_session(&identity, "c1", "gw-1", 1_000, 60_000).unwrap();
-        let vk = audit_core::verify_session_cert("c1", &cert, &identity.verifying_key()).unwrap();
+        let vk = obsign_audit_core::verify_session_cert("c1", &cert, &identity.verifying_key()).unwrap();
         assert_eq!(vk, session.verifying_key());
-        assert!(audit_core::verify_session_cert("other", &cert, &identity.verifying_key()).is_err());
+        assert!(obsign_audit_core::verify_session_cert("other", &cert, &identity.verifying_key()).is_err());
     }
 
     /// The v2 hardware path end to end: an identity key held in a PKCS#11
@@ -569,7 +569,7 @@ mod tests {
 
         let identity = Pkcs11IdentitySigner::open(
             std::path::Path::new(&module),
-            &pkcs11::TokenSelector::Only,
+            &obsign_pkcs11::TokenSelector::Only,
             &pin,
             &label,
         )
@@ -583,12 +583,12 @@ mod tests {
         // The certificate verifies against the token's public half, and the
         // key it authorizes is exactly the session key we generated.
         let session_vk =
-            audit_core::verify_session_cert("chain-hsm", &cert, &identity.verifying_key())
+            obsign_audit_core::verify_session_cert("chain-hsm", &cert, &identity.verifying_key())
                 .expect("the HSM-signed certificate must verify");
         assert_eq!(session_vk, session.verifying_key());
         // Bound to that chain: another chain id does not verify.
         assert!(
-            audit_core::verify_session_cert("other", &cert, &identity.verifying_key()).is_err()
+            obsign_audit_core::verify_session_cert("other", &cert, &identity.verifying_key()).is_err()
         );
     }
 }

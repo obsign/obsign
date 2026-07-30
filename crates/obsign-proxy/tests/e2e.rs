@@ -9,12 +9,12 @@
 //! and auto-numbered — hence unstable — Cedar rule identifiers. Neither breaks
 //! the integrity chain; both ruin the log's usefulness.
 
-use audit_core::evidence::{self, Evidence};
-use audit_core::record::Payload;
+use obsign_audit_core::evidence::{self, Evidence};
+use obsign_audit_core::record::Payload;
 use base64::Engine as _;
 use ed25519_dalek::SigningKey;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use policy::bundle::{Bundle, FailBehaviour, FailMode, ToolDef, FORMAT};
+use obsign_policy::bundle::{Bundle, FailBehaviour, FailMode, ToolDef, FORMAT};
 use serde_json::{json, Value};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -38,16 +38,16 @@ fn b64(bytes: &[u8]) -> String {
 const IDENTITY_SEED: [u8; 32] = [0x22; 32];
 
 /// Trusted keyring: the policy key and the identity key.
-fn keyring(policy_key: &SigningKey) -> Vec<audit_core::checkpoint::PublicKeyEntry> {
+fn keyring(policy_key: &SigningKey) -> Vec<obsign_audit_core::checkpoint::PublicKeyEntry> {
     let ik = SigningKey::from_bytes(&IDENTITY_SEED);
     vec![
-        audit_core::checkpoint::PublicKeyEntry {
+        obsign_audit_core::checkpoint::PublicKeyEntry {
             key_id: "policy-key".to_string(),
             algo: "ed25519".to_string(),
             public_key: hex::encode(policy_key.verifying_key().to_bytes()),
             role: Default::default(),
         },
-        audit_core::checkpoint::PublicKeyEntry {
+        obsign_audit_core::checkpoint::PublicKeyEntry {
             key_id: "identity-key".to_string(),
             algo: "ed25519".to_string(),
             public_key: hex::encode(ik.verifying_key().to_bytes()),
@@ -59,7 +59,7 @@ fn keyring(policy_key: &SigningKey) -> Vec<audit_core::checkpoint::PublicKeyEntr
 /// Signed identity bundle; the token claims use the Keycloak shape.
 fn identity_bundle_json() -> String {
     let vk = SigningKey::from_bytes(&[9u8; 32]).verifying_key();
-    let jwks: identity::JwkSet = serde_json::from_value(json!({
+    let jwks: obsign_identity::JwkSet = serde_json::from_value(json!({
         "keys": [{
             "kty": "OKP", "crv": "Ed25519", "kid": "k1",
             "alg": "EdDSA", "x": b64(vk.as_bytes()),
@@ -67,13 +67,13 @@ fn identity_bundle_json() -> String {
     }))
     .unwrap();
 
-    let bundle = identity::IdentityBundle {
-        format: identity::bundle::FORMAT.to_string(),
+    let bundle = obsign_identity::IdentityBundle {
+        format: obsign_identity::bundle::FORMAT.to_string(),
         version: "identity@test".to_string(),
         issuer: ISSUER.to_string(),
         audience: AUDIENCE.to_string(),
         jwks,
-        claims: identity::ClaimMap::default(),
+        claims: obsign_identity::ClaimMap::default(),
     };
     let signed = bundle.sign("identity-key", &SigningKey::from_bytes(&IDENTITY_SEED));
     serde_json::to_string(&signed).unwrap()
@@ -177,20 +177,20 @@ fn seal_and_export(dir: &Path, chain_id: &str) -> Evidence {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis() as i64;
-    let records = wal::read(&dir.join("wal"), chain_id).expect("reading the WAL");
+    let records = obsign_wal::read(&dir.join("wal"), chain_id).expect("reading the WAL");
     let mut store =
-        ledger::Store::open(&dir.join("ledger"), chain_id).expect("opening the store");
-    let sealer = ledger::FileSealer::from_seed([0x33; 32], "seal-ledger");
-    ledger::seal_pass(
+        obsign_ledger::Store::open(&dir.join("ledger"), chain_id).expect("opening the store");
+    let sealer = obsign_ledger::FileSealer::from_seed([0x33; 32], "seal-ledger");
+    obsign_ledger::seal_pass(
         &records,
         &mut store,
         &sealer,
-        &ledger::OriginPolicy::permissive(),
+        &obsign_ledger::OriginPolicy::permissive(),
         now,
         1,
     )
     .expect("sealing the log");
-    ledger::export(records, &store, &[], None)
+    obsign_ledger::export(records, &store, &[], None)
 }
 
 fn tool(name: &str, destructive: bool, scope: Option<&str>) -> ToolDef {
@@ -333,7 +333,7 @@ fn run_with(
         seal_and_export(&dir, "test")
     } else {
         Evidence {
-            format: audit_core::evidence::FORMAT.to_string(),
+            format: obsign_audit_core::evidence::FORMAT.to_string(),
             chain_id: String::new(),
             records: Vec::new(),
             checkpoints: Vec::new(),
@@ -551,7 +551,7 @@ fn the_log_resumes_after_restart() {
         writeln!(child.stdin.take().unwrap(), "{call}").unwrap();
         child.wait_with_output().unwrap();
 
-        let records = wal::read(&dir.join("wal"), "resume").unwrap();
+        let records = obsign_wal::read(&dir.join("wal"), "resume").unwrap();
         seqs.push(records.last().unwrap().seq);
     }
 
@@ -902,7 +902,7 @@ fn a_delegated_human_keeps_destructive_access() {
 
 #[test]
 fn origin_signed_gateway_yields_a_require_origin_proof() {
-    use ledger::Sealer as _;
+    use obsign_ledger::Sealer as _;
     // The whole v0 loop through the real binary: the gateway signs every
     // record it writes; the operator copies the public entry off stderr into
     // the ledger's trust file; the ledger seals under --require-origin; the
@@ -913,7 +913,7 @@ fn origin_signed_gateway_yields_a_require_origin_proof() {
     // The public entry is printed for the operator: parse it exactly as they
     // would copy it. This is deliberately the only source of the key in this
     // test — re-deriving it from the seed would bypass the flow under test.
-    let entry: audit_core::checkpoint::PublicKeyEntry = {
+    let entry: obsign_audit_core::checkpoint::PublicKeyEntry = {
         let line = f
             .stderr
             .lines()
@@ -922,28 +922,28 @@ fn origin_signed_gateway_yields_a_require_origin_proof() {
         serde_json::from_str(line.split("public entry: ").nth(1).unwrap())
             .expect("a pasteable key entry")
     };
-    assert_eq!(entry.role, audit_core::checkpoint::KeyRole::Origin);
+    assert_eq!(entry.role, obsign_audit_core::checkpoint::KeyRole::Origin);
 
     // Every record the gateway wrote is signed — including delegation and
     // reload records, not just tool calls.
-    let records = wal::read(&f.dir.join("wal"), "test").unwrap();
+    let records = obsign_wal::read(&f.dir.join("wal"), "test").unwrap();
     assert!(!records.is_empty());
     assert!(records.iter().all(|r| r.is_signed()));
 
     // Seal under the strict policy: everything seals, nothing alarms.
-    let mut store = ledger::Store::open(&f.dir.join("ledger-origin"), "test").unwrap();
-    let sealer = ledger::FileSealer::from_seed([0x33; 32], "seal-ledger");
-    let policy = ledger::OriginPolicy::new(std::slice::from_ref(&entry), true).unwrap();
-    ledger::seal_pass(&records, &mut store, &sealer, &policy, 1_000, 1)
+    let mut store = obsign_ledger::Store::open(&f.dir.join("ledger-origin"), "test").unwrap();
+    let sealer = obsign_ledger::FileSealer::from_seed([0x33; 32], "seal-ledger");
+    let policy = obsign_ledger::OriginPolicy::new(std::slice::from_ref(&entry), true).unwrap();
+    obsign_ledger::seal_pass(&records, &mut store, &sealer, &policy, 1_000, 1)
         .unwrap()
         .expect("a signed log seals under require-origin");
 
     // And the pack proves origin offline under the auditor's strictest run.
-    let ev = ledger::export(records, &store, std::slice::from_ref(&entry), None);
+    let ev = obsign_ledger::export(records, &store, std::slice::from_ref(&entry), None);
     let report = evidence::verify_with(
         &ev,
         &[sealer.public_key(), entry],
-        &audit_core::evidence::VerifyOptions { require_origin: true, require_attestation: false },
+        &obsign_audit_core::evidence::VerifyOptions { require_origin: true, require_attestation: false },
     );
     assert!(report.is_valid(), "findings: {:?}", report.findings);
     assert_eq!(report.records_origin_ok, report.records_total);
@@ -991,7 +991,7 @@ fn two_tier_gateway_certifies_a_session_key_and_never_writes_it() {
     assert!(f.started);
 
     // The identity public entry is printed for enrollment.
-    let identity_entry: audit_core::checkpoint::PublicKeyEntry = {
+    let identity_entry: obsign_audit_core::checkpoint::PublicKeyEntry = {
         let line = f
             .stderr
             .lines()
@@ -999,23 +999,23 @@ fn two_tier_gateway_certifies_a_session_key_and_never_writes_it() {
             .expect("the gateway must print its identity public entry");
         serde_json::from_str(line.split("public entry: ").nth(1).unwrap()).unwrap()
     };
-    assert_eq!(identity_entry.role, audit_core::checkpoint::KeyRole::Origin);
+    assert_eq!(identity_entry.role, obsign_audit_core::checkpoint::KeyRole::Origin);
 
     // The chain's first record is the session certificate, and it is signed
     // by the identity key over this exact chain.
-    let records = wal::read(&f.dir.join("wal"), "test").unwrap();
+    let records = obsign_wal::read(&f.dir.join("wal"), "test").unwrap();
     let first = &records[0];
     let cert = match &first.record.payload {
         Payload::SessionCert(c) => c,
         other => panic!("the first record must be the session cert, got {other:?}"),
     };
     let id_vk = identity_entry.to_verifying_key().unwrap();
-    let session_vk = audit_core::verify_session_cert("test", cert, &id_vk)
+    let session_vk = obsign_audit_core::verify_session_cert("test", cert, &id_vk)
         .expect("the identity key must have certified the session key");
 
     // Every record is signed by the certified session key — including the
     // certificate itself — and by nothing that ever touched disk as a seed.
-    let session_id = audit_core::key_id_for(&session_vk);
+    let session_id = obsign_audit_core::key_id_for(&session_vk);
     assert!(
         records.iter().all(|r| r.is_signed()),
         "every record must carry an origin signature"
@@ -1038,12 +1038,12 @@ fn two_tier_gateway_certifies_a_session_key_and_never_writes_it() {
 
     // Seal enrolling the identity key, then verify under require-origin with
     // only the ops+seal roots — the session key is never supplied out of band.
-    use ledger::Sealer as _;
-    let ops = ledger::FileSealer::from_seed([0x21; 32], "ops-key");
+    use obsign_ledger::Sealer as _;
+    let ops = obsign_ledger::FileSealer::from_seed([0x21; 32], "ops-key");
     let mut identity_bundle_entry = identity_entry.clone();
-    identity_bundle_entry.role = audit_core::checkpoint::KeyRole::Origin;
-    let bundle = audit_core::DeploymentBundle {
-        format: audit_core::deployment::FORMAT.to_string(),
+    identity_bundle_entry.role = obsign_audit_core::checkpoint::KeyRole::Origin;
+    let bundle = obsign_audit_core::DeploymentBundle {
+        format: obsign_audit_core::deployment::FORMAT.to_string(),
         version: "deployment@v2".to_string(),
         origin_keys: vec![identity_bundle_entry],
         attestations: Vec::new(),
@@ -1051,27 +1051,27 @@ fn two_tier_gateway_certifies_a_session_key_and_never_writes_it() {
     let signed_bundle = {
         use ed25519_dalek::Signer as _;
         let sig = SigningKey::from_bytes(&[0x21; 32]).sign(&bundle.signing_bytes());
-        audit_core::SignedDeploymentBundle {
+        obsign_audit_core::SignedDeploymentBundle {
             bundle,
             key_id: "ops-key".to_string(),
             signature: hex::encode(sig.to_bytes()),
         }
     };
 
-    let mut store = ledger::Store::open(&f.dir.join("ledger-v2"), "test").unwrap();
-    let sealer = ledger::FileSealer::from_seed([0x33; 32], "seal-ledger");
+    let mut store = obsign_ledger::Store::open(&f.dir.join("ledger-v2"), "test").unwrap();
+    let sealer = obsign_ledger::FileSealer::from_seed([0x33; 32], "seal-ledger");
     let policy =
-        ledger::OriginPolicy::from_bundle(&signed_bundle, &ops.public_key().to_verifying_key().unwrap(), true)
+        obsign_ledger::OriginPolicy::from_bundle(&signed_bundle, &ops.public_key().to_verifying_key().unwrap(), true)
             .unwrap();
-    ledger::seal_pass(&records, &mut store, &sealer, &policy, 1_000, 1)
+    obsign_ledger::seal_pass(&records, &mut store, &sealer, &policy, 1_000, 1)
         .unwrap()
         .expect("a certified chain seals under require-origin");
 
-    let ev = ledger::export(records, &store, &[], policy.bundle().cloned());
+    let ev = obsign_ledger::export(records, &store, &[], policy.bundle().cloned());
     let report = evidence::verify_with(
         &ev,
         &[sealer.public_key(), ops.public_key()],
-        &audit_core::evidence::VerifyOptions { require_origin: true, require_attestation: false },
+        &obsign_audit_core::evidence::VerifyOptions { require_origin: true, require_attestation: false },
     );
     assert!(report.is_valid(), "findings: {:?}", report.findings);
     assert_eq!(report.records_origin_ok, report.records_total);
