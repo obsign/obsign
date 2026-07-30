@@ -14,10 +14,11 @@
 //!
 //! The TPM2 marshalling is hand-rolled — the PKCS#11/DER/HTTP stance: only
 //! the command subset enrollment needs, bounds-checked response parsing, no
-//! recursion, no TSS stack in the dependency tree. The transport is a plain
-//! TCP stream (swtpm's `--server type=tcp` carries raw TPM command bytes);
-//! the [`ctrl`] module drives swtpm's control channel to bring the simulated
-//! TPM up, which real hardware does not need.
+//! recursion, no TSS stack in the dependency tree. The transport is a raw
+//! command stream: swtpm's `--server type=tcp` socket, or a real TPM's
+//! character device (`/dev/tpmrm0`) on Linux hardware. The [`ctrl`] module
+//! drives swtpm's control channel to bring the simulated TPM up, which real
+//! hardware does not need.
 //!
 //! Algorithm choice is read off the TPM's capabilities: EdDSA/ed25519 where
 //! implemented (system-uniform), ECDSA-P256 otherwise. The swtpm builds this

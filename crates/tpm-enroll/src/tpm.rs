@@ -1,7 +1,11 @@
 //! The TPM 2.0 command subset enrollment needs, marshalled by hand.
 //!
 //! Every command here is TCG-standard (Part 3 of the TPM 2.0 spec); the
-//! transport is a raw byte stream — swtpm's TCP command socket in this tree.
+//! transport is a raw byte stream — swtpm's TCP command socket, or a real
+//! TPM's character device (`/dev/tpmrm0`) on Linux. The two differ only in
+//! framing: TCP delivers the response as a stream (header first, then the
+//! body it announces), a character device answers one `read` with the whole
+//! response.
 //! Authorization is the password session with an empty password throughout:
 //! enrollment runs against a freshly provisioned (or simulated) TPM whose
 //! hierarchies carry no auth yet; taking owner/endorsement passwords is a
@@ -93,15 +97,50 @@ pub struct SignedAttest {
 
 /// One TPM connected over a byte-stream transport.
 pub struct Tpm {
-    stream: TcpStream,
+    transport: Transport,
+}
+
+/// The two transports a TPM 2.0 command stream rides here.
+enum Transport {
+    /// swtpm's `--server type=tcp` socket: raw command bytes on a stream.
+    Tcp(TcpStream),
+    /// A real TPM's character device (`/dev/tpmrm0`): one `write` per
+    /// command, one `read` returns the entire response.
+    Device(std::fs::File),
 }
 
 impl Tpm {
+    /// Connects to `target`: an absolute path opens a TPM character device
+    /// (`/dev/tpmrm0`), anything else is a `host:port` TCP command socket.
+    pub fn open(target: &str) -> Result<Tpm, Error> {
+        if target.starts_with('/') {
+            Tpm::open_device(target)
+        } else {
+            Tpm::connect(target)
+        }
+    }
+
     pub fn connect(addr: &str) -> Result<Tpm, Error> {
         let stream = TcpStream::connect(addr)?;
         stream.set_read_timeout(Some(Duration::from_secs(30)))?;
         stream.set_write_timeout(Some(Duration::from_secs(30)))?;
-        Ok(Tpm { stream })
+        Ok(Tpm {
+            transport: Transport::Tcp(stream),
+        })
+    }
+
+    /// Opens a TPM character device. Prefer `/dev/tpmrm0` (the kernel
+    /// resource manager) over `/dev/tpm0`: the raw device is exclusive and
+    /// unmanaged. The kernel has already run `TPM2_Startup`, which is why
+    /// `startup_clear` treats `TPM_RC_INITIALIZE` as success.
+    pub fn open_device(path: &str) -> Result<Tpm, Error> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)?;
+        Ok(Tpm {
+            transport: Transport::Device(file),
+        })
     }
 
     /// `TPM2_Startup(SU_CLEAR)`. `TPM_RC_INITIALIZE` (already started) is
@@ -124,13 +163,26 @@ impl Tpm {
     /// The algorithms the TPM implements (`TPM_CAP_ALGS`).
     pub fn algorithms(&mut self) -> Result<Vec<u16>, Error> {
         let name = "TPM2_GetCapability(algs)";
-        let body = self.get_capability(name, CAP_ALGS)?;
-        let mut r = Reader::new(name, &body);
-        let count = r.u32()?;
         let mut algs = Vec::new();
-        for _ in 0..count.min(1024) {
-            algs.push(r.u16()?); // TPM_ALG_ID
-            r.u32()?; // TPMA_ALGORITHM
+        // Real TPMs may answer a capability in pages (moreData set); libtpms
+        // answers in one. The next page starts after the last property seen.
+        let mut first = 0u32;
+        for _page in 0..8 {
+            let (more, body) = self.get_capability(name, CAP_ALGS, first)?;
+            let mut r = Reader::new(name, &body);
+            let count = r.u32()?;
+            if count == 0 {
+                break;
+            }
+            for _ in 0..count.min(1024) {
+                let alg = r.u16()?; // TPM_ALG_ID
+                r.u32()?; // TPMA_ALGORITHM
+                algs.push(alg);
+                first = alg as u32 + 1;
+            }
+            if !more {
+                break;
+            }
         }
         Ok(algs)
     }
@@ -138,27 +190,43 @@ impl Tpm {
     /// The ECC curves the TPM implements (`TPM_CAP_ECC_CURVES`).
     pub fn ecc_curves(&mut self) -> Result<Vec<u16>, Error> {
         let name = "TPM2_GetCapability(curves)";
-        let body = self.get_capability(name, CAP_ECC_CURVES)?;
-        let mut r = Reader::new(name, &body);
-        let count = r.u32()?;
         let mut curves = Vec::new();
-        for _ in 0..count.min(1024) {
-            curves.push(r.u16()?);
+        let mut first = 0u32;
+        for _page in 0..8 {
+            let (more, body) = self.get_capability(name, CAP_ECC_CURVES, first)?;
+            let mut r = Reader::new(name, &body);
+            let count = r.u32()?;
+            if count == 0 {
+                break;
+            }
+            for _ in 0..count.min(1024) {
+                let curve = r.u16()?;
+                curves.push(curve);
+                first = curve as u32 + 1;
+            }
+            if !more {
+                break;
+            }
         }
         Ok(curves)
     }
 
-    fn get_capability(&mut self, name: &'static str, cap: u32) -> Result<Vec<u8>, Error> {
+    fn get_capability(
+        &mut self,
+        name: &'static str,
+        cap: u32,
+        first_property: u32,
+    ) -> Result<(bool, Vec<u8>), Error> {
         let mut c = Vec::new();
         c.extend_from_slice(&cap.to_be_bytes());
-        c.extend_from_slice(&0u32.to_be_bytes()); // first property
+        c.extend_from_slice(&first_property.to_be_bytes());
         c.extend_from_slice(&256u32.to_be_bytes()); // property count
         let body = self.exec(name, TAG_NO_SESSIONS, CC_GET_CAPABILITY, &c)?;
         // moreData (u8) + capability (u32), then the capability-specific list.
         let mut r = Reader::new(name, &body);
-        r.u8()?;
+        let more = r.u8()? != 0;
         r.u32()?;
-        Ok(r.rest().to_vec())
+        Ok((more, r.rest().to_vec()))
     }
 
     /// `TPM2_CreatePrimary` under `hierarchy` with the given `TPMT_PUBLIC`
@@ -269,25 +337,70 @@ impl Tpm {
         cmd.extend_from_slice(&size.to_be_bytes());
         cmd.extend_from_slice(&cc.to_be_bytes());
         cmd.extend_from_slice(params);
-        self.stream.write_all(&cmd)?;
 
-        let mut header = [0u8; 10];
-        self.stream.read_exact(&mut header)?;
-        let size = u32::from_be_bytes(header[2..6].try_into().expect("fixed slice"));
-        let rc = u32::from_be_bytes(header[6..10].try_into().expect("fixed slice"));
-        if !(10..=MAX_RESPONSE).contains(&size) {
-            return Err(Error::Protocol {
-                command: name,
-                what: format!("response size {size} out of bounds"),
-            });
+        match &mut self.transport {
+            Transport::Tcp(stream) => {
+                stream.write_all(&cmd)?;
+                let mut header = [0u8; 10];
+                stream.read_exact(&mut header)?;
+                let size = announced_size(name, &header)?;
+                let mut response = header.to_vec();
+                response.resize(size, 0);
+                stream.read_exact(&mut response[10..])?;
+                parse_response(name, &response)
+            }
+            Transport::Device(file) => {
+                file.write_all(&cmd)?;
+                // A TPM character device answers one read with the whole
+                // response; a second read would block on the next command.
+                let mut response = vec![0u8; MAX_RESPONSE as usize];
+                let n = loop {
+                    match file.read(&mut response) {
+                        Ok(n) => break n,
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(e) => return Err(e.into()),
+                    }
+                };
+                response.truncate(n);
+                let size = announced_size(name, &response)?;
+                if size != n {
+                    return Err(Error::Protocol {
+                        command: name,
+                        what: format!("device returned {n} bytes, header announces {size}"),
+                    });
+                }
+                parse_response(name, &response)
+            }
         }
-        let mut body = vec![0u8; size as usize - 10];
-        self.stream.read_exact(&mut body)?;
-        if rc != 0 {
-            return Err(Error::TpmRc { command: name, rc });
-        }
-        Ok(body)
     }
+}
+
+/// The response size a 10-byte TPM response header announces, bounds-checked.
+fn announced_size(name: &'static str, header: &[u8]) -> Result<usize, Error> {
+    if header.len() < 10 {
+        return Err(Error::Protocol {
+            command: name,
+            what: format!("response header is {} bytes, needs 10", header.len()),
+        });
+    }
+    let size = u32::from_be_bytes(header[2..6].try_into().expect("fixed slice"));
+    if !(10..=MAX_RESPONSE).contains(&size) {
+        return Err(Error::Protocol {
+            command: name,
+            what: format!("response size {size} out of bounds"),
+        });
+    }
+    Ok(size as usize)
+}
+
+/// Splits a complete response into its verdict: the body after the header,
+/// or the named `TPM_RC` error.
+fn parse_response(name: &'static str, response: &[u8]) -> Result<Vec<u8>, Error> {
+    let rc = u32::from_be_bytes(response[6..10].try_into().expect("checked length"));
+    if rc != 0 {
+        return Err(Error::TpmRc { command: name, rc });
+    }
+    Ok(response[10..].to_vec())
 }
 
 /// The authorization area for `n` password sessions with empty passwords:
@@ -545,6 +658,46 @@ mod tests {
             65,
             "empty coordinates still pad to a full point"
         );
+    }
+
+    #[test]
+    fn response_framing_is_validated_before_parsing() {
+        // A well-formed success response: tag, size, rc 0, one body byte.
+        let mut resp = 0x8001u16.to_be_bytes().to_vec();
+        resp.extend_from_slice(&11u32.to_be_bytes());
+        resp.extend_from_slice(&0u32.to_be_bytes());
+        resp.push(0xAB);
+        assert_eq!(announced_size("test", &resp).unwrap(), 11);
+        assert_eq!(parse_response("test", &resp).unwrap(), vec![0xAB]);
+
+        // A nonzero response code is the named error, body discarded.
+        let mut resp = 0x8001u16.to_be_bytes().to_vec();
+        resp.extend_from_slice(&10u32.to_be_bytes());
+        resp.extend_from_slice(&0x100u32.to_be_bytes());
+        assert!(matches!(
+            parse_response("test", &resp),
+            Err(Error::TpmRc { rc: 0x100, .. })
+        ));
+
+        // Sizes outside [10, MAX_RESPONSE] and short headers are refused.
+        for bad in [0u32, 9, MAX_RESPONSE + 1] {
+            let mut resp = 0x8001u16.to_be_bytes().to_vec();
+            resp.extend_from_slice(&bad.to_be_bytes());
+            resp.extend_from_slice(&0u32.to_be_bytes());
+            assert!(announced_size("test", &resp).is_err(), "size {bad}");
+        }
+        assert!(announced_size("test", &[0u8; 9]).is_err());
+    }
+
+    #[test]
+    fn open_dispatches_paths_to_the_device_transport() {
+        // An absolute path that is not a TPM device must fail to open as
+        // one — and must not be tried as a TCP address.
+        match Tpm::open("/nonexistent/tpmrm0") {
+            Err(Error::Io(_)) => {}
+            Err(e) => panic!("expected an I/O error, got {e}"),
+            Ok(_) => panic!("opened a TPM on a nonexistent path"),
+        }
     }
 
     #[test]
