@@ -51,6 +51,7 @@ pub fn keyring() -> Vec<PublicKeyEntry> {
         key_id: "identity-key".into(),
         algo: "ed25519".into(),
         public_key: hex::encode(k.verifying_key().to_bytes()),
+        role: Default::default(),
     }]
 }
 

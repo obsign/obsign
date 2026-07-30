@@ -86,6 +86,37 @@ struct SealArgs {
     /// Do not produce a checkpoint for fewer than this many new records
     #[arg(long, default_value_t = 1)]
     min_new: usize,
+
+    /// Ops-signed deployment bundle (v1): the active gateway origin keys.
+    /// Verified under the ops key in --trusted-keys before any of its keys
+    /// are trusted. This is the current way to source origin trust; it also
+    /// flips the default to require-origin (see --allow-unsigned-legacy-chains).
+    #[arg(long, conflicts_with = "trusted_origin_keys")]
+    deployment_bundle: Option<PathBuf>,
+
+    /// Ops public key(s) that sign the deployment bundle (JSON, the same file
+    /// format --trusted-keys uses elsewhere).
+    #[arg(long, requires = "deployment_bundle")]
+    trusted_keys: Option<PathBuf>,
+
+    /// Trusted gateway origin keys as a flat file (JSON, role "origin").
+    /// The v0 path, superseded by --deployment-bundle and kept for one
+    /// transition. One source of origin truth: not both.
+    #[arg(long)]
+    trusted_origin_keys: Option<PathBuf>,
+
+    /// Refuse to seal any record without a signature verifiable against the
+    /// trusted origin set. With --deployment-bundle this is the default
+    /// (v1 posture); the flat-file path leaves it opt-in.
+    #[arg(long, requires = "trusted_origin_keys")]
+    require_origin: bool,
+
+    /// Restore v0 rollout tolerance under --deployment-bundle: unsigned
+    /// records seal with a warning instead of being refused. The deliberately
+    /// unlovely opt-out from the v1 default — the operator accepting the
+    /// asterisk types it; nobody carries it silently.
+    #[arg(long, requires = "deployment_bundle")]
+    allow_unsigned_legacy_chains: bool,
 }
 
 #[derive(Subcommand)]
@@ -114,6 +145,17 @@ enum Command {
         /// Output file for the pack (JSON)
         #[arg(long)]
         out: PathBuf,
+
+        /// Gateway origin keys to embed in the pack (JSON, role "origin").
+        /// A reading convenience, like the embedded sealing keys: the
+        /// auditor still verifies with keys obtained out of band.
+        #[arg(long)]
+        trusted_origin_keys: Option<PathBuf>,
+
+        /// Ops-signed deployment bundle (v1) to embed in the pack, so the
+        /// whole origin chain of trust verifies from the ops key alone.
+        #[arg(long, conflicts_with = "trusted_origin_keys")]
+        deployment_bundle: Option<PathBuf>,
     },
 
     /// RFC 3161 anchoring, by file exchange with the TSA
@@ -165,7 +207,8 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Seal(args) => {
             let sealer = make_sealer(&args)?;
-            one_pass(&args, sealer.as_ref()).map_err(anyhow::Error::from)?;
+            let origin = origin_policy(&args)?;
+            one_pass(&args, sealer.as_ref(), &origin).map_err(anyhow::Error::from)?;
             Ok(())
         }
         Command::Run {
@@ -178,9 +221,22 @@ fn main() -> Result<()> {
             // to CKR_PIN_LOCKED — a config mistake must not become a
             // locked token.
             let sealer = make_sealer(&args)?;
-            run_loop(&args, sealer.as_ref(), interval_secs)
+            let origin = origin_policy(&args)?;
+            run_loop(&args, sealer.as_ref(), &origin, interval_secs)
         }
-        Command::Export { store, wal, out } => do_export(&store, &wal, &out),
+        Command::Export {
+            store,
+            wal,
+            out,
+            trusted_origin_keys,
+            deployment_bundle,
+        } => do_export(
+            &store,
+            &wal,
+            &out,
+            trusted_origin_keys.as_deref(),
+            deployment_bundle.as_deref(),
+        ),
         Command::Anchor(cmd) => match cmd {
             AnchorCmd::Request {
                 store,
@@ -241,11 +297,85 @@ fn make_sealer(args: &SealArgs) -> Result<Box<dyn Sealer>> {
     }
 }
 
-fn one_pass(args: &SealArgs, sealer: &dyn Sealer) -> Result<bool, ledger::Error> {
+/// Reads a trusted-key file (`Vec<PublicKeyEntry>` JSON).
+fn read_keys(path: &Path) -> Result<Vec<audit_core::checkpoint::PublicKeyEntry>> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
+}
+
+fn origin_policy(args: &SealArgs) -> Result<ledger::OriginPolicy> {
+    // v1: an ops-signed deployment bundle, require-origin on by default.
+    if let Some(bundle_path) = &args.deployment_bundle {
+        let raw = std::fs::read_to_string(bundle_path)
+            .with_context(|| format!("reading {}", bundle_path.display()))?;
+        let signed: audit_core::SignedDeploymentBundle = serde_json::from_str(&raw)
+            .with_context(|| format!("parsing {}", bundle_path.display()))?;
+
+        let ops_path = args
+            .trusted_keys
+            .as_ref()
+            .context("--deployment-bundle needs --trusted-keys: the ops key that signed it")?;
+        let ops_keys = read_keys(ops_path)?;
+        let ops_vk = ops_keys
+            .iter()
+            .find(|k| k.key_id == signed.key_id)
+            .with_context(|| {
+                format!(
+                    "deployment bundle signed with ops key \"{}\", absent from {}",
+                    signed.key_id,
+                    ops_path.display()
+                )
+            })?
+            .to_verifying_key()
+            .context("unusable ops key")?;
+
+        let require = !args.allow_unsigned_legacy_chains;
+        if !require {
+            eprintln!(
+                "[ledger] --allow-unsigned-legacy-chains: unsigned records still \
+                 seal (rollout tolerance under a deployment bundle)"
+            );
+        }
+        let policy = ledger::OriginPolicy::from_bundle(&signed, &ops_vk, require)?;
+        eprintln!(
+            "[ledger] origin trust from deployment bundle (require-origin {})",
+            if require { "on" } else { "off" }
+        );
+        return Ok(policy);
+    }
+
+    // v0 flat-file path, superseded.
+    match &args.trusted_origin_keys {
+        None => {
+            eprintln!(
+                "[ledger] WARNING: no --deployment-bundle or --trusted-origin-keys \
+                 — sealing without checking who wrote the records"
+            );
+            Ok(ledger::OriginPolicy::permissive())
+        }
+        Some(path) => {
+            let keys = read_keys(path)?;
+            if !args.require_origin {
+                eprintln!(
+                    "[ledger] origin keys loaded (flat file), --require-origin off: \
+                     unsigned records still seal (rollout mode)"
+                );
+            }
+            Ok(ledger::OriginPolicy::new(&keys, args.require_origin)?)
+        }
+    }
+}
+
+fn one_pass(
+    args: &SealArgs,
+    sealer: &dyn Sealer,
+    origin: &ledger::OriginPolicy,
+) -> Result<bool, ledger::Error> {
     let records = wal::read(&args.wal, &args.store.chain_id)?;
     let mut store = Store::open(&args.store.store, &args.store.chain_id)?;
 
-    match seal_pass(&records, &mut store, sealer, now_ms(), args.min_new)? {
+    match seal_pass(&records, &mut store, sealer, origin, now_ms(), args.min_new)? {
         Some(sc) => {
             let cp = &sc.checkpoint;
             eprintln!(
@@ -268,18 +398,25 @@ fn one_pass(args: &SealArgs, sealer: &dyn Sealer) -> Result<bool, ledger::Error>
     }
 }
 
-fn run_loop(args: &SealArgs, sealer: &dyn Sealer, interval_secs: u64) -> Result<()> {
+fn run_loop(
+    args: &SealArgs,
+    sealer: &dyn Sealer,
+    origin: &ledger::OriginPolicy,
+    interval_secs: u64,
+) -> Result<()> {
     loop {
-        match one_pass(args, sealer) {
+        match one_pass(args, sealer, origin) {
             Ok(_) => {}
-            // Divergence, truncation and store corruption never self-heal:
-            // looping over them would turn an incident into a heartbeat.
-            // Exit non-zero so the orchestrator alerts.
+            // Divergence, truncation, store corruption and an
+            // unauthenticated record never self-heal: looping over them
+            // would turn an incident into a heartbeat. Exit non-zero so the
+            // orchestrator alerts.
             Err(
                 e @ (ledger::Error::DivergedLog { .. }
                 | ledger::Error::TruncatedLog { .. }
                 | ledger::Error::StoreBroken(_)
-                | ledger::Error::KeyConflict(_)),
+                | ledger::Error::KeyConflict(_)
+                | ledger::Error::UnauthenticatedRecord { .. }),
             ) => return Err(e.into()),
             // Anything else (I/O blip, WAL mid-write) is worth retrying,
             // but never silently.
@@ -289,13 +426,37 @@ fn run_loop(args: &SealArgs, sealer: &dyn Sealer, interval_secs: u64) -> Result<
     }
 }
 
-fn do_export(store_args: &StoreArgs, wal_dir: &Path, out: &Path) -> Result<()> {
+fn do_export(
+    store_args: &StoreArgs,
+    wal_dir: &Path,
+    out: &Path,
+    origin_keys: Option<&Path>,
+    deployment_bundle: Option<&Path>,
+) -> Result<()> {
     let records = wal::read(wal_dir, &store_args.chain_id).context("reading the log")?;
     let store =
         Store::open(&store_args.store, &store_args.chain_id).context("opening the store")?;
 
-    let ev = export(records, &store);
-    let trusted = store.keys().to_vec();
+    let origin_keys = match origin_keys {
+        None => Vec::new(),
+        Some(p) => read_keys(p)?,
+    };
+    let deployment = match deployment_bundle {
+        None => None,
+        Some(p) => {
+            let raw = std::fs::read_to_string(p)
+                .with_context(|| format!("reading {}", p.display()))?;
+            Some(
+                serde_json::from_str(&raw)
+                    .with_context(|| format!("parsing {}", p.display()))?,
+            )
+        }
+    };
+    let ev = export(records, &store, &origin_keys, deployment);
+    // The self-check runs with what the pack embeds — including the origin
+    // keys and the deployment bundle, so a signed log exports as verified
+    // rather than "unverifiable because the keys travel out of band".
+    let trusted = ev.keys.clone();
 
     std::fs::write(out, serde_json::to_string_pretty(&ev)?)
         .with_context(|| format!("writing {}", out.display()))?;

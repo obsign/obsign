@@ -121,6 +121,7 @@ fn main() {
         key_id: key_id.to_string(),
         algo: "ed25519".to_string(),
         public_key: hex::encode(key.verifying_key().to_bytes()),
+        role: Default::default(),
     }];
 
     let bundle_path = out.join("policy-bundle.json");

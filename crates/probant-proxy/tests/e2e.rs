@@ -45,11 +45,13 @@ fn keyring(policy_key: &SigningKey) -> Vec<audit_core::checkpoint::PublicKeyEntr
             key_id: "policy-key".to_string(),
             algo: "ed25519".to_string(),
             public_key: hex::encode(policy_key.verifying_key().to_bytes()),
+            role: Default::default(),
         },
         audit_core::checkpoint::PublicKeyEntry {
             key_id: "identity-key".to_string(),
             algo: "ed25519".to_string(),
             public_key: hex::encode(ik.verifying_key().to_bytes()),
+            role: Default::default(),
         },
     ]
 }
@@ -179,8 +181,16 @@ fn seal_and_export(dir: &Path, chain_id: &str) -> Evidence {
     let mut store =
         ledger::Store::open(&dir.join("ledger"), chain_id).expect("opening the store");
     let sealer = ledger::FileSealer::from_seed([0x33; 32], "seal-ledger");
-    ledger::seal_pass(&records, &mut store, &sealer, now, 1).expect("sealing the log");
-    ledger::export(records, &store)
+    ledger::seal_pass(
+        &records,
+        &mut store,
+        &sealer,
+        &ledger::OriginPolicy::permissive(),
+        now,
+        1,
+    )
+    .expect("sealing the log");
+    ledger::export(records, &store, &[], None)
 }
 
 fn tool(name: &str, destructive: bool, scope: Option<&str>) -> ToolDef {
@@ -193,6 +203,25 @@ fn tool(name: &str, destructive: bool, scope: Option<&str>) -> ToolDef {
 }
 
 fn run(name: &str, cedar: &str, ident: Ident, traffic: &[&str]) -> Fixture {
+    run_with(name, cedar, ident, traffic, KeyMode::None)
+}
+
+/// How the gateway signs, for the e2e harness.
+enum KeyMode {
+    None,
+    /// v0/v1: the origin key signs records directly.
+    Origin([u8; 32]),
+    /// v2: the identity key certifies a per-chain session key.
+    Identity([u8; 32]),
+}
+
+fn run_with(
+    name: &str,
+    cedar: &str,
+    ident: Ident,
+    traffic: &[&str],
+    key_mode: KeyMode,
+) -> Fixture {
     let dir = std::env::temp_dir().join(format!("probant-e2e-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -231,6 +260,20 @@ fn run(name: &str, cedar: &str, ident: Ident, traffic: &[&str]) -> Fixture {
         .arg("test")
         .arg("--env")
         .arg("prod");
+
+    match key_mode {
+        KeyMode::None => {}
+        KeyMode::Origin(seed) => {
+            let seed_path = dir.join("origin.seed");
+            std::fs::write(&seed_path, hex::encode(seed)).unwrap();
+            cmd.arg("--origin-key").arg(&seed_path);
+        }
+        KeyMode::Identity(seed) => {
+            let seed_path = dir.join("identity.seed");
+            std::fs::write(&seed_path, hex::encode(seed)).unwrap();
+            cmd.arg("--identity-key").arg(&seed_path);
+        }
+    }
 
     match &ident {
         Ident::Declared { scopes } => {
@@ -296,6 +339,7 @@ fn run(name: &str, cedar: &str, ident: Ident, traffic: &[&str]) -> Fixture {
             checkpoints: Vec::new(),
             keys: Vec::new(),
             anchors: Vec::new(),
+            deployment: None,
         }
     };
 
@@ -850,4 +894,185 @@ fn a_delegated_human_keeps_destructive_access() {
         "the delegated human should have been allowed:\n{}",
         f.stderr
     );
+}
+
+// ===========================================================================
+// Origin authentication, end to end
+// ===========================================================================
+
+#[test]
+fn origin_signed_gateway_yields_a_require_origin_proof() {
+    use ledger::Sealer as _;
+    // The whole v0 loop through the real binary: the gateway signs every
+    // record it writes; the operator copies the public entry off stderr into
+    // the ledger's trust file; the ledger seals under --require-origin; the
+    // auditor verifies with --require-origin. No step below is optional —
+    // each is one of the three enforcement points.
+    let f = run_with("origin", CEDAR, declared(), TRAFFIC, KeyMode::Origin([0x44; 32]));
+
+    // The public entry is printed for the operator: parse it exactly as they
+    // would copy it. This is deliberately the only source of the key in this
+    // test — re-deriving it from the seed would bypass the flow under test.
+    let entry: audit_core::checkpoint::PublicKeyEntry = {
+        let line = f
+            .stderr
+            .lines()
+            .find(|l| l.contains("public entry: "))
+            .expect("the gateway must print its origin public entry");
+        serde_json::from_str(line.split("public entry: ").nth(1).unwrap())
+            .expect("a pasteable key entry")
+    };
+    assert_eq!(entry.role, audit_core::checkpoint::KeyRole::Origin);
+
+    // Every record the gateway wrote is signed — including delegation and
+    // reload records, not just tool calls.
+    let records = wal::read(&f.dir.join("wal"), "test").unwrap();
+    assert!(!records.is_empty());
+    assert!(records.iter().all(|r| r.is_signed()));
+
+    // Seal under the strict policy: everything seals, nothing alarms.
+    let mut store = ledger::Store::open(&f.dir.join("ledger-origin"), "test").unwrap();
+    let sealer = ledger::FileSealer::from_seed([0x33; 32], "seal-ledger");
+    let policy = ledger::OriginPolicy::new(std::slice::from_ref(&entry), true).unwrap();
+    ledger::seal_pass(&records, &mut store, &sealer, &policy, 1_000, 1)
+        .unwrap()
+        .expect("a signed log seals under require-origin");
+
+    // And the pack proves origin offline under the auditor's strictest run.
+    let ev = ledger::export(records, &store, std::slice::from_ref(&entry), None);
+    let report = evidence::verify_with(
+        &ev,
+        &[sealer.public_key(), entry],
+        &audit_core::evidence::VerifyOptions { require_origin: true, require_attestation: false },
+    );
+    assert!(report.is_valid(), "findings: {:?}", report.findings);
+    assert_eq!(report.records_origin_ok, report.records_total);
+    assert!(
+        report.warnings().next().is_none(),
+        "a fully proven pack has nothing to warn about: {:?}",
+        report.findings
+    );
+}
+
+#[test]
+fn a_gateway_without_origin_key_says_so_and_still_works() {
+    // The rollout posture: no key, loud warning, unchanged behaviour.
+    let f = run("no-origin", CEDAR, declared(), TRAFFIC);
+    assert!(f.started);
+    assert!(
+        f.stderr.contains("no signing key"),
+        "the degradation must be visible at startup:\n{}",
+        f.stderr
+    );
+    assert!(f
+        .evidence
+        .records
+        .iter()
+        .all(|r| !r.is_signed()));
+}
+
+// ===========================================================================
+// v2: two-tier keys (identity key certifies an ephemeral session key)
+// ===========================================================================
+
+#[test]
+fn two_tier_gateway_certifies_a_session_key_and_never_writes_it() {
+    // The v2 loop through the real binary: the identity key certifies a fresh
+    // session key at chain open; the session key signs every record; the
+    // whole chain verifies against the identity key alone (out of band), and
+    // the session key exists only in the gateway's memory.
+    let f = run_with(
+        "two-tier",
+        CEDAR,
+        declared(),
+        TRAFFIC,
+        KeyMode::Identity([0x55; 32]),
+    );
+    assert!(f.started);
+
+    // The identity public entry is printed for enrollment.
+    let identity_entry: audit_core::checkpoint::PublicKeyEntry = {
+        let line = f
+            .stderr
+            .lines()
+            .find(|l| l.contains("public entry: "))
+            .expect("the gateway must print its identity public entry");
+        serde_json::from_str(line.split("public entry: ").nth(1).unwrap()).unwrap()
+    };
+    assert_eq!(identity_entry.role, audit_core::checkpoint::KeyRole::Origin);
+
+    // The chain's first record is the session certificate, and it is signed
+    // by the identity key over this exact chain.
+    let records = wal::read(&f.dir.join("wal"), "test").unwrap();
+    let first = &records[0];
+    let cert = match &first.record.payload {
+        Payload::SessionCert(c) => c,
+        other => panic!("the first record must be the session cert, got {other:?}"),
+    };
+    let id_vk = identity_entry.to_verifying_key().unwrap();
+    let session_vk = audit_core::verify_session_cert("test", cert, &id_vk)
+        .expect("the identity key must have certified the session key");
+
+    // Every record is signed by the certified session key — including the
+    // certificate itself — and by nothing that ever touched disk as a seed.
+    let session_id = audit_core::key_id_for(&session_vk);
+    assert!(
+        records.iter().all(|r| r.is_signed()),
+        "every record must carry an origin signature"
+    );
+    for r in &records {
+        assert_eq!(
+            r.origin_key_id.as_deref(),
+            Some(session_id.as_str()),
+            "record {} must be signed by the session key",
+            r.id
+        );
+    }
+    // The identity key never signs a record directly.
+    assert!(
+        records
+            .iter()
+            .all(|r| r.origin_key_id.as_deref() != Some(identity_entry.key_id.as_str())),
+        "the identity key must certify, never sign records"
+    );
+
+    // Seal enrolling the identity key, then verify under require-origin with
+    // only the ops+seal roots — the session key is never supplied out of band.
+    use ledger::Sealer as _;
+    let ops = ledger::FileSealer::from_seed([0x21; 32], "ops-key");
+    let mut identity_bundle_entry = identity_entry.clone();
+    identity_bundle_entry.role = audit_core::checkpoint::KeyRole::Origin;
+    let bundle = audit_core::DeploymentBundle {
+        format: audit_core::deployment::FORMAT.to_string(),
+        version: "deployment@v2".to_string(),
+        origin_keys: vec![identity_bundle_entry],
+        attestations: Vec::new(),
+    };
+    let signed_bundle = {
+        use ed25519_dalek::Signer as _;
+        let sig = SigningKey::from_bytes(&[0x21; 32]).sign(&bundle.signing_bytes());
+        audit_core::SignedDeploymentBundle {
+            bundle,
+            key_id: "ops-key".to_string(),
+            signature: hex::encode(sig.to_bytes()),
+        }
+    };
+
+    let mut store = ledger::Store::open(&f.dir.join("ledger-v2"), "test").unwrap();
+    let sealer = ledger::FileSealer::from_seed([0x33; 32], "seal-ledger");
+    let policy =
+        ledger::OriginPolicy::from_bundle(&signed_bundle, &ops.public_key().to_verifying_key().unwrap(), true)
+            .unwrap();
+    ledger::seal_pass(&records, &mut store, &sealer, &policy, 1_000, 1)
+        .unwrap()
+        .expect("a certified chain seals under require-origin");
+
+    let ev = ledger::export(records, &store, &[], policy.bundle().cloned());
+    let report = evidence::verify_with(
+        &ev,
+        &[sealer.public_key(), ops.public_key()],
+        &audit_core::evidence::VerifyOptions { require_origin: true, require_attestation: false },
+    );
+    assert!(report.is_valid(), "findings: {:?}", report.findings);
+    assert_eq!(report.records_origin_ok, report.records_total);
 }

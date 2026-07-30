@@ -53,6 +53,11 @@ pub enum Payload {
     /// A configuration reload observed by the gateway (key rotation,
     /// republished bundle), applied or rejected.
     ConfigReload(ConfigReload),
+    /// The gateway identity key's certificate over this chain's ephemeral
+    /// session signing key. The first record of a chain, so every later
+    /// record's origin signature resolves to a key the identity key vouched
+    /// for.
+    SessionCert(SessionCert),
 }
 
 impl Payload {
@@ -81,6 +86,11 @@ impl Payload {
             // `agent_session` record, i.e. only if a delegation happened to be
             // recorded after the reload.
             Payload::ConfigReload(_) => 8,
+            // Added later, same rule: the two-tier key architecture. Records
+            // are signed by an ephemeral session key; this certificate, signed
+            // by the gateway's hardware identity key, is what a verifier
+            // resolves that session key against.
+            Payload::SessionCert(_) => 9,
         }
     }
 
@@ -140,6 +150,14 @@ impl Payload {
                     .str(&c.bundle_version)
                     .opt_hash(c.bundle_hash.as_ref())
                     .opt_str(c.reason.as_deref());
+            }
+            Payload::SessionCert(c) => {
+                e.str(&c.session_pubkey)
+                    .str(&c.identity_key_id)
+                    .str(&c.gateway_id)
+                    .i64(c.not_before_ms)
+                    .i64(c.not_after_ms)
+                    .str(&c.identity_sig);
             }
         }
     }
@@ -362,6 +380,33 @@ pub struct ConfigReload {
     pub reason: Option<String>,
 }
 
+/// The gateway identity key's certificate over an ephemeral session key.
+///
+/// The two-tier key architecture: a long-lived identity key (in hardware)
+/// certifies a session key generated in memory at chain open, and the session
+/// key signs every record. This certificate is what lets a verifier trust the
+/// session key — it is the chain's first record, sealed like any other, so it
+/// cannot be stripped. The `identity_sig` binds the session key to this exact
+/// `chain_id` (carried by the record) and this `gateway_id`, so a leaked
+/// session key cannot be replayed onto another chain or another gateway.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionCert {
+    /// The ephemeral session public key (32-byte ed25519, hex) that signs
+    /// every record of this chain in the envelope.
+    pub session_pubkey: String,
+    /// The identity key that certified it, resolved in the deployment
+    /// bundle's active set.
+    pub identity_key_id: String,
+    /// Gateway identity, bound into the signature.
+    pub gateway_id: String,
+    pub not_before_ms: i64,
+    pub not_after_ms: i64,
+    /// Ed25519 signature by the identity key, 64 bytes in hex, over the
+    /// canonical encoding of the fields above plus the chain id (see
+    /// `crate::origin::session_cert_signing_bytes`).
+    pub identity_sig: String,
+}
+
 /// Which configuration the reload concerned.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -370,6 +415,12 @@ pub enum ConfigKind {
     IdentityBundle,
     /// Signed policy bundle: Cedar rules and tool catalogue.
     PolicyBundle,
+    /// Signed deployment bundle: the active gateway origin keys. Recorded so
+    /// "which origin keys did the gateway trust when this chain was written?"
+    /// reads from the log, exactly like the JWKS question. Added later, same
+    /// rule as the tags above: `config_kind` is encoded as a string, so a new
+    /// variant touches no existing hash.
+    DeploymentBundle,
 }
 
 impl ConfigKind {
@@ -377,6 +428,7 @@ impl ConfigKind {
         match self {
             ConfigKind::IdentityBundle => "identity_bundle",
             ConfigKind::PolicyBundle => "policy_bundle",
+            ConfigKind::DeploymentBundle => "deployment_bundle",
         }
     }
 }

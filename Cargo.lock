@@ -817,7 +817,7 @@ dependencies = [
  "clap",
  "ed25519-dalek",
  "hex",
- "libc",
+ "pkcs11",
  "serde",
  "serde_json",
  "thiserror",
@@ -1059,6 +1059,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
+name = "pkcs11"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "libc",
+ "thiserror",
+]
+
+[[package]]
 name = "pkcs8"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1127,6 +1136,7 @@ dependencies = [
  "identity",
  "jsonwebtoken",
  "ledger",
+ "pkcs11",
  "policy",
  "serde",
  "serde_json",
@@ -1687,6 +1697,7 @@ name = "wal"
 version = "0.1.0"
 dependencies = [
  "audit-core",
+ "ed25519-dalek",
  "serde_json",
  "thiserror",
 ]

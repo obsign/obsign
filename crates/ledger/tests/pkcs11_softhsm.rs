@@ -57,7 +57,7 @@ fn grow_wal(dir: &Path, n: u64) {
                 latency_ms: i,
             }),
         );
-        wal.append(&r).unwrap();
+        wal.append(&audit_core::SignedRecord::unsigned(r)).unwrap();
     }
 }
 
@@ -145,12 +145,19 @@ fn seals_through_a_real_token() {
     let records = wal::read(&wal_dir, "c1").unwrap();
     let mut store = ledger::Store::open(&tmpdir("store"), "c1").unwrap();
 
-    let sc = seal_pass(&records, &mut store, &sealer, 1_000, 1)
+    let sc = seal_pass(
+        &records,
+        &mut store,
+        &sealer,
+        &ledger::OriginPolicy::permissive(),
+        1_000,
+        1,
+    )
         .unwrap()
         .expect("three records to seal");
     assert_eq!(sc.checkpoint.key_id, "seal-hsm");
 
-    let ev = export(records, &store);
+    let ev = export(records, &store, &[], None);
     let report = evidence::verify(&ev, store.keys());
     assert!(report.is_valid(), "{:?}", report.errors().collect::<Vec<_>>());
     assert_eq!(report.records_sealed, 3);

@@ -21,6 +21,7 @@
 mod auth;
 mod gateway;
 mod http;
+mod origin;
 #[cfg(test)]
 mod testutil;
 mod session;
@@ -30,6 +31,7 @@ use auth::Auth;
 use clap::Parser;
 use gateway::{handle_from_agent, handle_from_server, spawn_server, Ctx, Forward};
 use identity::BundleSource;
+use origin::OriginSigner as _;
 use policy::{Engine, SignedBundle};
 use serde_json::Value;
 use session::now_ms;
@@ -106,6 +108,53 @@ struct Cli {
     #[arg(long, default_value = "./wal")]
     wal: PathBuf,
 
+    /// Origin key seed (32 bytes, hex): the gateway signs every record it
+    /// writes directly with this key (v0/v1). Without it — and without
+    /// --identity-key — the log is chained but unsigned.
+    #[arg(long, conflicts_with = "identity_key")]
+    origin_key: Option<PathBuf>,
+
+    /// Identity key seed (32 bytes, hex): the two-tier scheme (v2). This
+    /// long-lived key certifies a fresh session key per chain; the session
+    /// key — generated in memory, never on disk — signs the records. The
+    /// seed file is dev-grade; production uses --identity-hsm-module.
+    #[arg(long, conflicts_with = "identity_hsm_module")]
+    identity_key: Option<PathBuf>,
+
+    /// PKCS#11 module (.so) holding the identity key in hardware (v2, prod).
+    /// The key certifies session keys and never enters this process.
+    #[arg(long, conflicts_with = "origin_key")]
+    identity_hsm_module: Option<PathBuf>,
+
+    /// Label of the Ed25519 identity key pair on the token
+    #[arg(long, requires = "identity_hsm_module")]
+    identity_hsm_key_label: Option<String>,
+
+    /// Token to use, by label, when the module exposes several
+    #[arg(long, requires = "identity_hsm_module", conflicts_with = "identity_hsm_slot")]
+    identity_hsm_token_label: Option<String>,
+
+    /// Token to use, by slot id, when labels are not unique
+    #[arg(long, requires = "identity_hsm_module")]
+    identity_hsm_slot: Option<u64>,
+
+    /// File holding the user PIN. Without it, the PROBANT_HSM_PIN environment
+    /// variable. Never an argument: arguments end up in `ps` and shell history.
+    #[arg(long, requires = "identity_hsm_module")]
+    identity_hsm_pin_file: Option<PathBuf>,
+
+    /// Session-certificate lifetime in seconds (v2). A leaked session key
+    /// forges records only until it expires; keep it to the session's scale.
+    #[arg(long, default_value_t = 3600)]
+    session_lifetime_secs: i64,
+
+    /// Ops-signed deployment bundle (v1/v2): the active gateway origin or
+    /// identity keys. Verified under the ops key in --trusted-keys. On resume
+    /// the gateway accepts a tail certified by any key it enrolls (rotation
+    /// window), and the bundle in force is recorded at the top of every chain.
+    #[arg(long)]
+    deployment_bundle: Option<PathBuf>,
+
     /// Audit chain identifier. Over HTTP, each session chains under
     /// `<chain-id>-<session>`.
     #[arg(long, default_value = "default")]
@@ -172,9 +221,78 @@ fn main() -> Result<()> {
         cli.env
     );
 
+    // --- Signing keys -------------------------------------------------
+    // Resolved once, at startup, in front of the operator: a gateway that
+    // discovers its key is unreadable at the first tool call has already
+    // accepted a session it cannot sign for.
+    let two_tier = |identity: Arc<dyn origin::IdentitySigner>| {
+        eprintln!(
+            "[probant] identity key {} — certifies a session key per chain — public entry: {}",
+            identity.key_id(),
+            serde_json::to_string(&identity.public_key()).expect("serializing a key entry")
+        );
+        origin::Signing::TwoTier {
+            identity,
+            lifetime_ms: cli.session_lifetime_secs.saturating_mul(1000),
+        }
+    };
+
+    let signing = match (&cli.origin_key, &cli.identity_key, &cli.identity_hsm_module) {
+        (None, None, None) => {
+            eprintln!(
+                "[probant] WARNING: no signing key. Records are chained but \
+                 unsigned: nothing proves this gateway wrote them."
+            );
+            origin::Signing::None
+        }
+        (Some(path), None, None) => {
+            let s = Arc::new(origin::FileOriginSigner::from_seed_file(path)?);
+            eprintln!(
+                "[probant] origin key {} — every record signed directly — public entry: {}",
+                s.key_id(),
+                serde_json::to_string(&s.public_key()).expect("serializing a key entry")
+            );
+            origin::Signing::Direct(s)
+        }
+        (None, Some(path), None) => {
+            let id = Arc::new(origin::FileIdentitySigner::from_seed_file(path)?);
+            two_tier(id as Arc<dyn origin::IdentitySigner>)
+        }
+        (None, None, Some(module)) => {
+            let id = Arc::new(build_hsm_identity(&cli, module)?);
+            two_tier(id as Arc<dyn origin::IdentitySigner>)
+        }
+        _ => unreachable!("clap: conflicts_with"),
+    };
+
+    // --- Deployment bundle (v1/v2) -----------------------------------
+    // The active key set: what the gateway accepts on resume, and the
+    // in-chain record of who it trusted. Verified under the ops key it names.
+    let deployment = match &cli.deployment_bundle {
+        None => None,
+        Some(path) => {
+            let trust = origin::DeploymentTrust::load(path, &trusted)?;
+            eprintln!(
+                "[probant] deployment bundle {} — {} gateway key(s) trusted on resume",
+                trust.version,
+                trust.active.len()
+            );
+            Some(trust)
+        }
+    };
+
+    let keys = Arc::new(origin::GatewayKeys {
+        signing,
+        deployment,
+        gateway_id: cli.agent_id.clone(),
+    });
+    // A gateway not enrolled in its own deployment writes records the ledger
+    // will refuse: fail at startup, in front of the operator.
+    keys.verify_enrolled()?;
+
     match &cli.http {
-        Some(addr) => run_http(&cli, addr, engine, bundle_version, trusted),
-        None => run_stdio(&cli, engine, bundle_version, trusted),
+        Some(addr) => run_http(&cli, addr, engine, bundle_version, trusted, keys),
+        None => run_stdio(&cli, engine, bundle_version, trusted, keys),
     }
 }
 
@@ -188,6 +306,7 @@ fn run_http(
     engine: Arc<Engine>,
     bundle_version: String,
     trusted: Vec<audit_core::checkpoint::PublicKeyEntry>,
+    keys: Arc<origin::GatewayKeys>,
 ) -> Result<()> {
     // Options that only mean something on stdio are refused, not ignored: an
     // operator who set them expects them to act.
@@ -251,9 +370,36 @@ fn run_http(
             chain_id: cli.chain_id.clone(),
             server_cmd: cli.server_cmd.clone(),
             allowed_origins: cli.allowed_origins.clone(),
+            keys,
         },
         addr,
     )
+}
+
+/// Opens the identity key on a PKCS#11 token, from the --identity-hsm-* flags.
+/// The credentials are presented once, here, at startup — never in a loop
+/// that could walk the token toward lock-out (the ledger's PIN discipline).
+fn build_hsm_identity(cli: &Cli, module: &std::path::Path) -> Result<origin::Pkcs11IdentitySigner> {
+    let label = cli
+        .identity_hsm_key_label
+        .as_deref()
+        .context("--identity-hsm-module needs --identity-hsm-key-label")?;
+    let token = match (cli.identity_hsm_slot, &cli.identity_hsm_token_label) {
+        (Some(slot), None) => pkcs11::TokenSelector::Slot(slot),
+        (None, Some(label)) => pkcs11::TokenSelector::Label(label.clone()),
+        (None, None) => pkcs11::TokenSelector::Only,
+        (Some(_), Some(_)) => unreachable!("clap: conflicts_with"),
+    };
+    let pin = match &cli.identity_hsm_pin_file {
+        Some(path) => std::fs::read_to_string(path)
+            .with_context(|| format!("reading the PIN file {}", path.display()))?
+            .trim()
+            .to_string(),
+        None => std::env::var("PROBANT_HSM_PIN").map_err(|_| {
+            anyhow::anyhow!("no PIN: give --identity-hsm-pin-file or set PROBANT_HSM_PIN")
+        })?,
+    };
+    origin::Pkcs11IdentitySigner::open(module, &token, &pin, label)
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +411,7 @@ fn run_stdio(
     engine: Arc<Engine>,
     bundle_version: String,
     trusted: Vec<audit_core::checkpoint::PublicKeyEntry>,
+    keys: Arc<origin::GatewayKeys>,
 ) -> Result<()> {
     // --- Identity -------------------------------------------------------
     let auth = build_auth(cli, &trusted)?;
@@ -290,7 +437,18 @@ fn run_stdio(
     }
 
     // --- Log -------------------------------------------------------------
-    let (wal, chain) = Wal::open(&cli.wal, &cli.chain_id).context("opening the log")?;
+    // Resuming refuses a tail no trusted origin key signed: adopting it would
+    // chain authentic records on top of a forgery. Under the two-tier scheme
+    // the trusted set is rebuilt from the certificates already in the chain,
+    // so a tail signed by a *previous* session key — which this process no
+    // longer holds — is adopted iff the identity key vouched for it.
+    let existing = wal::read(&cli.wal, &cli.chain_id).context("reading the log")?;
+    let setup = keys.open_session(&cli.chain_id, &existing, now_ms())?;
+    let (wal, chain) = match &setup.resume_trust {
+        Some(map) => Wal::open_authenticated(&cli.wal, &cli.chain_id, map)
+            .context("opening the log (origin-authenticated)")?,
+        None => Wal::open(&cli.wal, &cli.chain_id).context("opening the log")?,
+    };
     if chain.next_seq() > 0 {
         eprintln!(
             "[probant] log resumed at seq={} (head {})",
@@ -304,12 +462,21 @@ fn run_stdio(
         .clone()
         .unwrap_or_else(|| format!("sess-{}", std::process::id()));
 
-    let mut sess = session::open(chain, wal, session_id.clone());
+    let mut sess = session::open(chain, wal, session_id.clone(), setup.origin);
     {
         let mut a = auth.lock().unwrap();
         // A rotation recovered while verifying the startup token happened
         // before this session existed; its record still comes first.
         session::record_config_reloads(&mut sess, a.take_reloads())?;
+        // The session certificate establishes who signs, before anyone signs;
+        // the deployment bundle in force says who could have. Both precede the
+        // delegation.
+        if let Some(cert) = setup.cert {
+            session::record_session_cert(&mut sess, cert)?;
+        }
+        if let Some(trust) = &keys.deployment {
+            session::record_deployment_bundle(&mut sess, trust)?;
+        }
         session::record_delegation(
             &mut sess,
             a.generation(),

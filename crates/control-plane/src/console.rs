@@ -220,7 +220,7 @@ fn chain_row(console: &Console, id: &str) -> ChainRow {
             let sealed_to = store.last().map(|sc| sc.checkpoint.to_seq);
             let checkpoints = store.checkpoints().len();
             let anchors = store.anchors().len();
-            let evidence = ledger::export(records, &store);
+            let evidence = ledger::export(records, &store, &[], None);
             let report = audit_core::evidence::verify(&evidence, &trusted);
             let ok = report.is_valid();
             let status = if ok {
@@ -484,6 +484,7 @@ fn kind(rec: &Record) -> &'static str {
         Payload::Decision(_) => "decision",
         Payload::Effect(_) => "effect",
         Payload::ConfigReload(_) => "config_reload",
+        Payload::SessionCert(_) => "session_cert",
     }
 }
 
@@ -529,6 +530,12 @@ fn summary(rec: &Record) -> String {
             }
             s
         }
+        Payload::SessionCert(c) => format!(
+            "session key {}… certified by {} — gateway {}",
+            esc(&c.session_pubkey.chars().take(16).collect::<String>()),
+            esc(&c.identity_key_id),
+            esc(&c.gateway_id),
+        ),
     }
 }
 

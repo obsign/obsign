@@ -227,6 +227,7 @@ mod tests {
             key_id: "identity-key".into(),
             algo: "ed25519".into(),
             public_key: hex::encode(signer.verifying_key().to_bytes()),
+            role: Default::default(),
         }]
     }
 

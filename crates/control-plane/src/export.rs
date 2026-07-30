@@ -207,7 +207,7 @@ pub fn export_all(
         let records = wal::read(wal_dir, &chain_id)?;
         let store = Store::open(store_dir, &chain_id)?;
         let trusted = store.keys().to_vec();
-        let evidence = ledger::export(records, &store);
+        let evidence = ledger::export(records, &store, &[], None);
         let report = audit_core::evidence::verify(&evidence, &trusted);
 
         let file = format!("{chain_id}.evidence.json");
