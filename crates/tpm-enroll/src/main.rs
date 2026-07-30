@@ -23,7 +23,9 @@ use tpm_enroll::{ctrl::SwtpmCtrl, enroll, EnrollmentRequest, Tpm};
     about = "Enroll a gateway identity key with a TPM 2.0: AK, certify, quote"
 )]
 struct Args {
-    /// TPM command socket, host:port (swtpm: --server type=tcp,port=...).
+    /// TPM to enroll against: host:port of a TCP command socket (swtpm:
+    /// --server type=tcp,port=...), or the absolute path of a TPM character
+    /// device on real hardware (/dev/tpmrm0).
     #[arg(long)]
     tpm: String,
 
@@ -74,8 +76,8 @@ fn main() -> anyhow::Result<()> {
             .context("initializing swtpm over the control channel")?;
     }
 
-    let mut tpm = Tpm::connect(&args.tpm)
-        .with_context(|| format!("connecting to the TPM command socket at {}", args.tpm))?;
+    let mut tpm =
+        Tpm::open(&args.tpm).with_context(|| format!("connecting to the TPM at {}", args.tpm))?;
     tpm.startup_clear().context("TPM2_Startup")?;
 
     let enrollment = enroll(
