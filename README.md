@@ -174,8 +174,10 @@ RFC 8693 token exchange does, and Probant records it.
 | `client_credentials` | `batch-agent` | `machine` |
 
 The third case is the one nobody covers: a batch agent, with no human behind
-it, deleting in production. It is recognised by `sub == client_id`, and the
-policy can then express it:
+it, deleting in production. It is recognised by the union of the markers the
+target IdPs actually emit — `sub == client_id`, Entra ID's `idtyp: "app"`,
+Keycloak's `service-account-` username prefix — and the policy can then
+express it:
 
 ```cedar
 @id("destructive_requires_human")
@@ -220,6 +222,28 @@ These defaults already cover Keycloak and Entra ID. The Keycloak case is worth
 flagging: roles are **never** flat, everything sits under `realm_access.roles`
 and `resource_access.<client>.roles`. A naive mapping returns empty groups, and
 no `principal in Group::"dba"` rule ever matches — with no visible error.
+
+The same goes for what marks a token as a machine's. The defaults recognise
+the three shapes the target IdPs emit; an IdP with its own convention is
+described, not special-cased (format `probant-identity/2`):
+
+```json
+"claims": {
+  "machine": {
+    "subject_is_client": true,
+    "equals":   [{ "path": "/idtyp", "value": "app" }],
+    "prefixes": [{ "path": "/preferred_username", "value": "service-account-" }]
+  }
+}
+```
+
+Marker paths speak the same language as the claim paths, wildcard included.
+Because these markers decide `principal_kind` — hence which Cedar rules apply
+— they live **inside the signed bundle**, never as a file option: widening
+what counts as human must be signed like any other authorization change. A
+`probant-identity/1` bundle still verifies unchanged, but only with the
+default markers; carrying custom ones requires re-signing as `/2`, since the
+v1 signature does not cover them.
 
 Two realm-side configuration points for Keycloak, done once:
 
@@ -558,6 +582,13 @@ hashes for the existing payloads — none of them moved either time. The day
 that test fails, the question is not "how do I update the constants" but
 "which sealed logs have just been invalidated".
 
+Signed *bundles* evolve differently: their format string is part of the
+signed bytes, so a revision is a new string, and every revision an artifact
+was published under keeps verifying with the signing bytes of its day.
+Exercised once: `probant-identity/2` extended the signed bytes with the
+machine markers; a `/1` bundle keeps its hash and signature, and a `/1` file
+carrying the fields only `/2` signs is refused rather than trusted.
+
 ## Known debt
 
 Three long-standing entries are paid off: the gateway no longer holds any
@@ -565,16 +596,24 @@ signing key (its only output is the WAL, every seal comes from the ledger),
 `Pkcs11Sealer` puts the production sealing key behind a KMS/HSM, and
 configuration reloads are recorded in the chain (tag 8).
 
-**Dependency tree.** `audit-core` pulls in 36 transitive crates, `probant`
-39 — argument parsing in the verifier is hand-rolled, so `clap` and its
-subtree are gone from the auditor's build. The stated goal is a tree an
-auditor reads end to end; the remaining lever is manual `serde`
-implementations. Not a priority before the first design partner.
+**Dependency tree.** Measured as unique crates in `cargo tree -e normal`.
+The tree that carries the trust story is the auditor's: `probant` builds
+from 31 crates (`audit-core` 29) — argument parsing is hand-rolled, so
+`clap` and its subtree are gone from that build. Of the 31, five are the
+`serde` derive machinery (`serde_derive`, `syn`, `quote`, `proc-macro2`,
+`unicode-ident`); manual `serde` implementations in `audit-core` — the
+remaining lever — would leave ~26, nearly all of it the cryptography itself
+(`curve25519-dalek`, `sha2` and their arithmetic support). The gateway is a
+different story and deliberately so: `probant-proxy` builds from 114 crates,
+dominated by two justified subtrees — Cedar (68 crates; a closed decision)
+and `jsonwebtoken`→`ring` (34; enterprise IdPs sign RS256/ES256, and
+hand-rolling RSA verification is not an option). Neither reaches the
+auditor's binary. Not a priority before the first design partner.
 
 ## Tests
 
 ```bash
-cargo test --workspace     # 155 tests
+cargo test --workspace     # 171 tests
 ```
 
 Six families, each with a distinct role:
@@ -629,3 +668,11 @@ Pinned to 1.97.1 via `rust-toolchain.toml`, for two reasons: Cedar's
 dependencies require rustc ≥ 1.89, and a proof product needs reproducible
 builds — the compiler version is part of what will be audited. The pin is
 scoped to this project.
+
+## License
+
+Apache-2.0 — see [LICENSE](LICENSE). Contributions are accepted under the
+[DCO](https://developercertificate.org/), sign-off required; see
+[CONTRIBUTING.md](CONTRIBUTING.md). The commercial layer (compliance report
+packs, console RBAC/SSO, long retention) is separate code under a separate
+license — this repository is complete and verifiable without it.

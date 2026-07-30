@@ -1,0 +1,397 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e6]:
+      - img "image" [ref=e9] [cursor=pointer]
+      - generic [ref=e11]:
+        - generic [ref=e13]:
+          - button "" [ref=e14] [cursor=pointer]
+          - button "" [ref=e15] [cursor=pointer]
+          - button "" [ref=e16] [cursor=pointer]
+        - link "Aide" [ref=e18] [cursor=pointer]:
+          - /url: "#/tmview/help"
+        - button "Français (fr) " [ref=e21] [cursor=pointer]:
+          - generic: Français (fr)
+          - generic: 
+        - generic [ref=e23]:
+          - button "Identification" [ref=e24] [cursor=pointer]
+          - button "S'enregistrer" [ref=e25] [cursor=pointer]
+  - generic [ref=e1574]:
+    - generic [ref=e1577]:
+      - generic [ref=e1579]:
+        - generic [ref=e1580]:
+          - button " Exporter" [ref=e1584] [cursor=pointer]:
+            - generic:
+              - generic: 
+              - generic: 
+            - generic: Exporter
+          - button " Alertes" [disabled] [ref=e1589] [cursor=pointer]:
+            - generic:
+              - generic: 
+              - generic: 
+              - generic: 
+              - generic: 
+            - generic: Alertes
+          - button " Balises" [disabled] [ref=e1594] [cursor=pointer]:
+            - generic:
+              - generic: 
+              - generic: 
+            - generic: Balises
+          - button " Partager par courrier électronique" [ref=e1595] [cursor=pointer]:
+            - generic:
+              - generic: 
+              - generic: 
+            - generic: Partager par courrier électronique
+        - generic [ref=e1596]:
+          - button "Voir dans la langue originale" [ref=e1597] [cursor=pointer]
+          - generic [ref=e1598]:
+            - generic [ref=e1599]: "Aller à :"
+            - button "Information des marques " [ref=e1601] [cursor=pointer]:
+              - generic: Information des marques
+              - generic: 
+      - button "" [ref=e1604] [cursor=pointer]
+    - generic [ref=e1608]:
+      - generic [ref=e1609]:
+        - generic [ref=e1612]:
+          - generic [ref=e1613]: PROBANT
+          - generic [ref=e1615]:
+            - button "PROBANT" [ref=e1618] [cursor=pointer]:
+              - img "PROBANT"
+            - button " Recherches des marques avec des images similaires" [ref=e1621] [cursor=pointer]:
+              - generic:
+                - generic: 
+                - generic: 
+                - generic: 
+              - generic: Recherches des marques avec des images similaires
+          - generic [ref=e1623]:
+            - generic [ref=e1624]:
+              - generic [ref=e1625]: Statut de la marque
+              - generic [ref=e1626]: Demande abandonnée
+            - generic [ref=e1627]:
+              - generic [ref=e1628]: Date du statut actuel de la marque
+              - generic [ref=e1629]: 23/05/2025
+            - generic [ref=e1630]:
+              - generic [ref=e1631]: Numéro de la demande
+              - generic [ref=e1632]: "97149833"
+            - generic [ref=e1633]:
+              - generic [ref=e1634]: Type de DPI
+              - generic [ref=e1635]: Nom de la marque
+            - generic [ref=e1636]:
+              - generic [ref=e1637]: 550 Type de marque
+              - generic [ref=e1638]: Verbale
+            - generic [ref=e1639]:
+              - generic [ref=e1640]: Genre de marque
+              - generic [ref=e1641]: Individuelle
+            - generic [ref=e1642]:
+              - generic [ref=e1643]: Langue de la demande
+              - generic [ref=e1644]: en
+            - generic [ref=e1645]:
+              - generic [ref=e1646]: Classification de Nice
+              - generic [ref=e1647]: "042"
+            - generic [ref=e1648]:
+              - generic [ref=e1649]: Caractère distinctif acquis par l'usage
+              - generic [ref=e1650]: "false"
+            - generic [ref=e1651]:
+              - generic [ref=e1652]: Commentaires
+              - generic [ref=e1653]: To ensure the most reliable and accurate search results of U.S. applications and registrations, users, particularly those filing applications with the United States Patent and Trademark Office (USPTO), should access the Trademark Electronic Search System (TESS) at www.uspto.gov and search U.S. application and registration data using the available assisted search forms and other search tools available on the USPTO website. (For important information regarding the USPTO's classification of the mark shown in this record, please visit the help page).
+        - generic [ref=e1654]:
+          - generic [ref=e1655]:
+            - generic [ref=e1656]: Produits et Services
+            - generic [ref=e1657]: 
+          - generic [ref=e1659]:
+            - generic [ref=e1661]:
+              - generic:
+                - generic [ref=e1662]:
+                  - generic [ref=e1663]: Type de classification
+                  - generic [ref=e1664]: Nice
+                - generic [ref=e1665]:
+                  - generic [ref=e1666]: "Langue:"
+                  - button "English (Original) " [ref=e1668] [cursor=pointer]:
+                    - generic: English (Original)
+                    - generic: 
+              - generic [ref=e1671]:
+                - generic [ref=e1672]: "042"
+                - generic [ref=e1674]: Consultancy and advisory services in the field of cybersecurity incident analysis, response and investigations, cybersecurity threat analysis, response and investigations, and cybersecurity; consultancy and advisory services in the field of computer security protecting data and information from unauthorized access for fraud and money laundering prevention and detection through technology and data analytics; digital forensic investigations in the field of computer crimes in the field of cybersecurity incidents, cybersecurity threats, cybersecurity and fraud and money laundering; cyberspace intelligence services, namely, computer security threat analysis for protecting data
+            - generic [ref=e1678]:
+              - generic:
+                - generic [ref=e1679]:
+                  - generic [ref=e1680]: Type de classification
+                  - generic [ref=e1681]: Domestic (2)
+                - generic [ref=e1682]:
+                  - generic [ref=e1683]: "Langue:"
+                  - button "English (Original) " [ref=e1685] [cursor=pointer]:
+                    - generic: English (Original)
+                    - generic: 
+              - generic [ref=e1686]:
+                - generic [ref=e1688]:
+                  - generic [ref=e1689]: "100"
+                  - generic [ref=e1691]: Miscellaneous
+                - generic [ref=e1694]:
+                  - generic [ref=e1695]: "101"
+                  - generic [ref=e1697]: Advertising and Business
+        - generic [ref=e1699]:
+          - generic [ref=e1700]:
+            - generic [ref=e1701]: Code de Vienne
+            - generic [ref=e1702]: 
+          - generic [ref=e1704]: Aucune information disponible
+      - generic [ref=e1706]:
+        - generic [ref=e1707]:
+          - generic [ref=e1708]: Dates
+          - generic [ref=e1712]:
+            - generic [ref=e1713]: 220 Date de la demande
+            - generic [ref=e1714]: 30/11/2021
+        - generic [ref=e1715]:
+          - generic [ref=e1716]: Office
+          - generic [ref=e1719]:
+            - img "PROBANT" [ref=e1720]
+            - link "Voir cette marque dans l'office d'origine" [ref=e1722] [cursor=pointer]:
+              - /url: http://tsdr.uspto.gov/#caseNumber=97149833&caseType=SERIAL_NO&searchType=statusSearch
+            - generic [ref=e1723]:
+              - generic [ref=e1724]:
+                - generic [ref=e1725]: Office des marques
+                - generic [ref=e1726]: United States - USPTO
+              - generic [ref=e1727]:
+                - generic [ref=e1728]: 190 Office d'enregistrement
+                - generic [ref=e1729]: US
+        - generic [ref=e1730]:
+          - generic [ref=e1731]: Titulaire
+          - generic [ref=e1734]:
+            - generic [ref=e1735]:
+              - generic [ref=e1736]: Nom du demandeur
+              - generic [ref=e1737]: Groupe Vidocq/Vidocq Group
+            - generic [ref=e1738]:
+              - generic [ref=e1739]: 841 Code de nationalité du demandeur
+              - generic [ref=e1740]: CA
+            - generic [ref=e1741]:
+              - generic [ref=e1742]: 842 Statut juridique
+              - generic [ref=e1743]: Société
+            - generic [ref=e1744]:
+              - generic [ref=e1745]: Adresse
+              - generic [ref=e1746]: 1200, McGill College Avenue, Suite 1100
+            - generic [ref=e1747]:
+              - generic [ref=e1748]: Ville
+              - generic [ref=e1749]: Montreal (Quebec)
+            - generic [ref=e1750]:
+              - generic [ref=e1751]: Code postal
+              - generic [ref=e1752]: H3B4G7
+            - generic [ref=e1753]:
+              - generic [ref=e1754]: Code Pays / territoire de l’adresse
+              - generic [ref=e1755]: CA
+        - generic [ref=e1756]:
+          - generic [ref=e1757]: Représentant (2)
+          - generic [ref=e1760]:
+            - generic [ref=e1762]:
+              - generic [ref=e1763]: Nom
+              - generic [ref=e1764]: Jess M. Collen
+            - text: Montrer plus
+        - generic [ref=e1765]:
+          - generic [ref=e1766]: Adresse de correspondance
+          - generic [ref=e1770]:
+            - generic [ref=e1771]: Adresse
+            - generic [ref=e1772]:
+              - generic [ref=e1773]: Jess M. Collen ROTHWELL, FIGG, ERNST & MANBECK, P.C.
+              - generic [ref=e1774]: 3 Manhattanville Road
+              - generic [ref=e1775]: THE HOLYOKE-MANHATTAN BUILDING
+              - text: Purchase, NY 10577
+      - generic [ref=e1777]:
+        - generic [ref=e1778]: Publication
+        - generic [ref=e1780]: Aucune information disponible
+      - generic [ref=e1782]:
+        - generic [ref=e1784]:
+          - generic [ref=e1785]: Priorité d'exposition
+          - generic [ref=e1787]: Aucune information disponible
+        - generic [ref=e1790]:
+          - generic [ref=e1791]: Priorité
+          - generic [ref=e1794]:
+            - generic [ref=e1795]:
+              - generic [ref=e1796]: 320 Date
+              - generic [ref=e1797]: 25/11/2021
+            - generic [ref=e1798]:
+              - generic [ref=e1799]: Pays / territoire
+              - generic [ref=e1800]: CA
+            - generic [ref=e1801]:
+              - generic [ref=e1802]: 310 Numéro de priorité
+              - generic [ref=e1803]: "2149934"
+        - generic [ref=e1805]:
+          - generic [ref=e1806]: Tranformation d'un enregistrement international
+          - generic [ref=e1808]: Aucune information disponible
+      - generic [ref=e1811]:
+        - generic [ref=e1812]: Ancienneté
+        - generic [ref=e1814]: Aucune information disponible
+      - generic [ref=e1817]:
+        - generic [ref=e1818]: Opposition
+        - generic [ref=e1820]: Aucune information disponible
+      - generic [ref=e1822]:
+        - generic [ref=e1823]:
+          - generic [ref=e1824]: Inscriptions
+          - generic [ref=e1828]:
+            - generic [ref=e1829]:
+              - generic [ref=e1830]: Date d'événement
+              - generic [ref=e1833]: Description de l'événement
+            - generic [ref=e1836]:
+              - generic [ref=e1837]: 23/05/2025
+              - generic [ref=e1838]: Abandonment notice e-mailed - failure to respond
+            - generic [ref=e1839]:
+              - generic [ref=e1840]: 23/05/2025
+              - generic [ref=e1841]: Abandonment - failure to respond or late response
+            - generic [ref=e1842]:
+              - generic [ref=e1843]: 06/02/2025
+              - generic [ref=e1844]: Suspension inquiry written
+            - generic [ref=e1845]:
+              - generic [ref=e1846]: 06/02/2025
+              - generic [ref=e1847]: Notification of inquiry as to suspension e-mailed
+            - generic [ref=e1848]:
+              - generic [ref=e1849]: 06/02/2025
+              - generic [ref=e1850]: Inquiry to suspension e-mailed
+            - generic [ref=e1851]:
+              - generic [ref=e1852]: 04/02/2025
+              - generic [ref=e1853]: Suspension checked - to attorney for action
+            - generic [ref=e1854]:
+              - generic [ref=e1855]: 18/06/2024
+              - generic [ref=e1856]: Teas/email correspondence entered
+            - generic [ref=e1857]:
+              - generic [ref=e1858]: 18/06/2024
+              - generic [ref=e1859]: Teas response to suspension inquiry received
+            - generic [ref=e1860]:
+              - generic [ref=e1861]: 18/06/2024
+              - generic [ref=e1862]: Suspension letter written
+            - generic [ref=e1863]:
+              - generic [ref=e1864]: 18/06/2024
+              - generic [ref=e1865]: Notification of letter of suspension e-mailed
+            - generic [ref=e1866]:
+              - generic [ref=e1867]: 18/06/2024
+              - generic [ref=e1868]: Letter of suspension e-mailed
+            - generic [ref=e1869]:
+              - generic [ref=e1870]: 18/06/2024
+              - generic [ref=e1871]: Correspondence received in law office
+            - generic [ref=e1872]:
+              - generic [ref=e1873]: 08/04/2024
+              - generic [ref=e1874]: Suspension inquiry written
+            - generic [ref=e1875]:
+              - generic [ref=e1876]: 08/04/2024
+              - generic [ref=e1877]: Notification of inquiry as to suspension e-mailed
+            - generic [ref=e1878]:
+              - generic [ref=e1879]: 08/04/2024
+              - generic [ref=e1880]: Inquiry to suspension e-mailed
+            - generic [ref=e1881]:
+              - generic [ref=e1882]: 10/10/2023
+              - generic [ref=e1883]: Suspension letter written
+            - generic [ref=e1884]:
+              - generic [ref=e1885]: 10/10/2023
+              - generic [ref=e1886]: Notification of letter of suspension e-mailed
+            - generic [ref=e1887]:
+              - generic [ref=e1888]: 10/10/2023
+              - generic [ref=e1889]: Letter of suspension e-mailed
+            - generic [ref=e1890]:
+              - generic [ref=e1891]: 06/10/2023
+              - generic [ref=e1892]: Teas/email correspondence entered
+            - generic [ref=e1893]:
+              - generic [ref=e1894]: 05/10/2023
+              - generic [ref=e1895]: Teas response to office action received
+            - generic [ref=e1896]:
+              - generic [ref=e1897]: 05/10/2023
+              - generic [ref=e1898]: Correspondence received in law office
+            - generic [ref=e1899]:
+              - generic [ref=e1900]: 05/07/2023
+              - generic [ref=e1901]: Notification of non-final action e-mailed
+            - generic [ref=e1902]:
+              - generic [ref=e1903]: 05/07/2023
+              - generic [ref=e1904]: Non-final action e-mailed
+            - generic [ref=e1905]:
+              - generic [ref=e1906]: 05/07/2023
+              - generic [ref=e1907]: Non-final action written
+            - generic [ref=e1908]:
+              - generic [ref=e1909]: 03/07/2023
+              - generic [ref=e1910]: Teas/email correspondence entered
+            - generic [ref=e1911]:
+              - generic [ref=e1912]: 03/07/2023
+              - generic [ref=e1913]: Correspondence received in law office
+            - generic [ref=e1914]:
+              - generic [ref=e1915]: 03/07/2023
+              - generic [ref=e1916]: Assigned to lie
+            - generic [ref=e1917]:
+              - generic [ref=e1918]: 06/03/2023
+              - generic [ref=e1919]: Teas response to office action received
+            - generic [ref=e1920]:
+              - generic [ref=e1921]: 09/09/2022
+              - generic [ref=e1922]: Notification of non-final action e-mailed
+            - generic [ref=e1923]:
+              - generic [ref=e1924]: 09/09/2022
+              - generic [ref=e1925]: Non-final action e-mailed
+            - generic [ref=e1926]:
+              - generic [ref=e1927]: 09/09/2022
+              - generic [ref=e1928]: Non-final action written
+            - generic [ref=e1929]:
+              - generic [ref=e1930]: 08/09/2022
+              - generic [ref=e1931]: Assigned to examiner
+            - generic [ref=e1932]:
+              - generic [ref=e1933]: 06/12/2021
+              - generic [ref=e1934]: New application office supplied data entered
+            - generic [ref=e1935]:
+              - generic [ref=e1936]: 03/12/2021
+              - generic [ref=e1937]: New application entered
+        - generic [ref=e1938]:
+          - generic [ref=e1939]: Recours
+          - generic [ref=e1941]: Aucune information disponible
+      - generic [ref=e1943]:
+        - generic [ref=e1944]:
+          - generic [ref=e1945]: Annulation
+          - generic [ref=e1947]: Aucune information disponible
+        - generic [ref=e1949]:
+          - generic [ref=e1950]: Renouvellements
+          - generic [ref=e1952]: Aucune information disponible
+  - contentinfo [ref=e28]:
+    - generic [ref=e29]:
+      - navigation [ref=e31]:
+        - link "Chercher" [ref=e32] [cursor=pointer]:
+          - /url: "#/tmview"
+        - link "Offices participants" [ref=e33] [cursor=pointer]:
+          - /url: "#/tmview/participating"
+        - link "Aide" [ref=e34] [cursor=pointer]:
+          - /url: "#/tmview/help"
+        - generic [ref=e35] [cursor=pointer]: Vos réactions
+      - generic [ref=e36]:
+        - link "EUIPN Réseau européen de la propriété intellectuelle" [ref=e38] [cursor=pointer]:
+          - /url: https://euipn.org
+          - text: EUIPN Réseau européen de la propriété intellectuelle
+          - generic [ref=e39]:
+            - generic [ref=e40]: 
+            - generic: 
+        - generic [ref=e42]: Avenida de Europa, 4 E-03008 Alicante (ESPAGNE)
+        - generic [ref=e44]: "Centre d'information: +34 96 513 9100"
+      - navigation [ref=e46]:
+        - generic [ref=e47]: Copyright 2007-2026 EUIPO
+        - generic [ref=e48]:
+          - text: "Ce site web est coordonné et maintenu par:"
+          - strong [ref=e49]: Office de l'Union européenne pour la propriété intellectuelle
+      - generic [ref=e50]:
+        - generic [ref=e51]: Les outils de recherche TMview et DesignView ne constituent pas des registres officiels et les informations qu’ils contiennent n’ont aucun effet juridique.
+        - navigation [ref=e52]:
+          - link "Voir les conditions générales" [ref=e53] [cursor=pointer]:
+            - /url: "#/tmview/disclaimer"
+      - generic [ref=e54]:
+        - generic [ref=e55]: TMDSVIEW-4.5.0-RC1.1
+        - navigation [ref=e56]:
+          - link [ref=e57] [cursor=pointer]:
+            - /url: https://www.tmdn.org/network/compatibility
+            - strong [ref=e58]: Compatibilité
+          - link [ref=e59] [cursor=pointer]:
+            - /url: "#/tmview/data-protection"
+            - strong [ref=e60]: Protection des données
+          - link [ref=e61] [cursor=pointer]:
+            - /url: https://www.euipn.org/en/info/legal-notices
+            - strong [ref=e62]: Mention légale
+          - link "A propos de" [ref=e63] [cursor=pointer]:
+            - /url: "#/tmview/about"
+  - generic [ref=e66]:
+    - generic [ref=e67]:
+      - generic [ref=e68]: 
+      - generic [ref=e70]:
+        - paragraph [ref=e71]:
+          - text: Ce site utilise des cookies pour vous offrir des conditions de navigation optimales et pour des analyses anonymisées. En savoir plus sur la façon dont nous utilisons les
+          - link "Cookies" [ref=e72] [cursor=pointer]:
+            - /url: /network/data-protection
+        - generic [ref=e73]:
+          - button "Accept all cookies" [ref=e74] [cursor=pointer]
+          - button "No thanks, only essential cookies" [ref=e75] [cursor=pointer]
+    - button "" [ref=e77] [cursor=pointer]
+  - text: 

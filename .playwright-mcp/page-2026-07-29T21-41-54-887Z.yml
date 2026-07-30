@@ -1,0 +1,95 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e6]:
+      - img "image" [ref=e9] [cursor=pointer]
+      - generic [ref=e11]:
+        - generic [ref=e13]:
+          - button "" [ref=e14] [cursor=pointer]
+          - button "" [ref=e15] [cursor=pointer]
+          - button "" [ref=e16] [cursor=pointer]
+        - link "Aide" [ref=e18] [cursor=pointer]:
+          - /url: "#/tmview/help"
+        - button "Français (fr) " [ref=e21] [cursor=pointer]:
+          - generic: Français (fr)
+          - generic: 
+        - generic [ref=e23]:
+          - button "Identification" [ref=e24] [cursor=pointer]
+          - button "S'enregistrer" [ref=e25] [cursor=pointer]
+  - generic [ref=e3400]:
+    - generic [ref=e3401]:
+      - img "Loading interface..." [ref=e3404]
+      - generic [ref=e3407]:
+        - img "Loading interface..." [ref=e3408]
+        - img "Loading interface..." [ref=e3410]
+      - generic [ref=e3413]:
+        - img "Loading interface..." [ref=e3414]
+        - img "Loading interface..." [ref=e3416]
+    - generic [ref=e3418]:
+      - generic [ref=e3420]:
+        - img "Loading interface..." [ref=e3421]
+        - img "Loading interface..." [ref=e3423]
+      - generic [ref=e3426]:
+        - img "Loading interface..." [ref=e3427]
+        - img "Loading interface..." [ref=e3429]
+      - generic [ref=e3432]:
+        - img "Loading interface..." [ref=e3433]
+        - img "Loading interface..." [ref=e3435]
+      - generic [ref=e3438]:
+        - img "Loading interface..." [ref=e3439]
+        - img "Loading interface..." [ref=e3441]
+  - contentinfo [ref=e28]:
+    - generic [ref=e29]:
+      - navigation [ref=e31]:
+        - link "Chercher" [ref=e32] [cursor=pointer]:
+          - /url: "#/tmview"
+        - link "Offices participants" [ref=e33] [cursor=pointer]:
+          - /url: "#/tmview/participating"
+        - link "Aide" [ref=e34] [cursor=pointer]:
+          - /url: "#/tmview/help"
+        - generic [ref=e35] [cursor=pointer]: Vos réactions
+      - generic [ref=e36]:
+        - link "EUIPN Réseau européen de la propriété intellectuelle" [ref=e38] [cursor=pointer]:
+          - /url: https://euipn.org
+          - text: EUIPN Réseau européen de la propriété intellectuelle
+          - generic [ref=e39]:
+            - generic [ref=e40]: 
+            - generic: 
+        - generic [ref=e42]: Avenida de Europa, 4 E-03008 Alicante (ESPAGNE)
+        - generic [ref=e44]: "Centre d'information: +34 96 513 9100"
+      - navigation [ref=e46]:
+        - generic [ref=e47]: Copyright 2007-2026 EUIPO
+        - generic [ref=e48]:
+          - text: "Ce site web est coordonné et maintenu par:"
+          - strong [ref=e49]: Office de l'Union européenne pour la propriété intellectuelle
+      - generic [ref=e50]:
+        - generic [ref=e51]: Les outils de recherche TMview et DesignView ne constituent pas des registres officiels et les informations qu’ils contiennent n’ont aucun effet juridique.
+        - navigation [ref=e52]:
+          - link "Voir les conditions générales" [ref=e53] [cursor=pointer]:
+            - /url: "#/tmview/disclaimer"
+      - generic [ref=e54]:
+        - generic [ref=e55]: TMDSVIEW-4.5.0-RC1.1
+        - navigation [ref=e56]:
+          - link [ref=e57] [cursor=pointer]:
+            - /url: https://www.tmdn.org/network/compatibility
+            - strong [ref=e58]: Compatibilité
+          - link [ref=e59] [cursor=pointer]:
+            - /url: "#/tmview/data-protection"
+            - strong [ref=e60]: Protection des données
+          - link [ref=e61] [cursor=pointer]:
+            - /url: https://www.euipn.org/en/info/legal-notices
+            - strong [ref=e62]: Mention légale
+          - link "A propos de" [ref=e63] [cursor=pointer]:
+            - /url: "#/tmview/about"
+  - generic [ref=e66]:
+    - generic [ref=e67]:
+      - generic [ref=e68]: 
+      - generic [ref=e70]:
+        - paragraph [ref=e71]:
+          - text: Ce site utilise des cookies pour vous offrir des conditions de navigation optimales et pour des analyses anonymisées. En savoir plus sur la façon dont nous utilisons les
+          - link "Cookies" [ref=e72] [cursor=pointer]:
+            - /url: /network/data-protection
+        - generic [ref=e73]:
+          - button "Accept all cookies" [ref=e74] [cursor=pointer]
+          - button "No thanks, only essential cookies" [ref=e75] [cursor=pointer]
+    - button "" [ref=e77] [cursor=pointer]
+  - text: 

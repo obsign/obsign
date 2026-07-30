@@ -1,0 +1,267 @@
+- generic [active] [ref=f1e1]:
+  - list:
+    - listitem:
+      - link "Aller au contenu" [ref=f1e2] [cursor=pointer]:
+        - /url: "#content"
+    - listitem:
+      - link "Aller au menu" [ref=f1e3] [cursor=pointer]:
+        - /url: "#menu-first-item"
+    - listitem:
+      - link "Aller à la recherche" [ref=f1e4] [cursor=pointer]:
+        - /url: "#input-search"
+  - generic [ref=f1e5]:
+    - banner [ref=f1e6]:
+      - navigation "Menu de l'entête" [ref=f1e9]:
+        - link "Retour vers portail Data INPI" [ref=f1e10] [cursor=pointer]:
+          - /url: /
+          - img "République Française - Accueil, Portail data Inpi" [ref=f1e11]
+        - list [ref=f1e14]:
+          - listitem [ref=f1e15]:
+            - link "Opendata" [ref=f1e16] [cursor=pointer]:
+              - /url: ""
+              - text: Opendata
+              - generic [ref=f1e17]: 
+          - listitem [ref=f1e18]:
+            - link "Archives historiques " [ref=f1e19] [cursor=pointer]:
+              - /url: https://archives.inpi.fr
+              - text: Archives historiques
+              - generic [ref=f1e20]: 
+          - listitem [ref=f1e21]:
+            - link "Observatoire" [ref=f1e22] [cursor=pointer]:
+              - /url: ""
+              - text: Observatoire
+              - generic [ref=f1e23]: 
+          - listitem [ref=f1e24]:
+            - link "Ressources" [ref=f1e25] [cursor=pointer]:
+              - /url: ""
+              - text: Ressources
+              - generic [ref=f1e26]: 
+            - text:             
+          - listitem [ref=f1e27]:
+            - link "Bénéficiaires effectifs" [ref=f1e28] [cursor=pointer]:
+              - /url: /content/editorial/acces_BE
+          - listitem
+          - listitem [ref=f1e29]:
+            - button [ref=f1e31] [cursor=pointer]:
+              - img "Afficher la liste des langues disponibles pour ce site" [ref=f1e32]
+              - generic [ref=f1e33]: 
+    - main [ref=f1e34]:
+      - generic [ref=f1e36]:
+        - generic [ref=f1e37]:
+          - generic [ref=f1e38]:
+            - generic [ref=f1e39]: Je cherche
+            - generic [ref=f1e42]:
+              - searchbox "Champ de recherche" [ref=f1e44]
+              - button "Rechercher" [ref=f1e46] [cursor=pointer]
+          - link "Recherche avancée" [ref=f1e52] [cursor=pointer]:
+            - /url: /recherche_avancee/entreprises
+        - navigation "Vous êtes ici" [ref=f1e56]:
+          - list [ref=f1e57]:
+            - listitem [ref=f1e58]:
+              - link "Accueil" [ref=f1e59] [cursor=pointer]:
+                - /url: /
+            - listitem [ref=f1e60]:
+              - generic [ref=f1e61]: ">"
+              - text: "Marque : FR5261978"
+      - generic [ref=f1e62]:
+        - generic [ref=f1e63]:
+          - generic [ref=f1e64]:
+            - link [ref=f1e65] [cursor=pointer]:
+              - /url: ""
+              - img "Retour aux résultats" [ref=f1e66]
+            - link [ref=f1e67] [cursor=pointer]:
+              - /url: ""
+              - paragraph [ref=f1e68]: Retour aux résultats
+          - text:   
+        - list [ref=f1e72]:
+          - listitem [ref=f1e73]:
+            - generic: Marques
+        - generic [ref=f1e74]:
+          - generic [ref=f1e75]:
+            - generic [ref=f1e77]:
+              - 'heading "Marque FR : 5261978 - Probanto" [level=1] [ref=f1e79]'
+              - generic [ref=f1e84]:
+                - generic "Imprimer la notice de la marque N° 5261978" [ref=f1e85]:
+                  - button "icone télécharger" [ref=f1e86] [cursor=pointer]
+                - button "Télécharger la notice de la marque N° 5261978" [ref=f1e88] [cursor=pointer]
+                - generic "Partager la notice de la marque N° 5261978" [ref=f1e90]:
+                  - img "icone partager" [ref=f1e92] [cursor=pointer]
+                  - text:   
+                - generic "Mettre en favori la notice de la marque N° 5261978" [ref=f1e93]:
+                  - button "icone favori" [ref=f1e94] [cursor=pointer]
+                - generic "Créer une alerte sur la notice de la marque N° 5261978" [ref=f1e95]:
+                  - button "icone alerte" [ref=f1e96] [cursor=pointer]
+            - generic [ref=f1e98]:
+              - generic [ref=f1e99]: Dépot 26/05/2026
+              - generic [ref=f1e102]: Publication 19/06/2026
+              - generic [ref=f1e105]: Fin opposition 19/08/2026
+              - generic [ref=f1e108]: Expiration 26/05/2036
+            - navigation "Menu marques" [ref=f1e111]:
+              - list [ref=f1e113]:
+                - listitem [ref=f1e114] [cursor=pointer]:
+                  - button [ref=f1e115]:
+                    - heading "Description" [level=2] [ref=f1e117]
+                - listitem [ref=f1e119] [cursor=pointer]:
+                  - button [ref=f1e120]:
+                    - heading "BOPI (1)" [level=2] [ref=f1e122]
+          - generic [ref=f1e123]:
+            - generic [ref=f1e125]:
+              - generic [ref=f1e126]:
+                - heading "Identité" [level=3] [ref=f1e127]
+                - generic [ref=f1e131]:
+                  - paragraph [ref=f1e132]: Numéro
+                  - paragraph [ref=f1e133]: "5261978"
+                - generic [ref=f1e136]:
+                  - generic [ref=f1e138]:
+                    - paragraph [ref=f1e139]: Marque
+                    - paragraph [ref=f1e140]: Probanto
+                  - generic [ref=f1e142]:
+                    - paragraph [ref=f1e143]: Type de la marque
+                    - list [ref=f1e144]:
+                      - listitem [ref=f1e145]:
+                        - paragraph [ref=f1e146]: Marque verbale
+                - generic [ref=f1e148]:
+                  - generic [ref=f1e150]:
+                    - paragraph [ref=f1e151]: Date de dépôt
+                    - paragraph [ref=f1e152]: 26/05/2026
+                  - generic [ref=f1e154]:
+                    - paragraph [ref=f1e155]: Lieu de dépôt
+                    - paragraph [ref=f1e156]: 92 INPI - Dépôt électronique
+                - generic [ref=f1e160]:
+                  - paragraph [ref=f1e161]: Statut
+                  - paragraph [ref=f1e162]: Demande publiée
+                - generic [ref=f1e166]:
+                  - paragraph [ref=f1e167]: Date prévue pour l'expiration
+                  - paragraph [ref=f1e168]: 26/05/2036
+                - generic [ref=f1e172]:
+                  - paragraph [ref=f1e173]: Langue
+                  - paragraph [ref=f1e174]: Français (Langue de dépôt)
+              - img "Image de la marque" [ref=f1e177]
+              - generic [ref=f1e178]:
+                - heading "Intervenant" [level=3] [ref=f1e179]
+                - generic [ref=f1e183]:
+                  - paragraph [ref=f1e184]: Déposant/Titulaire
+                  - list [ref=f1e185]:
+                    - listitem [ref=f1e186]:
+                      - paragraph [ref=f1e187]: "INSPIRATECH, SAS, société par actions simplifiée - 21 Rue Charles Floquet , 94400 Vitry-sur-Seine, FRANCE - Siren : 984328138"
+              - generic [ref=f1e188]:
+                - heading "Produits et services" [level=3] [ref=f1e189]
+                - generic [ref=f1e190]:
+                  - paragraph [ref=f1e191]: Classification de Nice
+                  - paragraph [ref=f1e193]: 9 ; 42
+                - generic [ref=f1e194]:
+                  - paragraph [ref=f1e195]: Produits et services
+                  - list [ref=f1e197]:
+                    - listitem [ref=f1e198]:
+                      - paragraph [ref=f1e199]: "Classe 9 : Logiciels enregistrés ; Equipements de traitement de données ; Supports d'enregistrement numériques ;"
+                    - listitem [ref=f1e200]:
+                      - paragraph [ref=f1e201]: "Classe 42 : Stockage électronique de données ; Services d'assistance en technologie de l'information (TI) (dépannage de logiciels) ; Développement de logiciels ; Mise à jour de logiciels ; Maintenance de logiciels ; Installation de logiciels ; Programmation informatique ; Hébergement de serveurs ; Logiciels en tant que services (SaaS) ; Mise à disposition de systèmes informatiques virtuels par l'informatique en nuage ; Conception de systèmes informatiques ; Fourniture de logiciels non téléchargeables en ligne."
+              - heading "Historique" [level=3] [ref=f1e202]
+              - list [ref=f1e204]:
+                - listitem [ref=f1e205]:
+                  - paragraph [ref=f1e206]: "Publication : BOPI 2026-25 du 19/06/2026"
+              - generic [ref=f1e207]:
+                - generic [ref=f1e208]:
+                  - separator [ref=f1e209]
+                  - text: Signaler une erreur sur cette notice
+                  - paragraph [ref=f1e210]: "Source : INPI"
+                - generic: "* * * * * * * * * * * * * * * * *"
+            - text: 
+        - generic [ref=f1e211]:
+          - generic [ref=f1e212]:
+            - link [ref=f1e213] [cursor=pointer]:
+              - /url: ""
+              - img "Retour aux résultats" [ref=f1e214]
+            - link [ref=f1e215] [cursor=pointer]:
+              - /url: ""
+              - paragraph [ref=f1e216]: Retour aux résultats
+          - text:   
+        - generic [ref=f1e218]:
+          - generic [ref=f1e219]: "Dernière mise à jour de la base Française Marques : 24/07/2026"
+          - generic [ref=f1e220]: "Dernière mise à jour de la base Européenne Marques : 24/07/2026"
+          - generic [ref=f1e221]: "Dernière mise à jour de la base Internationale Marques : 24/07/2026"
+        - link [ref=f1e222] [cursor=pointer]:
+          - /url: https://voxusagers.numerique.gouv.fr/Demarches/870?&view-mode=formulaire-avis&nd_mode=en-ligne-enti%C3%A8rement&nd_source=data.inpi&key=e765bd5fb9eae10e1ff7de0593deb163
+          - img "Je donne mon avis" [ref=f1e223]
+      - text: "* *"
+    - contentinfo [ref=f1e224]:
+      - generic [ref=f1e226]:
+        - generic [ref=f1e228]:
+          - generic [ref=f1e229]:
+            - paragraph [ref=f1e230]: 15 rue des Minimes 92400 Courbevoie
+            - button [ref=f1e233] [cursor=pointer]:
+              - img "Afficher la liste des langues disponibles pour ce site" [ref=f1e234]
+              - text: Français
+          - generic [ref=f1e235]:
+            - generic [ref=f1e236]:
+              - heading "Informations légales" [level=2] [ref=f1e237]
+              - link "Mentions légales" [ref=f1e238] [cursor=pointer]:
+                - /url: /content/editorial/mentions_legales
+              - 'link "Accessibilité : partiellement conforme" [ref=f1e239] [cursor=pointer]':
+                - /url: /content/editorial/accessibilite
+              - link "Données à caractère personnel" [ref=f1e240] [cursor=pointer]:
+                - /url: /content/editorial/donnees-personnelles
+              - link "Cookies" [ref=f1e241] [cursor=pointer]:
+                - /url: /content/editorial/informations_cookies
+              - link "Conditions générales d’utilisation" [ref=f1e242] [cursor=pointer]:
+                - /url: /content/editorial/cgu
+            - generic [ref=f1e243]:
+              - heading "Nos partenaires" [level=2] [ref=f1e244]
+              - link "data.economie.gouv.fr " [ref=f1e245] [cursor=pointer]:
+                - /url: https://data.economie.gouv.fr/pages/accueil/
+                - text: data.economie.gouv.fr
+                - generic [ref=f1e246]: 
+              - link "Organisation mondiale de la propriété intellectuelle (OMPI) " [ref=f1e247] [cursor=pointer]:
+                - /url: https://www.wipo.int/
+                - text: Organisation mondiale de la propriété intellectuelle (OMPI)
+                - generic [ref=f1e248]: 
+              - link "Office européen des brevets (OEB) " [ref=f1e249] [cursor=pointer]:
+                - /url: https://www.epo.org/
+                - text: Office européen des brevets (OEB)
+                - generic [ref=f1e250]: 
+              - link "Office de l’Union européenne pour la propriété intellectuelle (EUIPO) " [ref=f1e251] [cursor=pointer]:
+                - /url: https://euipo.europa.eu/
+                - text: Office de l’Union européenne pour la propriété intellectuelle (EUIPO)
+                - generic [ref=f1e252]: 
+              - link "Chatbot NOA " [ref=f1e253] [cursor=pointer]:
+                - /url: http://www.prefectures-regions.gouv.fr/ile-de-france/Region-et-institutions/L-action-de-l-Etat/Economie-et-finances-publiques/Innovation-Recherche/Le-chatbot-NOA-une-nouvelle-offre-de-service-pour-les-start-up
+                - text: Chatbot NOA
+                - generic [ref=f1e254]: 
+            - generic [ref=f1e255]:
+              - heading "A propos" [level=2] [ref=f1e256]
+              - link "Nous contacter " [ref=f1e257] [cursor=pointer]:
+                - /url: https://www.inpi.fr/fr/contactez-nous
+                - text: Nous contacter
+                - generic [ref=f1e258]: 
+              - link "Foire aux questions" [ref=f1e259] [cursor=pointer]:
+                - /url: /faq
+              - link "Tutoriel Recherche avancée " [ref=f1e260] [cursor=pointer]:
+                - /url: https://youtu.be/M353OB3yLKw
+                - text: Tutoriel Recherche avancée
+                - generic [ref=f1e261]: 
+              - link "Tutoriel Création d'alertes " [ref=f1e262] [cursor=pointer]:
+                - /url: https://youtu.be/XgxtEgF2190
+                - text: Tutoriel Création d'alertes
+                - generic [ref=f1e263]: 
+              - link "Plan du site" [ref=f1e264] [cursor=pointer]:
+                - /url: /site-plan
+              - link "Assistance Cyber en ligne " [ref=f1e265] [cursor=pointer]:
+                - /url: "https://www.cybermalveillance.gouv.fr/tous-nos-contenus/actualites/module-assistance-17cyber "
+                - text: Assistance Cyber en ligne
+                - generic [ref=f1e266]: 
+            - generic [ref=f1e267]:
+              - heading "Recherche dans le site" [level=2] [ref=f1e268]
+              - form "Formulaire global search" [ref=f1e271]:
+                - textbox "Recherche dans le site" [ref=f1e272]
+                - button "Lancer la recherche dans le site" [ref=f1e273] [cursor=pointer]
+              - generic [ref=f1e274]:
+                - link [ref=f1e275] [cursor=pointer]:
+                  - /url: https://www.facebook.com/inpifr/
+                  - img "(Logo facebook)" [ref=f1e276]
+                - link [ref=f1e277] [cursor=pointer]:
+                  - /url: https://twitter.com/INPIFrance
+                  - img "(Logo X)" [ref=f1e278]
+                - link [ref=f1e279] [cursor=pointer]:
+                  - /url: https://www.linkedin.com/company/inpifrance/
+                  - img "(Logo Linkedin)" [ref=f1e280]
+        - text:         

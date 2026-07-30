@@ -25,7 +25,7 @@ pub mod source;
 pub mod verifier;
 
 pub use bundle::{IdentityBundle, SignedIdentityBundle};
-pub use claims::ClaimMap;
+pub use claims::{ClaimMap, MachineMarkers, MarkerMatch};
 pub use jwks::{Jwk, JwkSet, KeyStore};
 pub use source::{BundleSource, ReloadOutcome};
 pub use verifier::{Delegation, Verifier};
@@ -82,6 +82,10 @@ pub enum Error {
 
     #[error("unknown identity bundle format: {0}")]
     UnknownBundleFormat(String),
+
+    #[error("a probant-identity/1 bundle carries machine markers its signature \
+             does not cover: recompile it as probant-identity/2")]
+    UnsignedMachineMarkers,
 
     #[error("identity bundle signed with key \"{0}\", absent from the trusted keys")]
     UnknownBundleKey(String),

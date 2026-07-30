@@ -1,0 +1,171 @@
+- generic [ref=f4e5]:
+  - generic [ref=f4e7] [cursor=pointer]:
+    - alert [ref=f4e8]:
+      - generic [ref=f4e9]:
+        - generic [ref=f4e10]: 
+        - text: Erreur de chargement des données pour la marque
+    - button "close" [ref=f4e11]: ✖
+  - banner [ref=f4e12]:
+    - generic [ref=f4e14]:
+      - img "image" [ref=f4e17] [cursor=pointer]
+      - generic [ref=f4e19]:
+        - generic [ref=f4e21]:
+          - button "" [ref=f4e22] [cursor=pointer]
+          - button "" [ref=f4e23] [cursor=pointer]
+          - button "" [ref=f4e24] [cursor=pointer]
+        - link "Aide" [ref=f4e26] [cursor=pointer]:
+          - /url: "#/tmview/help"
+        - button "Français (fr) " [ref=f4e29] [cursor=pointer]:
+          - generic: Français (fr)
+          - generic: 
+        - generic [ref=f4e31]:
+          - button "Identification" [ref=f4e32] [cursor=pointer]
+          - button "S'enregistrer" [ref=f4e33] [cursor=pointer]
+  - generic [ref=f4e35]:
+    - generic [ref=f4e38]:
+      - generic [ref=f4e40]:
+        - generic [ref=f4e41]:
+          - button " Exporter" [ref=f4e45] [cursor=pointer]:
+            - generic:
+              - generic: 
+              - generic: 
+            - generic: Exporter
+          - button " Alertes" [disabled] [ref=f4e50] [cursor=pointer]:
+            - generic:
+              - generic: 
+              - generic: 
+              - generic: 
+              - generic: 
+            - generic: Alertes
+          - button " Balises" [disabled] [ref=f4e55] [cursor=pointer]:
+            - generic:
+              - generic: 
+              - generic: 
+            - generic: Balises
+          - button " Partager par courrier électronique" [ref=f4e56] [cursor=pointer]:
+            - generic:
+              - generic: 
+              - generic: 
+            - generic: Partager par courrier électronique
+        - generic [ref=f4e57]:
+          - button "Voir dans la langue originale" [ref=f4e58] [cursor=pointer]
+          - generic [ref=f4e59]:
+            - generic [ref=f4e60]: "Aller à :"
+            - button "Information des marques " [ref=f4e62] [cursor=pointer]:
+              - generic: Information des marques
+              - generic: 
+      - button "" [ref=f4e65] [cursor=pointer]
+    - generic [ref=f4e69]:
+      - generic [ref=f4e70]:
+        - generic [ref=f4e71]: Aucune information disponible
+        - generic [ref=f4e74]:
+          - generic [ref=f4e75]: Produits et Services
+          - generic [ref=f4e77]: Aucune information disponible
+        - generic [ref=f4e79]:
+          - generic [ref=f4e80]: Code de Vienne
+          - generic [ref=f4e82]: Aucune information disponible
+      - generic [ref=f4e84]:
+        - generic [ref=f4e85]:
+          - generic [ref=f4e86]: Dates
+          - generic [ref=f4e88]: Aucune information disponible
+        - generic [ref=f4e90]:
+          - generic [ref=f4e91]: Office
+          - generic [ref=f4e93]: Aucune information disponible
+        - generic [ref=f4e95]:
+          - generic [ref=f4e96]: Titulaire
+          - generic [ref=f4e98]: Aucune information disponible
+        - generic [ref=f4e100]:
+          - generic [ref=f4e101]: Représentant
+          - generic [ref=f4e103]: Aucune information disponible
+        - generic [ref=f4e105]:
+          - generic [ref=f4e106]: Adresse de correspondance
+          - generic [ref=f4e108]: Aucune information disponible
+      - generic [ref=f4e111]:
+        - generic [ref=f4e112]: Publication
+        - generic [ref=f4e114]: Aucune information disponible
+      - generic [ref=f4e116]:
+        - generic [ref=f4e118]:
+          - generic [ref=f4e119]: Priorité d'exposition
+          - generic [ref=f4e121]: Aucune information disponible
+        - generic [ref=f4e124]:
+          - generic [ref=f4e125]: Priorité
+          - generic [ref=f4e127]: Aucune information disponible
+        - generic [ref=f4e130]:
+          - generic [ref=f4e131]: Tranformation d'un enregistrement international
+          - generic [ref=f4e133]: Aucune information disponible
+      - generic [ref=f4e136]:
+        - generic [ref=f4e137]: Ancienneté
+        - generic [ref=f4e139]: Aucune information disponible
+      - generic [ref=f4e142]:
+        - generic [ref=f4e143]: Opposition
+        - generic [ref=f4e145]: Aucune information disponible
+      - generic [ref=f4e147]:
+        - generic [ref=f4e148]:
+          - generic [ref=f4e149]: Inscriptions
+          - generic [ref=f4e151]: Aucune information disponible
+        - generic [ref=f4e153]:
+          - generic [ref=f4e154]: Recours
+          - generic [ref=f4e156]: Aucune information disponible
+      - generic [ref=f4e158]:
+        - generic [ref=f4e159]:
+          - generic [ref=f4e160]: Annulation
+          - generic [ref=f4e162]: Aucune information disponible
+        - generic [ref=f4e164]:
+          - generic [ref=f4e165]: Renouvellements
+          - generic [ref=f4e167]: Aucune information disponible
+  - contentinfo [ref=f4e170]:
+    - generic [ref=f4e171]:
+      - navigation [ref=f4e173]:
+        - link "Chercher" [ref=f4e174] [cursor=pointer]:
+          - /url: "#/tmview"
+        - link "Offices participants" [ref=f4e175] [cursor=pointer]:
+          - /url: "#/tmview/participating"
+        - link "Aide" [ref=f4e176] [cursor=pointer]:
+          - /url: "#/tmview/help"
+        - generic [ref=f4e177] [cursor=pointer]: Vos réactions
+      - generic [ref=f4e178]:
+        - link "EUIPN Réseau européen de la propriété intellectuelle" [ref=f4e180] [cursor=pointer]:
+          - /url: https://euipn.org
+          - text: EUIPN Réseau européen de la propriété intellectuelle
+          - generic [ref=f4e181]:
+            - generic [ref=f4e182]: 
+            - generic: 
+        - generic [ref=f4e184]: Avenida de Europa, 4 E-03008 Alicante (ESPAGNE)
+        - generic [ref=f4e186]: "Centre d'information: +34 96 513 9100"
+      - navigation [ref=f4e188]:
+        - generic [ref=f4e189]: Copyright 2007-2026 EUIPO
+        - generic [ref=f4e190]:
+          - text: "Ce site web est coordonné et maintenu par:"
+          - strong [ref=f4e191]: Office de l'Union européenne pour la propriété intellectuelle
+      - generic [ref=f4e192]:
+        - generic [ref=f4e193]: Les outils de recherche TMview et DesignView ne constituent pas des registres officiels et les informations qu’ils contiennent n’ont aucun effet juridique.
+        - navigation [ref=f4e194]:
+          - link "Voir les conditions générales" [ref=f4e195] [cursor=pointer]:
+            - /url: "#/tmview/disclaimer"
+      - generic [ref=f4e196]:
+        - generic [ref=f4e197]: TMDSVIEW-4.5.0-RC1.1
+        - navigation [ref=f4e198]:
+          - link [ref=f4e199] [cursor=pointer]:
+            - /url: https://www.tmdn.org/network/compatibility
+            - strong [ref=f4e200]: Compatibilité
+          - link [ref=f4e201] [cursor=pointer]:
+            - /url: "#/tmview/data-protection"
+            - strong [ref=f4e202]: Protection des données
+          - link [ref=f4e203] [cursor=pointer]:
+            - /url: https://www.euipn.org/en/info/legal-notices
+            - strong [ref=f4e204]: Mention légale
+          - link "A propos de" [ref=f4e205] [cursor=pointer]:
+            - /url: "#/tmview/about"
+  - generic [ref=f4e208]:
+    - generic [ref=f4e209]:
+      - generic [ref=f4e210]: 
+      - generic [ref=f4e212]:
+        - paragraph [ref=f4e213]:
+          - text: Ce site utilise des cookies pour vous offrir des conditions de navigation optimales et pour des analyses anonymisées. En savoir plus sur la façon dont nous utilisons les
+          - link "Cookies" [ref=f4e214] [cursor=pointer]:
+            - /url: /network/data-protection
+        - generic [ref=f4e215]:
+          - button "Accept all cookies" [ref=f4e216] [cursor=pointer]
+          - button "No thanks, only essential cookies" [ref=f4e217] [cursor=pointer]
+    - button "" [ref=f4e219] [cursor=pointer]
+  - text: 

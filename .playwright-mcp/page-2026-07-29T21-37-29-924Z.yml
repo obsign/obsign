@@ -1,0 +1,1278 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e6]:
+      - img "image" [ref=e9] [cursor=pointer]
+      - generic [ref=e11]:
+        - generic [ref=e13]:
+          - button "" [ref=e14] [cursor=pointer]
+          - button "" [ref=e15] [cursor=pointer]
+          - button "" [ref=e16] [cursor=pointer]
+        - link "Aide" [ref=e18] [cursor=pointer]:
+          - /url: "#/tmview/help"
+        - button "Français (fr) " [ref=e21] [cursor=pointer]:
+          - generic: Français (fr)
+          - generic: 
+        - generic [ref=e23]:
+          - button "Identification" [ref=e24] [cursor=pointer]
+          - button "S'enregistrer" [ref=e25] [cursor=pointer]
+  - generic [ref=e78]:
+    - generic [ref=e79]:
+      - generic [ref=e82]:
+        - button "" [ref=e86] [cursor=pointer]:
+          - generic:
+            - generic: 
+            - generic: 
+        - generic [ref=e91]:
+          - generic [ref=e92]: "Nom de la marque:"
+          - group [ref=e93]:
+            - generic [ref=e95]:
+              - generic [ref=e96]:
+                - button "Contient " [ref=e98] [cursor=pointer]:
+                  - generic: Contient
+                  - generic: 
+                - generic [ref=e101]:
+                  - combobox "Entrer le nom de la marque" [ref=e103]: probant
+                  - button "" [ref=e104] [cursor=pointer]
+              - button "Chercher" [ref=e105] [cursor=pointer]
+        - generic [ref=e106]:
+          - button " Sauvegarder cette recherche" [disabled] [ref=e108]:
+            - generic: 
+            - text: Sauvegarder cette recherche
+          - button " Partager par courrier électronique" [ref=e110] [cursor=pointer]:
+            - generic:
+              - generic: 
+              - generic: 
+            - text: Partager par courrier électronique
+          - button "image" [ref=e113] [cursor=pointer]:
+            - img "image"
+      - generic [ref=e117]:
+        - generic [ref=e118]:
+          - button " Exporter" [ref=e121] [cursor=pointer]:
+            - generic:
+              - generic: 
+              - generic: 
+            - generic: Exporter
+          - button " Comparer" [disabled] [ref=e123] [cursor=pointer]:
+            - generic:
+              - generic: 
+              - generic: 
+              - generic: 
+              - generic: 
+              - generic: 
+            - generic: Comparer
+          - button " Alertes" [disabled] [ref=e128] [cursor=pointer]:
+            - generic:
+              - generic: 
+              - generic: 
+              - generic: 
+              - generic: 
+            - generic: Alertes
+          - button " Balises" [disabled] [ref=e133] [cursor=pointer]:
+            - generic:
+              - generic: 
+              - generic: 
+            - generic: Balises
+        - generic [ref=e137]:
+          - generic [ref=e138]:
+            - generic: 
+            - generic: 
+          - generic [ref=e139]: 1-30 des 53
+          - generic [ref=e140] [cursor=pointer]: 
+        - generic [ref=e142]:
+          - button " Vue des statistiques" [ref=e143] [cursor=pointer]:
+            - generic:
+              - generic: 
+              - generic: 
+            - generic: Vue des statistiques
+          - generic [ref=e145]:
+            - button " Vue en liste" [ref=e146]:
+              - generic:
+                - generic: 
+                - generic: 
+                - generic: 
+                - generic: 
+                - generic: 
+                - generic: 
+              - generic: Vue en liste
+            - button " Vue galerie" [ref=e147] [cursor=pointer]:
+              - generic:
+                - generic: 
+                - generic: 
+                - generic: 
+                - generic: 
+                - generic: 
+                - generic: 
+                - generic: 
+                - generic: 
+                - generic: 
+              - generic: Vue galerie
+          - generic [ref=e149]:
+            - button " Modifier les colonnes" [ref=e150] [cursor=pointer]:
+              - generic:
+                - generic: 
+                - generic: 
+                - generic: 
+              - generic: Modifier les colonnes
+            - text:                        
+          - button "" [ref=e152] [cursor=pointer]
+    - generic [ref=e154]:
+      - generic [ref=e158]:
+        - generic [ref=e159]:
+          - button " Modifier" [ref=e163] [cursor=pointer]:
+            - generic:
+              - generic: 
+              - generic: 
+              - generic: 
+            - generic: Modifier
+          - button "" [ref=e164] [cursor=pointer]
+        - generic [ref=e165]:
+          - button "Effacer les filtres" [ref=e166] [cursor=pointer]
+          - button "Introduire une demande" [disabled] [ref=e167]
+        - generic [ref=e168]:
+          - generic [ref=e169]: Offices
+          - generic [ref=e171]:
+            - generic [ref=e174]:
+              - checkbox "Argentine - INPI (7)" [ref=e175]
+              - generic [ref=e176]:
+                - generic [ref=e177]: Argentine - INPI
+                - generic [ref=e178]: (7)
+            - generic [ref=e181]:
+              - checkbox "Brésil - INPI (6)" [ref=e182]
+              - generic [ref=e183]:
+                - generic [ref=e184]: Brésil - INPI
+                - generic [ref=e185]: (6)
+            - generic [ref=e188]:
+              - checkbox "Canada - CIPO (1)" [ref=e189]
+              - generic [ref=e190]:
+                - generic [ref=e191]: Canada - CIPO
+                - generic [ref=e192]: (1)
+            - button "Afficher tous les résultats 10" [ref=e193] [cursor=pointer]
+        - generic [ref=e194]:
+          - generic [ref=e195]: Produits et Services
+          - generic [ref=e197]:
+            - generic [ref=e200]:
+              - checkbox "1 Produits chimiques destinés à l'industrie, aux sciences, à la photographie ainsi qu'à l'agriculture, l'horticulture et la sylviculture; Résines artificielles à l'état brut, matières plastiques à l'état brut; Compositions pour l’extinction d’incendies et la prévention d’incendies; Préparations pour la trempe et la soudure des métaux; Matières pour le tannage de cuirs et peaux d’animaux; Adhésifs [matières collantes] destinés à l’industrie; Mastics et autres matières de remplissage en pâte; Composts, engrais, fertilisants; Préparations biologiques destinées à l’industrie et aux sciences (1)" [ref=e201]
+              - generic [ref=e202]:
+                - generic [ref=e203]: 1 Produits chimiques destinés à l'industrie, aux sciences, à la photographie ainsi qu'à l'agriculture, l'horticulture et la sylviculture; Résines artificielles à l'état brut, matières plastiques à l'état brut; Compositions pour l’extinction d’incendies et la prévention d’incendies; Préparations pour la trempe et la soudure des métaux; Matières pour le tannage de cuirs et peaux d’animaux; Adhésifs [matières collantes] destinés à l’industrie; Mastics et autres matières de remplissage en pâte; Composts, engrais, fertilisants; Préparations biologiques destinées à l’industrie et aux sciences
+                - generic [ref=e204]: (1)
+            - generic [ref=e207]:
+              - checkbox "2 Peintures, vernis, laques; Produits antirouille et produits contre la détérioration du bois; Colorants, teintures; Encres d’imprimerie, encres de marquage et encres de gravure; Résines naturelles à l'état brut; Métaux en feuilles et en poudre pour la peinture, la décoration, l'imprimerie et les travaux d'art (2)" [ref=e208]
+              - generic [ref=e209]:
+                - generic [ref=e210]: 2 Peintures, vernis, laques; Produits antirouille et produits contre la détérioration du bois; Colorants, teintures; Encres d’imprimerie, encres de marquage et encres de gravure; Résines naturelles à l'état brut; Métaux en feuilles et en poudre pour la peinture, la décoration, l'imprimerie et les travaux d'art
+                - generic [ref=e211]: (2)
+            - generic [ref=e214]:
+              - checkbox "3 Produits cosmétiques et préparations de toilette non médicamenteux; Dentifrices non médicamenteux; Produits de parfumerie, huiles essentielles; Préparations pour blanchir et autres substances pour lessiver; Préparations pour nettoyer, polir, dégraisser et abraser (1)" [ref=e215]
+              - generic [ref=e216]:
+                - generic [ref=e217]: 3 Produits cosmétiques et préparations de toilette non médicamenteux; Dentifrices non médicamenteux; Produits de parfumerie, huiles essentielles; Préparations pour blanchir et autres substances pour lessiver; Préparations pour nettoyer, polir, dégraisser et abraser
+                - generic [ref=e218]: (1)
+            - button "Afficher tous les résultats 17" [ref=e219] [cursor=pointer]
+        - generic [ref=e220]:
+          - generic [ref=e221]: Codes de Vienne
+          - generic [ref=e223]:
+            - generic [ref=e226]:
+              - checkbox "01.15 Phénomènes naturels. (2)" [ref=e227]
+              - generic [ref=e228]:
+                - generic [ref=e229]: 01.15 Phénomènes naturels.
+                - generic [ref=e230]: (2)
+            - generic [ref=e233]:
+              - checkbox "02.09 Parties du corps humain, squelettes, crânes. (1)" [ref=e234]
+              - generic [ref=e235]:
+                - generic [ref=e236]: 02.09 Parties du corps humain, squelettes, crânes.
+                - generic [ref=e237]: (1)
+            - generic [ref=e240]:
+              - checkbox "04.05 Végétaux, objets ou figures géométriques représentant un personnage ou un animal; masques ou têtes de fantaisie ou non identifiables. (1)" [ref=e241]
+              - generic [ref=e242]:
+                - generic [ref=e243]: 04.05 Végétaux, objets ou figures géométriques représentant un personnage ou un animal; masques ou têtes de fantaisie ou non identifiables.
+                - generic [ref=e244]: (1)
+            - button "Afficher tous les résultats 21" [ref=e245] [cursor=pointer]
+        - generic [ref=e246]:
+          - generic [ref=e247]: Statut de la marque
+          - generic [ref=e249]:
+            - generic [ref=e252]:
+              - checkbox "Cloturée (10)" [ref=e253]
+              - generic [ref=e254]:
+                - generic [ref=e255]: Cloturée
+                - generic [ref=e256]: (10)
+            - generic [ref=e259]:
+              - checkbox "Expirée (13)" [ref=e260]
+              - generic [ref=e261]:
+                - generic [ref=e262]: Expirée
+                - generic [ref=e263]: (13)
+            - generic [ref=e266]:
+              - checkbox "Déposée (7)" [ref=e267]
+              - generic [ref=e268]:
+                - generic [ref=e269]: Déposée
+                - generic [ref=e270]: (7)
+            - generic [ref=e273]:
+              - checkbox "Enregistrée (23)" [ref=e274]
+              - generic [ref=e275]:
+                - generic [ref=e276]: Enregistrée
+                - generic [ref=e277]: (23)
+        - generic [ref=e278]:
+          - generic [ref=e279]: Type de marque
+          - generic [ref=e281]:
+            - generic [ref=e284]:
+              - checkbox "Combinée (21)" [ref=e285]
+              - generic [ref=e286]:
+                - generic [ref=e287]: Combinée
+                - generic [ref=e288]: (21)
+            - generic [ref=e291]:
+              - checkbox "Verbale (32)" [ref=e292]
+              - generic [ref=e293]:
+                - generic [ref=e294]: Verbale
+                - generic [ref=e295]: (32)
+        - generic [ref=e296]:
+          - generic [ref=e297]: Nom du demandeur
+          - generic [ref=e303]:
+            - generic [ref=e304]:
+              - generic [ref=e305]: Choisir un filtre
+              - combobox [ref=e307]
+            - generic [ref=e308] [cursor=pointer]: 
+        - generic [ref=e310]:
+          - generic [ref=e311]: Date de la demande
+          - generic [ref=e313]:
+            - generic [ref=e316]:
+              - checkbox "Aujourd'hui" [ref=e317]
+              - generic [ref=e318]: Aujourd'hui
+            - generic [ref=e322]:
+              - checkbox "1 jour à 1 semaine" [ref=e323]
+              - generic [ref=e324]: 1 jour à 1 semaine
+            - generic [ref=e328]:
+              - checkbox "1 semaine à 1 mois" [ref=e329]
+              - generic [ref=e330]: 1 semaine à 1 mois
+            - button "Afficher tous les résultats 7" [ref=e332] [cursor=pointer]
+        - generic [ref=e333]:
+          - generic [ref=e334]: Date d'enregistrement
+          - generic [ref=e336]:
+            - generic [ref=e339]:
+              - checkbox "Aujourd'hui" [ref=e340]
+              - generic [ref=e341]: Aujourd'hui
+            - generic [ref=e345]:
+              - checkbox "1 jour à 1 semaine" [ref=e346]
+              - generic [ref=e347]: 1 jour à 1 semaine
+            - generic [ref=e351]:
+              - checkbox "1 semaine à 1 mois" [ref=e352]
+              - generic [ref=e353]: 1 semaine à 1 mois
+            - button "Afficher tous les résultats 7" [ref=e355] [cursor=pointer]
+        - generic [ref=e356]:
+          - generic [ref=e357]: Actuellement opposable
+          - generic [ref=e360]:
+            - checkbox "Actuellement opposable" [ref=e361]
+            - text: Actuellement opposable
+        - generic [ref=e362]:
+          - generic [ref=e363]: Ancienneté revendiquée
+          - generic [ref=e366]:
+            - checkbox "Ancienneté revendiquée" [ref=e367]
+            - text: Ancienneté revendiquée
+        - generic [ref=e368]:
+          - button "Effacer les filtres" [ref=e369] [cursor=pointer]
+          - button "Introduire une demande" [disabled] [ref=e370]
+      - generic [ref=e371]:
+        - grid [ref=e375]:
+          - row [ref=e377]:
+            - columnheader [ref=e378]
+            - columnheader [ref=e379]:
+              - checkbox [ref=e383]
+            - columnheader "Graphique" [ref=e385]
+            - columnheader "Nom de la marque" [ref=e389] [cursor=pointer]
+            - columnheader "Date de la demande" [ref=e392] [cursor=pointer]
+            - columnheader "Produits et Services" [ref=e395] [cursor=pointer]
+            - columnheader "Statut de la marque" [ref=e398] [cursor=pointer]
+            - columnheader "Office des marques" [ref=e401] [cursor=pointer]
+            - columnheader "Numéro de la demande" [ref=e404] [cursor=pointer]
+            - columnheader "Nom du demandeur" [ref=e407] [cursor=pointer]
+          - generic [ref=e410]:
+            - rowgroup [ref=e411]:
+              - row [ref=e412]:
+                - gridcell "" [ref=e413] [cursor=pointer]
+                - gridcell [ref=e416]:
+                  - checkbox [ref=e420]
+                - gridcell "-" [ref=e422]
+                - gridcell [ref=e424]:
+                  - link [ref=e426] [cursor=pointer]:
+                    - /url: "#/tmview/detail/IN500000003408006"
+                    - mark [ref=e428]: PROBANT
+                - gridcell [ref=e429]:
+                  - paragraph [ref=e431]: 11/11/2016
+                - gridcell [ref=e432]:
+                  - paragraph [ref=e434]: "30"
+                - gridcell "Enregistrée" [ref=e435]
+                - gridcell [ref=e437]:
+                  - link "Inde - CGDPTM" [ref=e439] [cursor=pointer]:
+                    - /url: https://ipindia.gov.in
+                    - text: Inde - CGDPTM
+                    - generic [ref=e440]:
+                      - generic [ref=e441]: 
+                      - generic: 
+                - gridcell [ref=e442]:
+                  - link "3408006" [ref=e444] [cursor=pointer]:
+                    - /url: "#/tmview/detail/IN500000003408006"
+                - gridcell [ref=e446]:
+                  - paragraph [ref=e448]: AGION LABORATORIES PVT. LTD.
+            - rowgroup [ref=e449]:
+              - row [ref=e450]:
+                - gridcell "" [ref=e451] [cursor=pointer]
+                - gridcell [ref=e454]:
+                  - checkbox [ref=e458]
+                - gridcell "-" [ref=e460]
+                - gridcell [ref=e462]:
+                  - link [ref=e464] [cursor=pointer]:
+                    - /url: "#/tmview/detail/CA500000214993400"
+                    - mark [ref=e466]: PROBANT
+                - gridcell [ref=e467]:
+                  - paragraph [ref=e469]: 25/11/2021
+                - gridcell [ref=e470]:
+                  - paragraph [ref=e472]: 45, 42
+                - gridcell "Cloturée" [ref=e473]
+                - gridcell [ref=e475]:
+                  - link "Canada - CIPO" [ref=e477] [cursor=pointer]:
+                    - /url: http://www.cipo.ic.gc.ca/eic/site/cipointernet-internetopic.nsf/eng/home
+                    - text: Canada - CIPO
+                    - generic [ref=e478]:
+                      - generic [ref=e479]: 
+                      - generic: 
+                - gridcell [ref=e480]:
+                  - link "2149934-00" [ref=e482] [cursor=pointer]:
+                    - /url: "#/tmview/detail/CA500000214993400"
+                - gridcell [ref=e484]:
+                  - paragraph [ref=e486]: 9282-0448 Québec inc.
+            - rowgroup [ref=e487]:
+              - row [ref=e488]:
+                - gridcell "" [ref=e489] [cursor=pointer]
+                - gridcell [ref=e492]:
+                  - checkbox [ref=e496]
+                - gridcell [ref=e498]:
+                  - link [ref=e501] [cursor=pointer]:
+                    - /url: "#/tmview/detail/TR502024000042024"
+                    - img "probant" [ref=e502]
+                - gridcell [ref=e503]:
+                  - link [ref=e505] [cursor=pointer]:
+                    - /url: "#/tmview/detail/TR502024000042024"
+                    - mark [ref=e507]: probant
+                - gridcell [ref=e508]:
+                  - paragraph [ref=e510]: 26/03/2024
+                - gridcell [ref=e511]:
+                  - paragraph [ref=e513]: 1, 16, 17, 35
+                - gridcell "Déposée" [ref=e514]
+                - gridcell [ref=e516]:
+                  - link "Turquie - TURKPATENT" [ref=e518] [cursor=pointer]:
+                    - /url: https://www.turkpatent.gov.tr/en
+                    - text: Turquie - TURKPATENT
+                    - generic [ref=e519]:
+                      - generic [ref=e520]: 
+                      - generic: 
+                - gridcell [ref=e521]:
+                  - link "2024-042024" [ref=e523] [cursor=pointer]:
+                    - /url: "#/tmview/detail/TR502024000042024"
+                - gridcell [ref=e525]:
+                  - paragraph [ref=e527]: Legally Restricted Until Publication Date
+            - rowgroup [ref=e528]:
+              - row [ref=e529]:
+                - gridcell "" [ref=e530] [cursor=pointer]
+                - gridcell [ref=e533]:
+                  - checkbox [ref=e537]
+                - gridcell [ref=e539]:
+                  - link [ref=e542] [cursor=pointer]:
+                    - /url: "#/tmview/detail/US500000097149833"
+                    - img "PROBANT" [ref=e543]
+                - gridcell [ref=e544]:
+                  - link [ref=e546] [cursor=pointer]:
+                    - /url: "#/tmview/detail/US500000097149833"
+                    - mark [ref=e548]: PROBANT
+                - gridcell [ref=e549]:
+                  - paragraph [ref=e551]: 30/11/2021
+                - gridcell [ref=e552]:
+                  - paragraph [ref=e554]: "42"
+                - gridcell "Cloturée" [ref=e555]
+                - gridcell [ref=e557]:
+                  - link "États-Unis - USPTO" [ref=e559] [cursor=pointer]:
+                    - /url: http://www.uspto.gov/
+                    - text: États-Unis - USPTO
+                    - generic [ref=e560]:
+                      - generic [ref=e561]: 
+                      - generic: 
+                - gridcell [ref=e562]:
+                  - link "97149833" [ref=e564] [cursor=pointer]:
+                    - /url: "#/tmview/detail/US500000097149833"
+                - gridcell [ref=e566]:
+                  - paragraph [ref=e568]: Groupe Vidocq/Vidocq Group
+            - rowgroup [ref=e569]:
+              - row [ref=e570]:
+                - gridcell "" [ref=e571] [cursor=pointer]
+                - gridcell [ref=e574]:
+                  - checkbox [ref=e578]
+                - gridcell [ref=e580]:
+                  - link [ref=e583] [cursor=pointer]:
+                    - /url: "#/tmview/detail/FR500000004360643"
+                    - img "Probant Systems" [ref=e584]
+                - gridcell [ref=e585]:
+                  - link [ref=e587] [cursor=pointer]:
+                    - /url: "#/tmview/detail/FR500000004360643"
+                    - generic [ref=e588]:
+                      - mark [ref=e589]: Probant
+                      - text: Systems
+                - gridcell [ref=e590]:
+                  - paragraph [ref=e592]: 11/05/2017
+                - gridcell [ref=e593]:
+                  - paragraph [ref=e595]: 9, 35, 38, 41, 42
+                - gridcell "Enregistrée" [ref=e596]
+                - gridcell [ref=e598]:
+                  - link "France - INPI" [ref=e600] [cursor=pointer]:
+                    - /url: http://www.inpi.fr
+                    - text: France - INPI
+                    - generic [ref=e601]:
+                      - generic [ref=e602]: 
+                      - generic: 
+                - gridcell [ref=e603]:
+                  - link "4360643" [ref=e605] [cursor=pointer]:
+                    - /url: "#/tmview/detail/FR500000004360643"
+                - gridcell [ref=e607]:
+                  - paragraph [ref=e609]: M. Francois Verollet
+            - rowgroup [ref=e610]:
+              - row [ref=e611]:
+                - gridcell "" [ref=e612] [cursor=pointer]
+                - gridcell [ref=e615]:
+                  - checkbox [ref=e619]
+                - gridcell "-" [ref=e621]
+                - gridcell [ref=e623]:
+                  - link [ref=e625] [cursor=pointer]:
+                    - /url: "#/tmview/detail/BR500000918988675"
+                    - generic [ref=e626]:
+                      - mark [ref=e627]: Probant
+                      - text: e
+                - gridcell [ref=e628]:
+                  - paragraph [ref=e630]: 09/01/2020
+                - gridcell [ref=e631]:
+                  - paragraph [ref=e633]: "41"
+                - gridcell "Cloturée" [ref=e634]
+                - gridcell [ref=e636]:
+                  - link "Brésil - INPI" [ref=e638] [cursor=pointer]:
+                    - /url: http://www.inpi.gov.br
+                    - text: Brésil - INPI
+                    - generic [ref=e639]:
+                      - generic [ref=e640]: 
+                      - generic: 
+                - gridcell [ref=e641]:
+                  - link "918988675" [ref=e643] [cursor=pointer]:
+                    - /url: "#/tmview/detail/BR500000918988675"
+                - gridcell [ref=e645]:
+                  - paragraph [ref=e647]: ALCÂNTARA WAY WEBDESIGN LTDA
+            - rowgroup [ref=e648]:
+              - row [ref=e649]:
+                - gridcell "" [ref=e650] [cursor=pointer]
+                - gridcell [ref=e653]:
+                  - checkbox [ref=e657]
+                - gridcell [ref=e659]:
+                  - link [ref=e662] [cursor=pointer]:
+                    - /url: "#/tmview/detail/FR500000005261978"
+                    - img "Probanto" [ref=e663]
+                - gridcell [ref=e664]:
+                  - link [ref=e666] [cursor=pointer]:
+                    - /url: "#/tmview/detail/FR500000005261978"
+                    - generic [ref=e667]:
+                      - mark [ref=e668]: Probant
+                      - text: o
+                - gridcell [ref=e669]:
+                  - paragraph [ref=e671]: 26/05/2026
+                - gridcell [ref=e672]:
+                  - paragraph [ref=e674]: 9, 42
+                - gridcell "Déposée" [ref=e675]
+                - gridcell [ref=e677]:
+                  - link "France - INPI" [ref=e679] [cursor=pointer]:
+                    - /url: http://www.inpi.fr
+                    - text: France - INPI
+                    - generic [ref=e680]:
+                      - generic [ref=e681]: 
+                      - generic: 
+                - gridcell [ref=e682]:
+                  - link "5261978" [ref=e684] [cursor=pointer]:
+                    - /url: "#/tmview/detail/FR500000005261978"
+                - gridcell [ref=e686]:
+                  - paragraph [ref=e688]: INSPIRATECH SAS, société par actions simplifiée
+            - rowgroup [ref=e689]:
+              - row [ref=e690]:
+                - gridcell "" [ref=e691] [cursor=pointer]
+                - gridcell [ref=e694]:
+                  - checkbox [ref=e698]
+                - gridcell "-" [ref=e700]
+                - gridcell [ref=e702]:
+                  - link [ref=e704] [cursor=pointer]:
+                    - /url: "#/tmview/detail/IN500000002401806"
+                    - generic [ref=e705]:
+                      - mark [ref=e706]: PROBANT
+                      - text: HINE
+                - gridcell [ref=e707]:
+                  - paragraph [ref=e709]: 25/09/2012
+                - gridcell [ref=e710]:
+                  - paragraph [ref=e712]: "5"
+                - gridcell "Enregistrée" [ref=e713]
+                - gridcell [ref=e715]:
+                  - link "Inde - CGDPTM" [ref=e717] [cursor=pointer]:
+                    - /url: https://ipindia.gov.in
+                    - text: Inde - CGDPTM
+                    - generic [ref=e718]:
+                      - generic [ref=e719]: 
+                      - generic: 
+                - gridcell [ref=e720]:
+                  - link "2401806" [ref=e722] [cursor=pointer]:
+                    - /url: "#/tmview/detail/IN500000002401806"
+                - gridcell [ref=e724]:
+                  - paragraph [ref=e726]: G. D. SEARLE LLC
+            - rowgroup [ref=e727]:
+              - row [ref=e728]:
+                - gridcell "" [ref=e729] [cursor=pointer]
+                - gridcell [ref=e732]:
+                  - checkbox [ref=e736]
+                - gridcell [ref=e738]:
+                  - link [ref=e741] [cursor=pointer]:
+                    - /url: "#/tmview/detail/BR500000932271693"
+                    - img "PROBANTTI PERÍCIAS E CONSULTORIA" [ref=e742]
+                - gridcell [ref=e743]:
+                  - link [ref=e745] [cursor=pointer]:
+                    - /url: "#/tmview/detail/BR500000932271693"
+                    - generic [ref=e746]:
+                      - mark [ref=e747]: PROBANT
+                      - text: TI PERÍCIAS E CONSULTORIA
+                - gridcell [ref=e748]:
+                  - paragraph [ref=e750]: 16/10/2023
+                - gridcell [ref=e751]:
+                  - paragraph [ref=e753]: "35"
+                - gridcell "Cloturée" [ref=e754]
+                - gridcell [ref=e756]:
+                  - link "Brésil - INPI" [ref=e758] [cursor=pointer]:
+                    - /url: http://www.inpi.gov.br
+                    - text: Brésil - INPI
+                    - generic [ref=e759]:
+                      - generic [ref=e760]: 
+                      - generic: 
+                - gridcell [ref=e761]:
+                  - link "932271693" [ref=e763] [cursor=pointer]:
+                    - /url: "#/tmview/detail/BR500000932271693"
+                - gridcell [ref=e765]:
+                  - paragraph [ref=e767]: PERICIA NA PRATICA ASSISTENCIA TECNICA E CONSULTORIA PERICIAL LTDA
+            - rowgroup [ref=e768]:
+              - row [ref=e769]:
+                - gridcell "" [ref=e770] [cursor=pointer]
+                - gridcell [ref=e773]:
+                  - checkbox [ref=e777]
+                - gridcell "-" [ref=e779]
+                - gridcell [ref=e781]:
+                  - link [ref=e783] [cursor=pointer]:
+                    - /url: "#/tmview/detail/AR500000003980937"
+                    - generic [ref=e784]:
+                      - mark [ref=e785]: PROBANT
+                      - text: ACIDO
+                - gridcell [ref=e786]:
+                  - paragraph [ref=e788]: 04/02/2021
+                - gridcell [ref=e789]:
+                  - paragraph [ref=e791]: "5"
+                - gridcell "Enregistrée" [ref=e792]
+                - gridcell [ref=e794]:
+                  - link "Argentine - INPI" [ref=e796] [cursor=pointer]:
+                    - /url: http://www.inpi.gob.ar
+                    - text: Argentine - INPI
+                    - generic [ref=e797]:
+                      - generic [ref=e798]: 
+                      - generic: 
+                - gridcell [ref=e799]:
+                  - link "3980937" [ref=e801] [cursor=pointer]:
+                    - /url: "#/tmview/detail/AR500000003980937"
+                - gridcell [ref=e803]:
+                  - paragraph [ref=e805]: GRUPO EMPRESARIAL BAGO S.A 100,00%
+            - rowgroup [ref=e806]:
+              - row [ref=e807]:
+                - gridcell "" [ref=e808] [cursor=pointer]
+                - gridcell [ref=e811]:
+                  - checkbox [ref=e815]
+                - gridcell "-" [ref=e817]
+                - gridcell [ref=e819]:
+                  - link [ref=e821] [cursor=pointer]:
+                    - /url: "#/tmview/detail/MX501985010532004"
+                    - generic [ref=e822]:
+                      - text: COM
+                      - mark [ref=e823]: PROBANT
+                      - text: E EN LINEA
+                - gridcell [ref=e824]:
+                  - paragraph [ref=e826]: 12/02/2002
+                - gridcell [ref=e827]:
+                  - paragraph [ref=e829]: "36"
+                - gridcell "Enregistrée" [ref=e830]
+                - gridcell [ref=e832]:
+                  - link "Mexique - IMPI" [ref=e834] [cursor=pointer]:
+                    - /url: https://www.gob.mx/impi
+                    - text: Mexique - IMPI
+                    - generic [ref=e835]:
+                      - generic [ref=e836]: 
+                      - generic: 
+                - gridcell [ref=e837]:
+                  - link "0532004" [ref=e839] [cursor=pointer]:
+                    - /url: "#/tmview/detail/MX501985010532004"
+                - gridcell [ref=e841]:
+                  - paragraph [ref=e843]: SCOTIABANK INVERLAT, S.A., INSTITUCION DE BANCA MULTIPLE, GRUPO FINANCIERO SCOTIABANK INVERLAT
+            - rowgroup [ref=e844]:
+              - row [ref=e845]:
+                - gridcell "" [ref=e846] [cursor=pointer]
+                - gridcell [ref=e849]:
+                  - checkbox [ref=e853]
+                - gridcell [ref=e855]:
+                  - generic [ref=e856]:
+                    - generic:
+                      - link:
+                        - /url: "#/tmview/detail/PY500M20101030067"
+                - gridcell [ref=e857]:
+                  - link [ref=e859] [cursor=pointer]:
+                    - /url: "#/tmview/detail/PY500M20101030067"
+                    - generic [ref=e860]:
+                      - text: COM
+                      - mark [ref=e861]: PROBANT
+                      - text: E SEGURO
+                - gridcell [ref=e862]:
+                  - paragraph [ref=e864]: 30/07/2010
+                - gridcell [ref=e865]:
+                  - paragraph [ref=e867]: "42"
+                - gridcell "Déposée" [ref=e868]
+                - gridcell [ref=e870]:
+                  - link "Paraguay - DINAPI" [ref=e872] [cursor=pointer]:
+                    - /url: https://www.dinapi.gov.py/
+                    - text: Paraguay - DINAPI
+                    - generic [ref=e873]:
+                      - generic [ref=e874]: 
+                      - generic: 
+                - gridcell [ref=e875]:
+                  - link "PY/M/2010/1030067" [ref=e877] [cursor=pointer]:
+                    - /url: "#/tmview/detail/PY500M20101030067"
+                - gridcell [ref=e879]:
+                  - paragraph [ref=e881]: Marcos Rodrigo Sevilla Britos
+            - rowgroup [ref=e882]:
+              - row [ref=e883]:
+                - gridcell "" [ref=e884] [cursor=pointer]
+                - gridcell [ref=e887]:
+                  - checkbox [ref=e891]
+                - gridcell [ref=e893]:
+                  - generic [ref=e894]:
+                    - generic:
+                      - link:
+                        - /url: "#/tmview/detail/BR500000938235052"
+                - gridcell [ref=e895]:
+                  - link [ref=e897] [cursor=pointer]:
+                    - /url: "#/tmview/detail/BR500000938235052"
+                    - generic [ref=e898]:
+                      - mark [ref=e899]: PROBANT
+                      - text: E Perícias & Serviços Forenses
+                - gridcell [ref=e900]:
+                  - paragraph [ref=e902]: 04/03/2025
+                - gridcell [ref=e903]:
+                  - paragraph [ref=e905]: "45"
+                - gridcell "Déposée" [ref=e906]
+                - gridcell [ref=e908]:
+                  - link "Brésil - INPI" [ref=e910] [cursor=pointer]:
+                    - /url: http://www.inpi.gov.br
+                    - text: Brésil - INPI
+                    - generic [ref=e911]:
+                      - generic [ref=e912]: 
+                      - generic: 
+                - gridcell [ref=e913]:
+                  - link "938235052" [ref=e915] [cursor=pointer]:
+                    - /url: "#/tmview/detail/BR500000938235052"
+                - gridcell [ref=e917]:
+                  - paragraph [ref=e919]: PROBANTE PERICIAS E SERVIÇOS FORENSES LTDA
+            - rowgroup [ref=e920]:
+              - row [ref=e921]:
+                - gridcell "" [ref=e922] [cursor=pointer]
+                - gridcell [ref=e925]:
+                  - checkbox [ref=e929]
+                - gridcell [ref=e931]:
+                  - generic [ref=e932]:
+                    - generic:
+                      - link:
+                        - /url: "#/tmview/detail/FR500000001074439"
+                - gridcell [ref=e933]:
+                  - link [ref=e935] [cursor=pointer]:
+                    - /url: "#/tmview/detail/FR500000001074439"
+                    - generic [ref=e936]:
+                      - text: LE LANGAGE D UNE REALITE
+                      - mark [ref=e937]: PROBANT
+                      - text: E EST PLUS ELOQUENT QUE PAROLE ABONDANTE
+                - gridcell [ref=e938]:
+                  - paragraph [ref=e940]: 24/02/1978
+                - gridcell [ref=e941]:
+                  - paragraph [ref=e943]: 9, 16, 35, 36, 38, 39, 41, 42
+                - gridcell "Expirée" [ref=e944]
+                - gridcell [ref=e946]:
+                  - link "France - INPI" [ref=e948] [cursor=pointer]:
+                    - /url: http://www.inpi.fr
+                    - text: France - INPI
+                    - generic [ref=e949]:
+                      - generic [ref=e950]: 
+                      - generic: 
+                - gridcell [ref=e951]:
+                  - link "1074439" [ref=e953] [cursor=pointer]:
+                    - /url: "#/tmview/detail/FR500000001074439"
+                - gridcell [ref=e955]:
+                  - paragraph [ref=e957]: SOCIETE ARAB-CONSULTANTS
+            - rowgroup [ref=e958]:
+              - row [ref=e959]:
+                - gridcell "" [ref=e960] [cursor=pointer]
+                - gridcell [ref=e963]:
+                  - checkbox [ref=e967]
+                - gridcell "-" [ref=e969]
+                - gridcell [ref=e971]:
+                  - link [ref=e973] [cursor=pointer]:
+                    - /url: "#/tmview/detail/MX501985030119646"
+                    - generic [ref=e974]:
+                      - text: RENAULT AL INSTANTE SIN COM
+                      - mark [ref=e975]: PROBANT
+                      - text: E
+                - gridcell [ref=e976]:
+                  - paragraph [ref=e978]: 05/04/2018
+                - gridcell [ref=e979]:
+                  - paragraph [ref=e981]: "12"
+                - gridcell "Enregistrée" [ref=e982]
+                - gridcell [ref=e984]:
+                  - link "Mexique - IMPI" [ref=e986] [cursor=pointer]:
+                    - /url: https://www.gob.mx/impi
+                    - text: Mexique - IMPI
+                    - generic [ref=e987]:
+                      - generic [ref=e988]: 
+                      - generic: 
+                - gridcell [ref=e989]:
+                  - link "0119646" [ref=e991] [cursor=pointer]:
+                    - /url: "#/tmview/detail/MX501985030119646"
+                - gridcell [ref=e993]:
+                  - paragraph [ref=e995]: RENAULT S.A.S.
+            - rowgroup [ref=e996]:
+              - row [ref=e997]:
+                - gridcell "" [ref=e998] [cursor=pointer]
+                - gridcell [ref=e1001]:
+                  - checkbox [ref=e1005]
+                - gridcell "-" [ref=e1007]
+                - gridcell [ref=e1009]:
+                  - link [ref=e1011] [cursor=pointer]:
+                    - /url: "#/tmview/detail/MX501985010880139"
+                    - generic [ref=e1012]:
+                      - text: SOLUCIÓN DE COM
+                      - mark [ref=e1013]: PROBANT
+                      - text: E FISCAL
+                - gridcell [ref=e1014]:
+                  - paragraph [ref=e1016]: 05/09/2007
+                - gridcell [ref=e1017]:
+                  - paragraph [ref=e1019]: "42"
+                - gridcell "Cloturée" [ref=e1020]
+                - gridcell [ref=e1022]:
+                  - link "Mexique - IMPI" [ref=e1024] [cursor=pointer]:
+                    - /url: https://www.gob.mx/impi
+                    - text: Mexique - IMPI
+                    - generic [ref=e1025]:
+                      - generic [ref=e1026]: 
+                      - generic: 
+                - gridcell [ref=e1027]:
+                  - link "0880139" [ref=e1029] [cursor=pointer]:
+                    - /url: "#/tmview/detail/MX501985010880139"
+                - gridcell [ref=e1031]:
+                  - paragraph [ref=e1033]: EXPERTOS EN SOLUCIONES Y APLICACIONES TECNOLOGICAS, S.A. DE C.V.
+            - rowgroup [ref=e1034]:
+              - row [ref=e1035]:
+                - gridcell "" [ref=e1036] [cursor=pointer]
+                - gridcell [ref=e1039]:
+                  - checkbox [ref=e1043]
+                - gridcell [ref=e1045]:
+                  - generic [ref=e1046]:
+                    - generic:
+                      - link:
+                        - /url: "#/tmview/detail/MX501985011136579"
+                - gridcell [ref=e1047]:
+                  - link [ref=e1049] [cursor=pointer]:
+                    - /url: "#/tmview/detail/MX501985011136579"
+                    - generic [ref=e1050]:
+                      - text: CECODI CLUB DE EMISORES DE COM
+                      - mark [ref=e1051]: PROBANT
+                      - text: ES DIGITALES
+                - gridcell [ref=e1052]:
+                  - paragraph [ref=e1054]: 23/11/2010
+                - gridcell [ref=e1055]:
+                  - paragraph [ref=e1057]: "41"
+                - gridcell "Cloturée" [ref=e1058]
+                - gridcell [ref=e1060]:
+                  - link "Mexique - IMPI" [ref=e1062] [cursor=pointer]:
+                    - /url: https://www.gob.mx/impi
+                    - text: Mexique - IMPI
+                    - generic [ref=e1063]:
+                      - generic [ref=e1064]: 
+                      - generic: 
+                - gridcell [ref=e1065]:
+                  - link "1136579" [ref=e1067] [cursor=pointer]:
+                    - /url: "#/tmview/detail/MX501985011136579"
+                - gridcell [ref=e1069]:
+                  - paragraph [ref=e1071]: CONSEJEROFISCAL.COM, S.C.
+            - rowgroup [ref=e1072]:
+              - row [ref=e1073]:
+                - gridcell "" [ref=e1074] [cursor=pointer]
+                - gridcell [ref=e1077]:
+                  - checkbox [ref=e1081]
+                - gridcell [ref=e1083]:
+                  - generic [ref=e1084]:
+                    - generic:
+                      - link:
+                        - /url: "#/tmview/detail/BR500000938234943"
+                - gridcell [ref=e1085]:
+                  - link [ref=e1087] [cursor=pointer]:
+                    - /url: "#/tmview/detail/BR500000938234943"
+                    - generic [ref=e1088]:
+                      - mark [ref=e1089]: PROBANT
+                      - text: E Perícias & Serviços Forenses
+                - gridcell [ref=e1090]:
+                  - paragraph [ref=e1092]: 04/03/2025
+                - gridcell [ref=e1093]:
+                  - paragraph [ref=e1095]: "41"
+                - gridcell "Déposée" [ref=e1096]
+                - gridcell [ref=e1098]:
+                  - link "Brésil - INPI" [ref=e1100] [cursor=pointer]:
+                    - /url: http://www.inpi.gov.br
+                    - text: Brésil - INPI
+                    - generic [ref=e1101]:
+                      - generic [ref=e1102]: 
+                      - generic: 
+                - gridcell [ref=e1103]:
+                  - link "938234943" [ref=e1105] [cursor=pointer]:
+                    - /url: "#/tmview/detail/BR500000938234943"
+                - gridcell [ref=e1107]:
+                  - paragraph [ref=e1109]: PROBANTE PERICIAS E SERVIÇOS FORENSES LTDA
+            - rowgroup [ref=e1110]:
+              - row [ref=e1111]:
+                - gridcell "" [ref=e1112] [cursor=pointer]
+                - gridcell [ref=e1115]:
+                  - checkbox [ref=e1119]
+                - gridcell "-" [ref=e1121]
+                - gridcell [ref=e1123]:
+                  - link [ref=e1125] [cursor=pointer]:
+                    - /url: "#/tmview/detail/AR500000001221740"
+                    - generic [ref=e1126]:
+                      - mark [ref=e1127]: PROBANT
+                      - text: ACIDO
+                - gridcell [ref=e1128]:
+                  - paragraph [ref=e1130]: 01/01/1900
+                - gridcell [ref=e1131]:
+                  - paragraph [ref=e1133]: "2"
+                - gridcell "Expirée" [ref=e1134]
+                - gridcell [ref=e1136]:
+                  - link "Argentine - INPI" [ref=e1138] [cursor=pointer]:
+                    - /url: http://www.inpi.gob.ar
+                    - text: Argentine - INPI
+                    - generic [ref=e1139]:
+                      - generic [ref=e1140]: 
+                      - generic: 
+                - gridcell [ref=e1141]:
+                  - link "1221740" [ref=e1143] [cursor=pointer]:
+                    - /url: "#/tmview/detail/AR500000001221740"
+                - gridcell [ref=e1145]:
+                  - paragraph [ref=e1147]: Not available
+            - rowgroup [ref=e1148]:
+              - row [ref=e1149]:
+                - gridcell "" [ref=e1150] [cursor=pointer]
+                - gridcell [ref=e1153]:
+                  - checkbox [ref=e1157]
+                - gridcell "-" [ref=e1159]
+                - gridcell [ref=e1161]:
+                  - link [ref=e1163] [cursor=pointer]:
+                    - /url: "#/tmview/detail/AR500000001764121"
+                    - generic [ref=e1164]:
+                      - mark [ref=e1165]: PROBANT
+                      - text: ACIDO
+                - gridcell [ref=e1166]:
+                  - paragraph [ref=e1168]: 31/08/1990
+                - gridcell [ref=e1169]:
+                  - paragraph [ref=e1171]: "5"
+                - gridcell "Expirée" [ref=e1172]
+                - gridcell [ref=e1174]:
+                  - link "Argentine - INPI" [ref=e1176] [cursor=pointer]:
+                    - /url: http://www.inpi.gob.ar
+                    - text: Argentine - INPI
+                    - generic [ref=e1177]:
+                      - generic [ref=e1178]: 
+                      - generic: 
+                - gridcell [ref=e1179]:
+                  - link "1764121" [ref=e1181] [cursor=pointer]:
+                    - /url: "#/tmview/detail/AR500000001764121"
+                - gridcell [ref=e1183]:
+                  - paragraph [ref=e1185]: LABORATORIOS BAGO S.A. 100,00%
+            - rowgroup [ref=e1186]:
+              - row [ref=e1187]:
+                - gridcell "" [ref=e1188] [cursor=pointer]
+                - gridcell [ref=e1191]:
+                  - checkbox [ref=e1195]
+                - gridcell "-" [ref=e1197]
+                - gridcell [ref=e1199]:
+                  - link [ref=e1201] [cursor=pointer]:
+                    - /url: "#/tmview/detail/AR500000002414903"
+                    - generic [ref=e1202]:
+                      - mark [ref=e1203]: PROBANT
+                      - text: ACIDO
+                - gridcell [ref=e1204]:
+                  - paragraph [ref=e1206]: 26/02/2003
+                - gridcell [ref=e1207]:
+                  - paragraph [ref=e1209]: "5"
+                - gridcell "Expirée" [ref=e1210]
+                - gridcell [ref=e1212]:
+                  - link "Argentine - INPI" [ref=e1214] [cursor=pointer]:
+                    - /url: http://www.inpi.gob.ar
+                    - text: Argentine - INPI
+                    - generic [ref=e1215]:
+                      - generic [ref=e1216]: 
+                      - generic: 
+                - gridcell [ref=e1217]:
+                  - link "2414903" [ref=e1219] [cursor=pointer]:
+                    - /url: "#/tmview/detail/AR500000002414903"
+                - gridcell [ref=e1221]:
+                  - paragraph [ref=e1223]: BAGO GROUP S.A. 100,00%
+            - rowgroup [ref=e1224]:
+              - row [ref=e1225]:
+                - gridcell "" [ref=e1226] [cursor=pointer]
+                - gridcell [ref=e1229]:
+                  - checkbox [ref=e1233]
+                - gridcell [ref=e1235]:
+                  - generic [ref=e1236]:
+                    - generic:
+                      - link:
+                        - /url: "#/tmview/detail/AR500000003029015"
+                - gridcell [ref=e1237]:
+                  - link [ref=e1239] [cursor=pointer]:
+                    - /url: "#/tmview/detail/AR500000003029015"
+                    - generic [ref=e1240]:
+                      - text: COM
+                      - mark [ref=e1241]: PROBANT
+                      - text: E SEGURO
+                - gridcell [ref=e1242]:
+                  - paragraph [ref=e1244]: 08/09/2010
+                - gridcell [ref=e1245]:
+                  - paragraph [ref=e1247]: "42"
+                - gridcell "Enregistrée" [ref=e1248]
+                - gridcell [ref=e1250]:
+                  - link "Argentine - INPI" [ref=e1252] [cursor=pointer]:
+                    - /url: http://www.inpi.gob.ar
+                    - text: Argentine - INPI
+                    - generic [ref=e1253]:
+                      - generic [ref=e1254]: 
+                      - generic: 
+                - gridcell [ref=e1255]:
+                  - link "3029015" [ref=e1257] [cursor=pointer]:
+                    - /url: "#/tmview/detail/AR500000003029015"
+                - gridcell [ref=e1259]:
+                  - paragraph [ref=e1261]: SUAREZ, SEBASTIAN IGNACIO 100,00%
+            - rowgroup [ref=e1262]:
+              - row [ref=e1263]:
+                - gridcell "" [ref=e1264] [cursor=pointer]
+                - gridcell [ref=e1267]:
+                  - checkbox [ref=e1271]
+                - gridcell [ref=e1273]:
+                  - generic [ref=e1274]:
+                    - generic:
+                      - link:
+                        - /url: "#/tmview/detail/FR500000004543969"
+                - gridcell [ref=e1275]:
+                  - link [ref=e1277] [cursor=pointer]:
+                    - /url: "#/tmview/detail/FR500000004543969"
+                    - generic [ref=e1278]:
+                      - text: archive-
+                      - mark [ref=e1279]: probant
+                      - text: e
+                - gridcell [ref=e1280]:
+                  - paragraph [ref=e1282]: 16/04/2019
+                - gridcell [ref=e1283]:
+                  - paragraph [ref=e1285]: 35, 38, 41
+                - gridcell "Enregistrée" [ref=e1286]
+                - gridcell [ref=e1288]:
+                  - link "France - INPI" [ref=e1290] [cursor=pointer]:
+                    - /url: http://www.inpi.fr
+                    - text: France - INPI
+                    - generic [ref=e1291]:
+                      - generic [ref=e1292]: 
+                      - generic: 
+                - gridcell [ref=e1293]:
+                  - link "4543969" [ref=e1295] [cursor=pointer]:
+                    - /url: "#/tmview/detail/FR500000004543969"
+                - gridcell [ref=e1297]:
+                  - paragraph [ref=e1299]: Monsieur Eric SEIGNE
+            - rowgroup [ref=e1300]:
+              - row [ref=e1301]:
+                - gridcell "" [ref=e1302] [cursor=pointer]
+                - gridcell [ref=e1305]:
+                  - checkbox [ref=e1309]
+                - gridcell [ref=e1311]:
+                  - generic [ref=e1312]:
+                    - generic:
+                      - link:
+                        - /url: "#/tmview/detail/FR500000004199889"
+                - gridcell [ref=e1313]:
+                  - link [ref=e1315] [cursor=pointer]:
+                    - /url: "#/tmview/detail/FR500000004199889"
+                    - generic [ref=e1316]:
+                      - text: la traçabilité
+                      - mark [ref=e1317]: probant
+                      - text: e
+                - gridcell [ref=e1318]:
+                  - paragraph [ref=e1320]: 28/07/2015
+                - gridcell [ref=e1321]:
+                  - paragraph [ref=e1323]: 35, 36, 38, 41, 42, 44, 45
+                - gridcell "Expirée" [ref=e1324]
+                - gridcell [ref=e1326]:
+                  - link "France - INPI" [ref=e1328] [cursor=pointer]:
+                    - /url: http://www.inpi.fr
+                    - text: France - INPI
+                    - generic [ref=e1329]:
+                      - generic [ref=e1330]: 
+                      - generic: 
+                - gridcell [ref=e1331]:
+                  - link "4199889" [ref=e1333] [cursor=pointer]:
+                    - /url: "#/tmview/detail/FR500000004199889"
+                - gridcell [ref=e1335]:
+                  - paragraph [ref=e1337]: J2LINVEST SAS, SAS
+            - rowgroup [ref=e1338]:
+              - row [ref=e1339]:
+                - gridcell "" [ref=e1340] [cursor=pointer]
+                - gridcell [ref=e1343]:
+                  - checkbox [ref=e1347]
+                - gridcell "-" [ref=e1349]
+                - gridcell [ref=e1351]:
+                  - link [ref=e1353] [cursor=pointer]:
+                    - /url: "#/tmview/detail/MX501985010534785"
+                    - generic [ref=e1354]:
+                      - text: COM
+                      - mark [ref=e1355]: PROBANT
+                      - text: E EN LINEA
+                - gridcell [ref=e1356]:
+                  - paragraph [ref=e1358]: 27/02/2002
+                - gridcell [ref=e1359]:
+                  - paragraph [ref=e1361]: "16"
+                - gridcell "Expirée" [ref=e1362]
+                - gridcell [ref=e1364]:
+                  - link "Mexique - IMPI" [ref=e1366] [cursor=pointer]:
+                    - /url: https://www.gob.mx/impi
+                    - text: Mexique - IMPI
+                    - generic [ref=e1367]:
+                      - generic [ref=e1368]: 
+                      - generic: 
+                - gridcell [ref=e1369]:
+                  - link "0534785" [ref=e1371] [cursor=pointer]:
+                    - /url: "#/tmview/detail/MX501985010534785"
+                - gridcell [ref=e1373]:
+                  - paragraph [ref=e1375]: SCOTIABANK INVERLAT, S.A., INSTITUCION DE BANCA MULTIPLE, GRUPO FINANCIERO SCOTIABANK INVERLAT
+            - rowgroup [ref=e1376]:
+              - row [ref=e1377]:
+                - gridcell "" [ref=e1378] [cursor=pointer]
+                - gridcell [ref=e1381]:
+                  - checkbox [ref=e1385]
+                - gridcell "-" [ref=e1387]
+                - gridcell [ref=e1389]:
+                  - link [ref=e1391] [cursor=pointer]:
+                    - /url: "#/tmview/detail/MX501985010534784"
+                    - generic [ref=e1392]:
+                      - text: COM
+                      - mark [ref=e1393]: PROBANT
+                      - text: E EN LINEA
+                - gridcell [ref=e1394]:
+                  - paragraph [ref=e1396]: 27/02/2002
+                - gridcell [ref=e1397]:
+                  - paragraph [ref=e1399]: "9"
+                - gridcell "Expirée" [ref=e1400]
+                - gridcell [ref=e1402]:
+                  - link "Mexique - IMPI" [ref=e1404] [cursor=pointer]:
+                    - /url: https://www.gob.mx/impi
+                    - text: Mexique - IMPI
+                    - generic [ref=e1405]:
+                      - generic [ref=e1406]: 
+                      - generic: 
+                - gridcell [ref=e1407]:
+                  - link "0534784" [ref=e1409] [cursor=pointer]:
+                    - /url: "#/tmview/detail/MX501985010534784"
+                - gridcell [ref=e1411]:
+                  - paragraph [ref=e1413]: SCOTIABANK INVERLAT, S.A., INSTITUCION DE BANCA MULTIPLE, GRUPO FINANCIERO SCOTIABANK INVERLAT
+            - rowgroup [ref=e1414]:
+              - row [ref=e1415]:
+                - gridcell "" [ref=e1416] [cursor=pointer]
+                - gridcell [ref=e1419]:
+                  - checkbox [ref=e1423]
+                - gridcell [ref=e1425]:
+                  - generic [ref=e1426]:
+                    - generic:
+                      - link:
+                        - /url: "#/tmview/detail/FR500000003200439"
+                - gridcell [ref=e1427]:
+                  - link [ref=e1429] [cursor=pointer]:
+                    - /url: "#/tmview/detail/FR500000003200439"
+                    - generic [ref=e1430]:
+                      - text: LE
+                      - mark [ref=e1431]: PROBANT
+                      - text: Le Journal créé pour vous et avec vous.
+                - gridcell [ref=e1432]:
+                  - paragraph [ref=e1434]: 10/12/2002
+                - gridcell [ref=e1435]:
+                  - paragraph [ref=e1437]: 16, 41
+                - gridcell "Expirée" [ref=e1438]
+                - gridcell [ref=e1440]:
+                  - link "France - INPI" [ref=e1442] [cursor=pointer]:
+                    - /url: http://www.inpi.fr
+                    - text: France - INPI
+                    - generic [ref=e1443]:
+                      - generic [ref=e1444]: 
+                      - generic: 
+                - gridcell [ref=e1445]:
+                  - link "3200439" [ref=e1447] [cursor=pointer]:
+                    - /url: "#/tmview/detail/FR500000003200439"
+                - gridcell [ref=e1449]:
+                  - paragraph [ref=e1451]: ALFA EDITIONS (EURL DE PRESSE)
+            - rowgroup [ref=e1452]:
+              - row [ref=e1453]:
+                - gridcell "" [ref=e1454] [cursor=pointer]
+                - gridcell [ref=e1457]:
+                  - checkbox [ref=e1461]
+                - gridcell "-" [ref=e1463]
+                - gridcell [ref=e1465]:
+                  - link [ref=e1467] [cursor=pointer]:
+                    - /url: "#/tmview/detail/MX501985011940377"
+                    - generic [ref=e1468]:
+                      - text: ECOM
+                      - mark [ref=e1469]: PROBANT
+                      - text: E
+                - gridcell [ref=e1470]:
+                  - paragraph [ref=e1472]: 31/08/2017
+                - gridcell [ref=e1473]:
+                  - paragraph [ref=e1475]: "9"
+                - gridcell "Enregistrée" [ref=e1476]
+                - gridcell [ref=e1478]:
+                  - link "Mexique - IMPI" [ref=e1480] [cursor=pointer]:
+                    - /url: https://www.gob.mx/impi
+                    - text: Mexique - IMPI
+                    - generic [ref=e1481]:
+                      - generic [ref=e1482]: 
+                      - generic: 
+                - gridcell [ref=e1483]:
+                  - link "1940377" [ref=e1485] [cursor=pointer]:
+                    - /url: "#/tmview/detail/MX501985011940377"
+                - gridcell [ref=e1487]:
+                  - paragraph [ref=e1489]: BIG DATA FISCAL, S.A.P.I. DE C.V.
+            - rowgroup [ref=e1490]:
+              - row [ref=e1491]:
+                - gridcell "" [ref=e1492] [cursor=pointer]
+                - gridcell [ref=e1495]:
+                  - checkbox [ref=e1499]
+                - gridcell [ref=e1501]:
+                  - generic [ref=e1502]:
+                    - generic:
+                      - link:
+                        - /url: "#/tmview/detail/MX501985012031249"
+                - gridcell [ref=e1503]:
+                  - link [ref=e1505] [cursor=pointer]:
+                    - /url: "#/tmview/detail/MX501985012031249"
+                    - generic [ref=e1506]:
+                      - text: RENAULT AL INSTANTE SIN COM
+                      - mark [ref=e1507]: PROBANT
+                      - text: E
+                - gridcell [ref=e1508]:
+                  - paragraph [ref=e1510]: 05/04/2018
+                - gridcell [ref=e1511]:
+                  - paragraph [ref=e1513]: "12"
+                - gridcell "Enregistrée" [ref=e1514]
+                - gridcell [ref=e1516]:
+                  - link "Mexique - IMPI" [ref=e1518] [cursor=pointer]:
+                    - /url: https://www.gob.mx/impi
+                    - text: Mexique - IMPI
+                    - generic [ref=e1519]:
+                      - generic [ref=e1520]: 
+                      - generic: 
+                - gridcell [ref=e1521]:
+                  - link "2031249" [ref=e1523] [cursor=pointer]:
+                    - /url: "#/tmview/detail/MX501985012031249"
+                - gridcell [ref=e1525]:
+                  - paragraph [ref=e1527]: RENAULT S.A.S.
+            - rowgroup [ref=e1528]:
+              - row [ref=e1529]:
+                - gridcell "" [ref=e1530] [cursor=pointer]
+                - gridcell [ref=e1533]:
+                  - checkbox [ref=e1537]
+                - gridcell "-" [ref=e1539]
+                - gridcell [ref=e1541]:
+                  - link [ref=e1543] [cursor=pointer]:
+                    - /url: "#/tmview/detail/MX501985030090224"
+                    - generic [ref=e1544]:
+                      - text: PORQUE LE DECIMOS ADIÓS A LA FACTURACIÓN EN PAPEL Y ALMACENAMOS TUS COM
+                      - mark [ref=e1545]: PROBANT
+                      - text: ES FISCALES DIGITALMENTE
+                - gridcell [ref=e1546]:
+                  - paragraph [ref=e1548]: 05/06/2014
+                - gridcell [ref=e1549]:
+                  - paragraph [ref=e1551]: "35"
+                - gridcell "Enregistrée" [ref=e1552]
+                - gridcell [ref=e1554]:
+                  - link "Mexique - IMPI" [ref=e1556] [cursor=pointer]:
+                    - /url: https://www.gob.mx/impi
+                    - text: Mexique - IMPI
+                    - generic [ref=e1557]:
+                      - generic [ref=e1558]: 
+                      - generic: 
+                - gridcell [ref=e1559]:
+                  - link "0090224" [ref=e1561] [cursor=pointer]:
+                    - /url: "#/tmview/detail/MX501985030090224"
+                - gridcell [ref=e1563]:
+                  - paragraph [ref=e1565]: SICONT MEX, S.A. DE C.V.
+        - generic [ref=e1568]:
+          - generic [ref=e1569]:
+            - generic: 
+            - generic: 
+          - generic [ref=e1570]: 1-30 des 53
+          - generic [ref=e1571] [cursor=pointer]: 
+  - contentinfo [ref=e28]:
+    - generic [ref=e29]:
+      - navigation [ref=e31]:
+        - link "Chercher" [ref=e32] [cursor=pointer]:
+          - /url: "#/tmview"
+        - link "Offices participants" [ref=e33] [cursor=pointer]:
+          - /url: "#/tmview/participating"
+        - link "Aide" [ref=e34] [cursor=pointer]:
+          - /url: "#/tmview/help"
+        - generic [ref=e35] [cursor=pointer]: Vos réactions
+      - generic [ref=e36]:
+        - link "EUIPN Réseau européen de la propriété intellectuelle" [ref=e38] [cursor=pointer]:
+          - /url: https://euipn.org
+          - text: EUIPN Réseau européen de la propriété intellectuelle
+          - generic [ref=e39]:
+            - generic [ref=e40]: 
+            - generic: 
+        - generic [ref=e42]: Avenida de Europa, 4 E-03008 Alicante (ESPAGNE)
+        - generic [ref=e44]: "Centre d'information: +34 96 513 9100"
+      - navigation [ref=e46]:
+        - generic [ref=e47]: Copyright 2007-2026 EUIPO
+        - generic [ref=e48]:
+          - text: "Ce site web est coordonné et maintenu par:"
+          - strong [ref=e49]: Office de l'Union européenne pour la propriété intellectuelle
+      - generic [ref=e50]:
+        - generic [ref=e51]: Les outils de recherche TMview et DesignView ne constituent pas des registres officiels et les informations qu’ils contiennent n’ont aucun effet juridique.
+        - navigation [ref=e52]:
+          - link "Voir les conditions générales" [ref=e53] [cursor=pointer]:
+            - /url: "#/tmview/disclaimer"
+      - generic [ref=e54]:
+        - generic [ref=e55]: TMDSVIEW-4.5.0-RC1.1
+        - navigation [ref=e56]:
+          - link [ref=e57] [cursor=pointer]:
+            - /url: https://www.tmdn.org/network/compatibility
+            - strong [ref=e58]: Compatibilité
+          - link [ref=e59] [cursor=pointer]:
+            - /url: "#/tmview/data-protection"
+            - strong [ref=e60]: Protection des données
+          - link [ref=e61] [cursor=pointer]:
+            - /url: https://www.euipn.org/en/info/legal-notices
+            - strong [ref=e62]: Mention légale
+          - link "A propos de" [ref=e63] [cursor=pointer]:
+            - /url: "#/tmview/about"
+  - generic [ref=e66]:
+    - generic [ref=e67]:
+      - generic [ref=e68]: 
+      - generic [ref=e70]:
+        - paragraph [ref=e71]:
+          - text: Ce site utilise des cookies pour vous offrir des conditions de navigation optimales et pour des analyses anonymisées. En savoir plus sur la façon dont nous utilisons les
+          - link "Cookies" [ref=e72] [cursor=pointer]:
+            - /url: /network/data-protection
+        - generic [ref=e73]:
+          - button "Accept all cookies" [ref=e74] [cursor=pointer]
+          - button "No thanks, only essential cookies" [ref=e75] [cursor=pointer]
+    - button "" [ref=e77] [cursor=pointer]
+  - text: 
