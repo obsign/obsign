@@ -27,6 +27,33 @@ pub enum Error {
     #[error("unknown format version: {0}")]
     UnknownFormat(String),
 
+    #[error("record seq {seq} carries no origin signature")]
+    MissingOriginSignature { seq: u64 },
+
+    #[error("invalid origin signature on record seq {seq} (key {key_id})")]
+    BadOriginSignature { seq: u64, key_id: String },
+
+    #[error("invalid deployment bundle signature")]
+    BadDeploymentSignature,
+
+    #[error("unknown deployment bundle format: {0}")]
+    UnknownDeploymentFormat(String),
+
+    #[error("deployment bundle lists key \"{0}\" with a non-origin role")]
+    NonOriginKeyInBundle(String),
+
+    #[error("deployment bundle lists key id \"{0}\" more than once")]
+    DuplicateBundleKey(String),
+
+    #[error("invalid session certificate signature (identity key {identity_key_id})")]
+    BadSessionCert { identity_key_id: String },
+
+    #[error("unreadable attestation: {0}")]
+    BadAttestation(String),
+
+    #[error("attestation does not match the enrolled identity key: {0}")]
+    AttestationMismatch(String),
+
     #[error("empty interval: a seal with no content has no probative value")]
     EmptySeal,
 

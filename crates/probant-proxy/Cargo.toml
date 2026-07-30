@@ -10,11 +10,18 @@ audit-core = { path = "../audit-core" }
 policy = { path = "../policy" }
 wal = { path = "../wal" }
 identity = { path = "../identity" }
+pkcs11 = { path = "../pkcs11" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 hex = { workspace = true }
+# The gateway signs each record it writes with its ORIGIN key (see
+# src/origin.rs): that is what stops a disk attacker from fabricating
+# records the ledger would then seal. The SEALING key is a different
+# authority and still never enters this binary — writer and certifier
+# stay separate hosts.
+ed25519-dalek = { workspace = true }
 # Session identifiers for the Streamable HTTP transport. Already in the tree
 # through audit-core's ed25519-dalek, so declaring it adds no crate.
 getrandom = { workspace = true }
@@ -22,14 +29,12 @@ getrandom = { workspace = true }
 # Token minting for tests only. Deliberately in dev-dependencies rather than
 # behind a feature of the `identity` crate: a feature would be unified by cargo
 # and would ship the means to forge tokens inside the delivered binary.
-# `ed25519-dalek` lives here for the same reason: the gateway holds no signing
-# key, so nothing in the shipped binary signs. `ledger` lets the e2e tests
-# seal what the gateway wrote, the way a deployment would.
+# `ledger` lets the e2e tests seal what the gateway wrote, the way a
+# deployment would.
 [dev-dependencies]
 jsonwebtoken = "9"
 base64 = "0.22"
 policy = { path = "../policy" }
-ed25519-dalek = { workspace = true }
 ledger = { path = "../ledger" }
 
 [[bin]]

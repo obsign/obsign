@@ -6,7 +6,11 @@
 
 use audit_core::evidence;
 use audit_core::record::{Effect, EffectStatus, Payload};
-use ledger::{export, seal_pass, timestamp_request, validate_response, FileSealer, Sealer, Store};
+use audit_core::SignedRecord;
+use ledger::{
+    export, seal_pass, timestamp_request, validate_response, FileSealer, OriginPolicy, Sealer,
+    Store,
+};
 use std::path::{Path, PathBuf};
 use wal::Wal;
 
@@ -33,8 +37,13 @@ fn grow_wal(dir: &Path, n: u64) {
     let start = chain.next_seq();
     for i in start..start + n {
         let r = chain.append(i as i64, format!("r{i}"), None, "s", payload(i));
-        wal.append(&r).unwrap();
+        wal.append(&SignedRecord::unsigned(r)).unwrap();
     }
+}
+
+/// The pre-origin-auth behaviour, for tests about sealing mechanics.
+fn no_origin() -> OriginPolicy {
+    OriginPolicy::permissive()
 }
 
 fn sealer() -> FileSealer {
@@ -119,16 +128,16 @@ fn seal_export_verify_roundtrip() {
     let s = sealer();
     let records = wal::read(&wal_dir, "c1").unwrap();
 
-    let sc = seal_pass(&records, &mut store, &s, 1000, 1).unwrap().unwrap();
+    let sc = seal_pass(&records, &mut store, &s, &no_origin(), 1000, 1).unwrap().unwrap();
     assert_eq!((sc.checkpoint.from_seq, sc.checkpoint.to_seq), (0, 4));
 
     // Nothing new: no empty seal gets manufactured.
-    assert!(seal_pass(&records, &mut store, &s, 1001, 1).unwrap().is_none());
+    assert!(seal_pass(&records, &mut store, &s, &no_origin(), 1001, 1).unwrap().is_none());
 
     // More activity, second seal: the checkpoints must chain.
     grow_wal(&wal_dir, 3);
     let records = wal::read(&wal_dir, "c1").unwrap();
-    let sc2 = seal_pass(&records, &mut store, &s, 1002, 1).unwrap().unwrap();
+    let sc2 = seal_pass(&records, &mut store, &s, &no_origin(), 1002, 1).unwrap().unwrap();
     assert_eq!((sc2.checkpoint.from_seq, sc2.checkpoint.to_seq), (5, 7));
     assert_eq!(
         sc2.checkpoint.prev_checkpoint_hash,
@@ -136,7 +145,7 @@ fn seal_export_verify_roundtrip() {
     );
 
     // The whole thing survives the auditor's tooling, with real trusted keys.
-    let ev = export(records, &store);
+    let ev = export(records, &store, &[], None);
     let report = evidence::verify(&ev, &[s.public_key()]);
     assert!(report.is_valid(), "findings: {:?}", report.findings);
     assert_eq!(report.records_sealed, 8);
@@ -156,7 +165,7 @@ fn restart_resumes_sealing_without_gap_or_reseal() {
     {
         let mut store = Store::open(&store_dir, "c1").unwrap();
         let records = wal::read(&wal_dir, "c1").unwrap();
-        seal_pass(&records, &mut store, &s, 1000, 1).unwrap().unwrap();
+        seal_pass(&records, &mut store, &s, &no_origin(), 1000, 1).unwrap().unwrap();
     }
 
     // Restart: the store reloads and re-verifies everything.
@@ -164,16 +173,16 @@ fn restart_resumes_sealing_without_gap_or_reseal() {
     assert_eq!(store.checkpoints().len(), 1);
     let records = wal::read(&wal_dir, "c1").unwrap();
     assert!(
-        seal_pass(&records, &mut store, &s, 2000, 1).unwrap().is_none(),
+        seal_pass(&records, &mut store, &s, &no_origin(), 2000, 1).unwrap().is_none(),
         "already-sealed records must not be sealed again"
     );
 
     grow_wal(&wal_dir, 2);
     let records = wal::read(&wal_dir, "c1").unwrap();
-    let sc = seal_pass(&records, &mut store, &s, 3000, 1).unwrap().unwrap();
+    let sc = seal_pass(&records, &mut store, &s, &no_origin(), 3000, 1).unwrap().unwrap();
     assert_eq!((sc.checkpoint.from_seq, sc.checkpoint.to_seq), (4, 5));
 
-    let ev = export(records, &store);
+    let ev = export(records, &store, &[], None);
     assert!(evidence::verify(&ev, &[s.public_key()]).is_valid());
 
     let _ = std::fs::remove_dir_all(&wal_dir);
@@ -193,7 +202,7 @@ fn rewritten_wal_is_refused_before_any_new_seal() {
     let s = sealer();
     let mut store = Store::open(&store_dir, "c1").unwrap();
     let records = wal::read(&wal_dir, "c1").unwrap();
-    seal_pass(&records, &mut store, &s, 1000, 1).unwrap().unwrap();
+    seal_pass(&records, &mut store, &s, &no_origin(), 1000, 1).unwrap().unwrap();
 
     // Rewrite history: same length, different content, valid chain.
     std::fs::remove_file(wal_dir.join("c1.jsonl")).unwrap();
@@ -201,12 +210,12 @@ fn rewritten_wal_is_refused_before_any_new_seal() {
         let (mut wal, mut chain) = Wal::open(&wal_dir, "c1").unwrap();
         for i in 0..5u64 {
             let r = chain.append(i as i64, format!("r{i}"), None, "s", payload(i + 100));
-            wal.append(&r).unwrap();
+            wal.append(&SignedRecord::unsigned(r)).unwrap();
         }
     }
 
     let records = wal::read(&wal_dir, "c1").unwrap();
-    let err = seal_pass(&records, &mut store, &s, 2000, 1).unwrap_err();
+    let err = seal_pass(&records, &mut store, &s, &no_origin(), 2000, 1).unwrap_err();
     assert!(
         matches!(err, ledger::Error::DivergedLog { seq: 4 }),
         "got {err:?}"
@@ -225,14 +234,14 @@ fn wal_shorter_than_sealed_history_is_refused() {
     let s = sealer();
     let mut store = Store::open(&store_dir, "c1").unwrap();
     let records = wal::read(&wal_dir, "c1").unwrap();
-    seal_pass(&records, &mut store, &s, 1000, 1).unwrap().unwrap();
+    seal_pass(&records, &mut store, &s, &no_origin(), 1000, 1).unwrap().unwrap();
 
     // Sealed records disappear.
     std::fs::remove_file(wal_dir.join("c1.jsonl")).unwrap();
     grow_wal(&wal_dir, 3);
 
     let records = wal::read(&wal_dir, "c1").unwrap();
-    let err = seal_pass(&records, &mut store, &s, 2000, 1).unwrap_err();
+    let err = seal_pass(&records, &mut store, &s, &no_origin(), 2000, 1).unwrap_err();
     assert!(
         matches!(err, ledger::Error::TruncatedLog { sealed_to: 4, .. }),
         "got {err:?}"
@@ -252,7 +261,7 @@ fn edited_store_refuses_to_open() {
     {
         let mut store = Store::open(&store_dir, "c1").unwrap();
         let records = wal::read(&wal_dir, "c1").unwrap();
-        seal_pass(&records, &mut store, &s, 1000, 1).unwrap().unwrap();
+        seal_pass(&records, &mut store, &s, &no_origin(), 1000, 1).unwrap().unwrap();
     }
 
     let path = store_dir.join("c1.checkpoints.jsonl");
@@ -283,10 +292,10 @@ fn removed_checkpoint_breaks_the_store_chain() {
     {
         let mut store = Store::open(&store_dir, "c1").unwrap();
         let records = wal::read(&wal_dir, "c1").unwrap();
-        seal_pass(&records, &mut store, &s, 1000, 1).unwrap().unwrap();
+        seal_pass(&records, &mut store, &s, &no_origin(), 1000, 1).unwrap().unwrap();
         grow_wal(&wal_dir, 2);
         let records = wal::read(&wal_dir, "c1").unwrap();
-        seal_pass(&records, &mut store, &s, 2000, 1).unwrap().unwrap();
+        seal_pass(&records, &mut store, &s, &no_origin(), 2000, 1).unwrap().unwrap();
     }
 
     // Drop the first seal: its interval would silently stop being proven.
@@ -314,7 +323,7 @@ fn torn_final_store_line_is_survivable() {
     {
         let mut store = Store::open(&store_dir, "c1").unwrap();
         let records = wal::read(&wal_dir, "c1").unwrap();
-        seal_pass(&records, &mut store, &s, 1000, 1).unwrap().unwrap();
+        seal_pass(&records, &mut store, &s, &no_origin(), 1000, 1).unwrap().unwrap();
     }
 
     let path = store_dir.join("c1.checkpoints.jsonl");
@@ -329,7 +338,7 @@ fn torn_final_store_line_is_survivable() {
     // And sealing can resume on the trimmed file.
     grow_wal(&wal_dir, 1);
     let records = wal::read(&wal_dir, "c1").unwrap();
-    assert!(seal_pass(&records, &mut store, &s, 2000, 1).unwrap().is_some());
+    assert!(seal_pass(&records, &mut store, &s, &no_origin(), 2000, 1).unwrap().is_some());
 
     let _ = std::fs::remove_dir_all(&wal_dir);
     let _ = std::fs::remove_dir_all(&store_dir);
@@ -345,13 +354,13 @@ fn min_new_batches_sealing() {
     let mut store = Store::open(&store_dir, "c1").unwrap();
     let records = wal::read(&wal_dir, "c1").unwrap();
     assert!(
-        seal_pass(&records, &mut store, &s, 1000, 5).unwrap().is_none(),
+        seal_pass(&records, &mut store, &s, &no_origin(), 1000, 5).unwrap().is_none(),
         "below the floor, no checkpoint"
     );
 
     grow_wal(&wal_dir, 3);
     let records = wal::read(&wal_dir, "c1").unwrap();
-    let sc = seal_pass(&records, &mut store, &s, 2000, 5).unwrap().unwrap();
+    let sc = seal_pass(&records, &mut store, &s, &no_origin(), 2000, 5).unwrap().unwrap();
     assert_eq!((sc.checkpoint.from_seq, sc.checkpoint.to_seq), (0, 4));
 
     let _ = std::fs::remove_dir_all(&wal_dir);
@@ -367,18 +376,18 @@ fn a_key_id_cannot_be_rebound_to_another_key() {
     let s = sealer();
     let mut store = Store::open(&store_dir, "c1").unwrap();
     let records = wal::read(&wal_dir, "c1").unwrap();
-    seal_pass(&records, &mut store, &s, 1000, 1).unwrap().unwrap();
+    seal_pass(&records, &mut store, &s, &no_origin(), 1000, 1).unwrap().unwrap();
 
     // Same id, different key: accepting it would let the new key claim the
     // old seals at verification time.
     grow_wal(&wal_dir, 2);
     let records = wal::read(&wal_dir, "c1").unwrap();
     let impostor = FileSealer::from_seed([9u8; 32], "seal-k1");
-    let err = seal_pass(&records, &mut store, &impostor, 2000, 1).unwrap_err();
+    let err = seal_pass(&records, &mut store, &impostor, &no_origin(), 2000, 1).unwrap_err();
     assert!(matches!(err, ledger::Error::KeyConflict(_)), "got {err:?}");
 
     // The paired check: the legitimate key still seals.
-    assert!(seal_pass(&records, &mut store, &s, 3000, 1).unwrap().is_some());
+    assert!(seal_pass(&records, &mut store, &s, &no_origin(), 3000, 1).unwrap().is_some());
 
     let _ = std::fs::remove_dir_all(&wal_dir);
     let _ = std::fs::remove_dir_all(&store_dir);
@@ -393,7 +402,7 @@ fn anchor_roundtrip_reaches_the_evidence_pack() {
     let s = sealer();
     let mut store = Store::open(&store_dir, "c1").unwrap();
     let records = wal::read(&wal_dir, "c1").unwrap();
-    let sc = seal_pass(&records, &mut store, &s, 1000, 1).unwrap().unwrap();
+    let sc = seal_pass(&records, &mut store, &s, &no_origin(), 1000, 1).unwrap().unwrap();
     let cp_hash = sc.checkpoint.hash();
 
     // The request imprints the checkpoint hash.
@@ -417,7 +426,7 @@ fn anchor_roundtrip_reaches_the_evidence_pack() {
 
     // Survives a restart and lands in the pack.
     let store = Store::open(&store_dir, "c1").unwrap();
-    let ev = export(records, &store);
+    let ev = export(records, &store, &[], None);
     let report = evidence::verify(&ev, &[s.public_key()]);
     assert!(report.is_valid(), "findings: {:?}", report.findings);
     assert_eq!((report.anchors_total, report.anchors_ok), (1, 1));
@@ -435,7 +444,7 @@ fn foreign_or_orphan_tokens_do_not_attach() {
     let s = sealer();
     let mut store = Store::open(&store_dir, "c1").unwrap();
     let records = wal::read(&wal_dir, "c1").unwrap();
-    let sc = seal_pass(&records, &mut store, &s, 1000, 1).unwrap().unwrap();
+    let sc = seal_pass(&records, &mut store, &s, &no_origin(), 1000, 1).unwrap().unwrap();
     let cp_hash = sc.checkpoint.hash();
 
     // Token over other bytes: refused.
@@ -454,4 +463,305 @@ fn foreign_or_orphan_tokens_do_not_attach() {
 
     let _ = std::fs::remove_dir_all(&wal_dir);
     let _ = std::fs::remove_dir_all(&store_dir);
+}
+
+// =====================================================================
+// Origin authentication at the seal
+// =====================================================================
+//
+// Exit-0 gap #2, the sealer-side half: every input to a record's hash is
+// public, so an attacker with disk write could fabricate a consistent
+// extension after the sealed head and the honest key would seal it. With an
+// origin policy, the sealer refuses to lend its authority to records the
+// gateway did not sign.
+
+mod origin {
+    use super::*;
+    use audit_core::checkpoint::{KeyRole, PublicKeyEntry};
+    use audit_core::origin_signing_bytes;
+    use audit_core::ChainWriter;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    fn gw_key() -> SigningKey {
+        SigningKey::from_bytes(&[11u8; 32])
+    }
+
+    fn gw_entry() -> PublicKeyEntry {
+        PublicKeyEntry {
+            key_id: "gw-origin".into(),
+            algo: "ed25519".into(),
+            public_key: hex::encode(gw_key().verifying_key().to_bytes()),
+            role: KeyRole::Origin,
+        }
+    }
+
+    fn policy(require: bool) -> OriginPolicy {
+        OriginPolicy::new(&[gw_entry()], require).unwrap()
+    }
+
+    /// Appends `n` gateway-signed records, resuming where the chain left off.
+    fn grow_signed(dir: &Path, n: u64) {
+        let (mut wal, mut chain) = Wal::open(dir, "c1").unwrap();
+        let start = chain.next_seq();
+        for i in start..start + n {
+            let rec = chain.append(i as i64, format!("r{i}"), None, "s", payload(i));
+            let msg = origin_signing_bytes("c1", &rec.hash());
+            let sr = SignedRecord::signed(rec, "gw-origin", gw_key().sign(&msg).to_bytes());
+            wal.append(&sr).unwrap();
+        }
+    }
+
+    /// The attack: a well-formed unsigned record appended after the head.
+    fn append_forged(dir: &Path) {
+        let records = wal::read(dir, "c1").unwrap();
+        let last = records.last().unwrap();
+        let mut chain = ChainWriter::resume("c1", last.seq + 1, last.record.hash(), None);
+        let forged =
+            SignedRecord::unsigned(chain.append(9_999, "rX", None, "s", payload(9_999)));
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(dir.join("c1.jsonl"))
+            .unwrap();
+        writeln!(f, "{}", serde_json::to_string(&forged).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_signed_chain_seals_and_verifies_end_to_end() {
+        let wal_dir = tmpdir("og-roundtrip-wal");
+        let store_dir = tmpdir("og-roundtrip-store");
+        grow_signed(&wal_dir, 4);
+
+        let s = sealer();
+        let mut store = Store::open(&store_dir, "c1").unwrap();
+        let records = wal::read(&wal_dir, "c1").unwrap();
+        let sc = seal_pass(&records, &mut store, &s, &policy(true), 1000, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!((sc.checkpoint.from_seq, sc.checkpoint.to_seq), (0, 3));
+
+        // And the pack proves origin offline, under the strict options.
+        let ev = export(records, &store, &[gw_entry()], None);
+        let report = evidence::verify_with(
+            &ev,
+            &[s.public_key(), gw_entry()],
+            &evidence::VerifyOptions { require_origin: true, require_attestation: false },
+        );
+        assert!(report.is_valid(), "findings: {:?}", report.findings);
+        assert_eq!(report.records_origin_ok, 4);
+
+        let _ = std::fs::remove_dir_all(&wal_dir);
+        let _ = std::fs::remove_dir_all(&store_dir);
+    }
+
+    #[test]
+    fn a_forged_tail_is_never_sealed_and_raises_the_alarm() {
+        // The headline scenario of the gap: sealed head, then a fabricated
+        // record. The pass must seal the authentic records — refusing them
+        // too would turn the forgery into an anti-durability attack — and
+        // error on the forgery, loudly.
+        let wal_dir = tmpdir("og-forged-wal");
+        let store_dir = tmpdir("og-forged-store");
+        grow_signed(&wal_dir, 2);
+
+        let s = sealer();
+        let mut store = Store::open(&store_dir, "c1").unwrap();
+        let records = wal::read(&wal_dir, "c1").unwrap();
+        seal_pass(&records, &mut store, &s, &policy(true), 1000, 1)
+            .unwrap()
+            .unwrap();
+
+        // More honest activity, then the attacker appends.
+        grow_signed(&wal_dir, 2);
+        append_forged(&wal_dir);
+
+        let records = wal::read(&wal_dir, "c1").unwrap();
+        let err = seal_pass(&records, &mut store, &s, &policy(true), 2000, 1).unwrap_err();
+        match err {
+            ledger::Error::UnauthenticatedRecord {
+                seq,
+                prefix_sealed_to,
+                ..
+            } => {
+                assert_eq!(seq, 4, "the forgery sits at seq 4");
+                assert_eq!(
+                    prefix_sealed_to,
+                    Some(3),
+                    "the authentic records before it must be sealed"
+                );
+            }
+            other => panic!("expected UnauthenticatedRecord, got {other:?}"),
+        }
+        assert_eq!(
+            store.last().unwrap().checkpoint.to_seq,
+            3,
+            "the store must stop at the last authentic record"
+        );
+
+        // The alarm does not self-heal: the next pass raises it again.
+        let err = seal_pass(&records, &mut store, &s, &policy(true), 3000, 1).unwrap_err();
+        assert!(matches!(
+            err,
+            ledger::Error::UnauthenticatedRecord { seq: 4, prefix_sealed_to: None, .. }
+        ));
+
+        let _ = std::fs::remove_dir_all(&wal_dir);
+        let _ = std::fs::remove_dir_all(&store_dir);
+    }
+
+    #[test]
+    fn an_invalid_signature_under_a_trusted_key_refuses_even_in_rollout_mode() {
+        // require=false tolerates absence, never forgery: a bad signature
+        // under a key we trust is positive evidence of tampering.
+        let wal_dir = tmpdir("og-badsig-wal");
+        let store_dir = tmpdir("og-badsig-store");
+        grow_signed(&wal_dir, 2);
+
+        let path = wal_dir.join("c1.jsonl");
+        let content = std::fs::read_to_string(&path).unwrap();
+        let mut lines: Vec<String> = content.lines().map(String::from).collect();
+        // Corrupt the second record's signature in place.
+        let re_target = lines[1].clone();
+        let sig_pos = re_target.find("origin_sig").unwrap();
+        let mut edited = re_target.clone();
+        let byte = sig_pos + "origin_sig\":\"".len() + 1;
+        let replacement = if &re_target[byte..byte + 1] == "0" { "1" } else { "0" };
+        edited.replace_range(byte..byte + 1, replacement);
+        lines[1] = edited;
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+
+        let s = sealer();
+        let mut store = Store::open(&store_dir, "c1").unwrap();
+        let records = wal::read(&wal_dir, "c1").unwrap();
+        let err = seal_pass(&records, &mut store, &s, &policy(false), 1000, 1).unwrap_err();
+        assert!(
+            matches!(err, ledger::Error::UnauthenticatedRecord { seq: 1, .. }),
+            "got {err:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&wal_dir);
+        let _ = std::fs::remove_dir_all(&store_dir);
+    }
+
+    #[test]
+    fn rollout_mode_seals_unsigned_records() {
+        // The migration window: origin keys configured, --require-origin
+        // not yet flipped, pre-upgrade gateways still writing unsigned.
+        let wal_dir = tmpdir("og-rollout-wal");
+        let store_dir = tmpdir("og-rollout-store");
+        grow_wal(&wal_dir, 3);
+
+        let s = sealer();
+        let mut store = Store::open(&store_dir, "c1").unwrap();
+        let records = wal::read(&wal_dir, "c1").unwrap();
+        assert!(seal_pass(&records, &mut store, &s, &policy(false), 1000, 1)
+            .unwrap()
+            .is_some());
+
+        // Flip the requirement: the same unsigned records are now refused.
+        grow_wal(&wal_dir, 1);
+        let records = wal::read(&wal_dir, "c1").unwrap();
+        let err = seal_pass(&records, &mut store, &s, &policy(true), 2000, 1).unwrap_err();
+        assert!(matches!(
+            err,
+            ledger::Error::UnauthenticatedRecord { seq: 3, .. }
+        ));
+
+        let _ = std::fs::remove_dir_all(&wal_dir);
+        let _ = std::fs::remove_dir_all(&store_dir);
+    }
+
+    #[test]
+    fn origin_trust_resolves_from_a_signed_deployment_bundle() {
+        // v1: the ledger takes an ops-signed bundle instead of a flat file.
+        // A gateway enrolled in the bundle seals; one revoked (removed and
+        // the bundle republished) no longer does.
+        use audit_core::deployment::{DeploymentBundle, FORMAT as DFMT};
+        use ed25519_dalek::SigningKey;
+
+        let wal_dir = tmpdir("og-bundle-wal");
+        let store_dir = tmpdir("og-bundle-store");
+        grow_signed(&wal_dir, 3);
+
+        let ops = SigningKey::from_bytes(&[44u8; 32]);
+        let enrolled = DeploymentBundle {
+            format: DFMT.into(),
+            version: "deployment@v1".into(),
+            origin_keys: vec![gw_entry()],
+            attestations: Vec::new(),
+        }
+        .sign("ops-1", &ops);
+
+        let s = sealer();
+        let mut store = Store::open(&store_dir, "c1").unwrap();
+        let records = wal::read(&wal_dir, "c1").unwrap();
+        let policy =
+            OriginPolicy::from_bundle(&enrolled, &ops.verifying_key(), true).unwrap();
+        seal_pass(&records, &mut store, &s, &policy, 1_000, 1)
+            .unwrap()
+            .expect("an enrolled gateway seals");
+        // The bundle is retained for the pack.
+        assert!(policy.bundle().is_some());
+
+        // Republish a bundle that enrolls a DIFFERENT gateway: gw-origin is
+        // revoked. Under require-origin its records no longer seal. (A key
+        // simply absent under rollout tolerance would still seal — revocation
+        // bites precisely when origin is required.)
+        let other = SigningKey::from_bytes(&[77u8; 32]);
+        let other_entry = audit_core::checkpoint::PublicKeyEntry {
+            key_id: "gw-2".into(),
+            algo: "ed25519".into(),
+            public_key: hex::encode(other.verifying_key().to_bytes()),
+            role: audit_core::checkpoint::KeyRole::Origin,
+        };
+        let revoked = DeploymentBundle {
+            format: DFMT.into(),
+            version: "deployment@v2".into(),
+            origin_keys: vec![other_entry],
+            attestations: Vec::new(),
+        }
+        .sign("ops-1", &ops);
+        let policy = OriginPolicy::from_bundle(&revoked, &ops.verifying_key(), true).unwrap();
+        grow_signed(&wal_dir, 1);
+        let records = wal::read(&wal_dir, "c1").unwrap();
+        let err = seal_pass(&records, &mut store, &s, &policy, 2_000, 1).unwrap_err();
+        assert!(
+            matches!(err, ledger::Error::UnauthenticatedRecord { seq: 3, .. }),
+            "a revoked gateway must not seal: {err:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&wal_dir);
+        let _ = std::fs::remove_dir_all(&store_dir);
+    }
+
+    #[test]
+    fn a_bundle_signed_by_the_wrong_ops_key_is_refused() {
+        use audit_core::deployment::{DeploymentBundle, FORMAT as DFMT};
+        use ed25519_dalek::SigningKey;
+        let ops = SigningKey::from_bytes(&[44u8; 32]);
+        let attacker = SigningKey::from_bytes(&[45u8; 32]);
+        let signed = DeploymentBundle {
+            format: DFMT.into(),
+            version: "deployment@rogue".into(),
+            origin_keys: vec![gw_entry()],
+            attestations: Vec::new(),
+        }
+        .sign("ops-1", &attacker);
+        // Verified under the REAL ops key: the forgery collapses.
+        assert!(OriginPolicy::from_bundle(&signed, &ops.verifying_key(), true).is_err());
+    }
+
+    #[test]
+    fn the_trusted_origin_file_refuses_sealing_keys() {
+        // A sealing key in the origin trust file is a config error that
+        // would quietly merge the two authorities: stop, do not filter.
+        let s = sealer();
+        let err = OriginPolicy::new(&[s.public_key()], false).unwrap_err();
+        assert!(matches!(err, ledger::Error::StoreBroken(_)), "got {err:?}");
+
+        // And requiring origin with nothing to trust refuses everything by
+        // construction: also a config error.
+        let err = OriginPolicy::new(&[], true).unwrap_err();
+        assert!(matches!(err, ledger::Error::StoreBroken(_)));
+    }
 }

@@ -13,17 +13,25 @@
 //! * the canonical encoding and the discriminants are frozen: changing them
 //!   invalidates already-sealed logs.
 
+pub mod attestation;
 pub mod canonical;
 pub mod checkpoint;
+pub mod deployment;
 pub mod error;
 pub mod evidence;
 pub mod hash;
 pub mod merkle;
+pub mod origin;
 pub mod record;
 pub mod rfc3161;
 
+pub use deployment::{DeploymentBundle, SignedDeploymentBundle};
 pub use error::Error;
 pub use hash::{Hash, GENESIS};
+pub use origin::{
+    key_id_for, origin_signing_bytes, session_cert_signing_bytes, verify_session_cert,
+    SignedRecord,
+};
 pub use record::{
     Actor, AgentSession, ApprovalMode, Decision, Delegation, Effect, EffectStatus, LlmTurn,
     Outcome, Payload, PrincipalKind, Record, SealedRef, ToolCall,

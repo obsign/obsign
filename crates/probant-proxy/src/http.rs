@@ -86,6 +86,10 @@ pub struct Gateway {
     pub chain_id: String,
     pub server_cmd: Vec<String>,
     pub allowed_origins: Vec<String>,
+    /// The gateway's signing keys and deployment trust, shared by every
+    /// session: each derives its own per-chain signer (a fresh session key
+    /// under the two-tier scheme) from this.
+    pub keys: Arc<crate::origin::GatewayKeys>,
 }
 
 /// One MCP session: one agent, one wrapped server, one audit chain.
@@ -545,8 +549,21 @@ fn open_session(
     // history, one verdict trail.
     let chain_id = format!("{}-{}", gw.chain_id, sid);
     let opened = (|| -> Result<Arc<McpSession>> {
-        let (wal, chain) = Wal::open(&gw.wal_dir, &chain_id).context("opening the log")?;
-        let mut s = session::open(chain, wal, sid.clone());
+        // A session chain is always fresh (the id is random), so the
+        // authenticated open has nothing to verify — but it must still be
+        // the authenticated one: a pre-created file squatting this chain id
+        // would otherwise be adopted as history. Under the two-tier scheme
+        // the session key is generated and certified here, per chain.
+        let existing = wal::read(&gw.wal_dir, &chain_id).context("reading the log")?;
+        let setup = gw
+            .keys
+            .open_session(&chain_id, &existing, session::now_ms())?;
+        let (wal, chain) = match &setup.resume_trust {
+            Some(map) => Wal::open_authenticated(&gw.wal_dir, &chain_id, map)
+                .context("opening the log (origin-authenticated)")?,
+            None => Wal::open(&gw.wal_dir, &chain_id).context("opening the log")?,
+        };
+        let mut s = session::open(chain, wal, sid.clone(), setup.origin);
 
         let ctx = Arc::new(Ctx {
             engine: Arc::clone(&gw.engine),
@@ -560,6 +577,12 @@ fn open_session(
             // A rotation recovered while verifying the opening token belongs
             // to this session's chain, ahead of its delegation.
             session::record_config_reloads(&mut s, a.take_reloads())?;
+            if let Some(cert) = setup.cert {
+                session::record_session_cert(&mut s, cert)?;
+            }
+            if let Some(trust) = &gw.keys.deployment {
+                session::record_deployment_bundle(&mut s, trust)?;
+            }
             session::record_delegation(
                 &mut s,
                 a.generation(),

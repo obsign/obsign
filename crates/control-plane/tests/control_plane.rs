@@ -616,7 +616,7 @@ fn fill_chain(wal_dir: &Path, chain: &str, n: u64, salt: u64) {
     let (mut wal, mut writer) = Wal::open(wal_dir, chain).unwrap();
     for i in 0..n {
         let rec = writer.append(i as i64, format!("r{i}"), None, "s", payload(salt + i));
-        wal.append(&rec).unwrap();
+        wal.append(&audit_core::SignedRecord::unsigned(rec)).unwrap();
     }
 }
 
@@ -624,9 +624,16 @@ fn seal_chain(wal_dir: &Path, store_dir: &Path, chain: &str) {
     let records = wal::read(wal_dir, chain).unwrap();
     let mut store = Store::open(store_dir, chain).unwrap();
     let sealer = FileSealer::from_seed([0x55u8; 32], "seal-1");
-    seal_pass(&records, &mut store, &sealer, 42, 1)
-        .unwrap()
-        .expect("something to seal");
+    seal_pass(
+        &records,
+        &mut store,
+        &sealer,
+        &ledger::OriginPolicy::permissive(),
+        42,
+        1,
+    )
+    .unwrap()
+    .expect("something to seal");
 }
 
 #[test]
@@ -896,4 +903,105 @@ fn a_tampered_release_manifest_is_resigned_not_republished() {
     current
         .verify(&ops().signing_key().verifying_key())
         .expect("the current manifest must always carry a valid signature");
+}
+
+// ---------------------------------------------------------------------------
+// Deployment bundle (v1)
+// ---------------------------------------------------------------------------
+
+/// Writes a deployment/origin-keys.json enrolling the given (key_id, seed)
+/// gateways, each with role "origin".
+fn write_deployment(root: &Path, gateways: &[(&str, u8)]) {
+    std::fs::create_dir_all(root.join("deployment")).unwrap();
+    let keys: Vec<_> = gateways
+        .iter()
+        .map(|(id, seed)| {
+            let vk = ed25519_dalek::SigningKey::from_bytes(&[*seed; 32]).verifying_key();
+            serde_json::json!({
+                "key_id": id,
+                "algo": "ed25519",
+                "public_key": hex::encode(vk.to_bytes()),
+                "role": "origin"
+            })
+        })
+        .collect();
+    std::fs::write(
+        root.join("deployment/origin-keys.json"),
+        serde_json::to_string(&keys).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_deployment_bundle_compiles_signs_and_verifies() {
+    let dir = tmp("deploy-compile");
+    write_source_tree(&dir);
+    write_deployment(&dir, &[("gw-a", 40), ("gw-b", 41)]);
+
+    let compiled = compile(&SourceTree::load(&dir).unwrap(), "abcd12345678", &ops()).unwrap();
+    let db = compiled.deployment.expect("a deployment bundle was expected");
+    assert_eq!(db.bundle.version, "deployment@abcd12345678");
+
+    // Verifies under the ops key and nothing else, and its active set
+    // resolves both enrolled gateways.
+    let vk = ops().signing_key().verifying_key();
+    let bundle = db.verify(&vk).expect("bundle must verify");
+    assert_eq!(bundle.active_origin_keys().unwrap().len(), 2);
+
+    let other = ed25519_dalek::SigningKey::from_bytes(&[0x99u8; 32]).verifying_key();
+    assert!(db.verify(&other).is_err(), "a foreign ops key must not verify");
+}
+
+#[test]
+fn a_sealing_key_in_the_origin_file_is_a_compile_error() {
+    // A seal-role key posing as a gateway origin key is the writer-certifier
+    // confusion — refused in CI, where it is a diff, not at the sealing host.
+    let dir = tmp("deploy-sealrole");
+    write_source_tree(&dir);
+    std::fs::create_dir_all(dir.join("deployment")).unwrap();
+    let vk = ed25519_dalek::SigningKey::from_bytes(&[40u8; 32]).verifying_key();
+    std::fs::write(
+        dir.join("deployment/origin-keys.json"),
+        serde_json::json!([{
+            "key_id": "gw-a", "algo": "ed25519",
+            "public_key": hex::encode(vk.to_bytes()), "role": "seal"
+        }])
+        .to_string(),
+    )
+    .unwrap();
+    assert!(matches!(
+        SourceTree::load(&dir),
+        Err(Error::Source(m)) if m.contains("origin")
+    ));
+}
+
+#[test]
+fn the_deployment_bundle_is_published_as_an_immutable_artifact() {
+    let dir = tmp("deploy-publish");
+    let dist = tmp("deploy-dist");
+    write_source_tree(&dir);
+    write_deployment(&dir, &[("gw-a", 40)]);
+
+    let compiled = compile(&SourceTree::load(&dir).unwrap(), "abcd12345678", &ops()).unwrap();
+    let published = publish(&dist, &compiled, &ops(), 1_000).unwrap();
+
+    // Current file and immutable release copy both present and identical.
+    let current = dist.join("deployment-bundle.json");
+    let release = published.release_dir.join("deployment-bundle.json");
+    assert!(current.is_file() && release.is_file());
+    assert_eq!(
+        std::fs::read(&current).unwrap(),
+        std::fs::read(&release).unwrap()
+    );
+
+    // The manifest names it — a released set the recipient checks by hash.
+    let manifest: control_plane::SignedManifest = serde_json::from_slice(
+        &std::fs::read(dist.join("manifest.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(manifest
+        .manifest
+        .artifacts
+        .iter()
+        .any(|a| a.name == "deployment-bundle.json"));
 }

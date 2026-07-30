@@ -3,11 +3,12 @@
 //! Layout, relative to the tree root:
 //!
 //! ```text
-//! policies/*.cedar        rules, concatenated in file-name order
-//! tools.json              the signed catalogue's source (Vec<ToolDef>)
-//! fail-mode.json          optional FailMode
-//! identity/provider.json  { issuer, audience, claims? }
-//! identity/jwks.json      the IdP's JWKS, checked into git like a rule
+//! policies/*.cedar             rules, concatenated in file-name order
+//! tools.json                   the signed catalogue's source (Vec<ToolDef>)
+//! fail-mode.json               optional FailMode
+//! identity/provider.json       { issuer, audience, claims? }
+//! identity/jwks.json           the IdP's JWKS, checked into git like a rule
+//! deployment/origin-keys.json  active gateway origin keys, reviewed like the JWKS
 //! ```
 //!
 //! Everything here is *validated*, not merely parsed. The gateway refuses an
@@ -17,6 +18,7 @@
 //! for a tool that does not exist) is refused at compile time, in CI, where
 //! the author of the pull request is still looking.
 
+use audit_core::checkpoint::{KeyRole, PublicKeyEntry};
 use identity::{ClaimMap, JwkSet};
 use policy::bundle::{FailMode, ToolDef};
 use serde::Deserialize;
@@ -38,6 +40,14 @@ pub struct SourceTree {
     /// Absent when the tree has no `identity/` directory. A gateway without
     /// an identity bundle only starts in declared mode, and says so.
     pub identity: Option<IdentitySource>,
+    /// Active gateway origin keys, absent when the tree has no `deployment/`
+    /// directory. Absent means no gateway is enrolled yet — legitimate
+    /// before the first one, and honestly distinct from an empty set.
+    pub deployment: Option<Vec<PublicKeyEntry>>,
+    /// Remote-attestation enrollments (v3), from `deployment/attestation.json`.
+    /// Each is a TPM quote+certify an operator captured off their gateway's
+    /// hardware and committed for review. Empty when the file is absent.
+    pub attestations: Vec<audit_core::attestation::KeyAttestation>,
 }
 
 #[derive(Debug)]
@@ -62,6 +72,8 @@ impl SourceTree {
         let tools = read_tools(&root.join("tools.json"))?;
         let fail_mode = read_fail_mode(&root.join("fail-mode.json"), &tools)?;
         let identity = read_identity(&root.join("identity"))?;
+        let deployment = read_deployment(&root.join("deployment"))?;
+        let attestations = read_attestations(&root.join("deployment"), deployment.as_deref())?;
 
         Ok(SourceTree {
             root: root.to_path_buf(),
@@ -70,6 +82,8 @@ impl SourceTree {
             tools,
             fail_mode,
             identity,
+            deployment,
+            attestations,
         })
     }
 }
@@ -205,6 +219,87 @@ fn read_identity(dir: &Path) -> Result<Option<IdentitySource>, Error> {
         claims: provider.claims.unwrap_or_default(),
         jwks,
     }))
+}
+
+/// Reads and validates the active gateway origin keys.
+///
+/// The same rigour `read_identity` applies to the JWKS, for the same reason:
+/// the checks that would otherwise fail at the ledger — a seal key posing as
+/// an origin key, a duplicate id, an unusable public key — are compile errors
+/// here, where the pull-request author is looking. Enrolling a gateway is
+/// committing its public entry to this file; revoking is removing it.
+fn read_deployment(dir: &Path) -> Result<Option<Vec<PublicKeyEntry>>, Error> {
+    if !dir.is_dir() {
+        return Ok(None);
+    }
+    let path = dir.join("origin-keys.json");
+    if !path.is_file() {
+        return Err(Error::Source(format!(
+            "deployment/ exists but {} is missing: an empty deployment \
+             directory enrolls no gateway, which deserves an explicit file",
+            path.display()
+        )));
+    }
+
+    let keys: Vec<PublicKeyEntry> = serde_json::from_str(&std::fs::read_to_string(&path)?)
+        .map_err(|e| Error::Source(format!("{}: {e}", path.display())))?;
+
+    let mut seen = HashSet::new();
+    for k in &keys {
+        if k.role != KeyRole::Origin {
+            return Err(Error::Source(format!(
+                "{}: key \"{}\" has role \"{}\" — the deployment bundle carries \
+                 gateway origin keys only; a sealing key certifying its own \
+                 writer is exactly the confusion the two roles prevent",
+                path.display(),
+                k.key_id,
+                k.role.as_str()
+            )));
+        }
+        if !seen.insert(k.key_id.as_str()) {
+            return Err(Error::Source(format!(
+                "{}: origin key id \"{}\" is declared twice",
+                path.display(),
+                k.key_id
+            )));
+        }
+        k.to_verifying_key().map_err(|e| {
+            Error::Source(format!("{}: key \"{}\" unusable: {e}", path.display(), k.key_id))
+        })?;
+    }
+    Ok(Some(keys))
+}
+
+/// Reads the remote-attestation enrollments, if any, and checks each names an
+/// enrolled origin key — an attestation for a key the bundle does not carry
+/// is a copy-paste slip worth catching in review, not at the verifier.
+fn read_attestations(
+    dir: &Path,
+    origin_keys: Option<&[PublicKeyEntry]>,
+) -> Result<Vec<audit_core::attestation::KeyAttestation>, Error> {
+    let path = dir.join("attestation.json");
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    let atts: Vec<audit_core::attestation::KeyAttestation> =
+        serde_json::from_str(&std::fs::read_to_string(&path)?)
+            .map_err(|e| Error::Source(format!("{}: {e}", path.display())))?;
+
+    let enrolled: HashSet<&str> = origin_keys
+        .unwrap_or(&[])
+        .iter()
+        .map(|k| k.key_id.as_str())
+        .collect();
+    for a in &atts {
+        if !enrolled.contains(a.key_id.as_str()) {
+            return Err(Error::Source(format!(
+                "{}: attestation for \"{}\", which is not an enrolled origin key",
+                path.display(),
+                a.key_id
+            )));
+        }
+    }
+    Ok(atts)
 }
 
 // ---------------------------------------------------------------------------

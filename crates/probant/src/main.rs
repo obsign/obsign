@@ -11,7 +11,7 @@
 
 use anyhow::{Context, Result};
 use audit_core::checkpoint::PublicKeyEntry;
-use audit_core::evidence::{self, Evidence, Severity};
+use audit_core::evidence::{self, Evidence, Severity, VerifyOptions};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -32,6 +32,17 @@ Options:
       --trusted-keys <FILE>  Trusted public keys, obtained outside the pack.
                              Without this the verification stays self-referential
                              and cannot prove authenticity (exit 3 at best).
+      --deployment-bundle <FILE>
+                             Ops-signed deployment bundle naming the gateway
+                             origin keys, when the pack does not embed one.
+      --allow-unsigned-legacy-chains
+                             Tolerate records with no verifiable origin
+                             signature (a warning, not an error). Origin
+                             authentication is required by default; this is
+                             the explicit opt-out for pre-origin logs.
+      --require-attestation  Treat an enrolled identity key with no valid
+                             remote attestation as an error, not a warning
+                             (v3; the EK vendor-root check stays out of band).
       --json                 JSON output instead of the human-readable report
       --strict               Treat warnings as errors
   -h, --help                 Print help
@@ -47,8 +58,15 @@ enum Cli {
 struct VerifyCmd {
     evidence: PathBuf,
     trusted_keys: Option<PathBuf>,
+    deployment_bundle: Option<PathBuf>,
     json: bool,
     strict: bool,
+    /// Origin authentication is required by default (the v1 posture);
+    /// `--allow-unsigned-legacy-chains` is the explicit opt-out.
+    require_origin: bool,
+    /// Remote attestation is opt-in (v3): `--require-attestation` turns an
+    /// unattested enrolled identity key from a warning into an error.
+    require_attestation: bool,
 }
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Cli, String> {
@@ -61,8 +79,13 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Cli, String> {
 
     let mut evidence: Option<PathBuf> = None;
     let mut trusted_keys: Option<PathBuf> = None;
+    let mut deployment_bundle: Option<PathBuf> = None;
     let mut json = false;
     let mut strict = false;
+    // The v1 default: origin is required unless the operator explicitly opts
+    // out for a pre-origin log.
+    let mut require_origin = true;
+    let mut require_attestation = false;
     let mut options_done = false;
 
     let mut positional = |arg: String| -> Result<(), String> {
@@ -80,6 +103,11 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Cli, String> {
             "-h" | "--help" => return Ok(Cli::Help),
             "--json" => json = true,
             "--strict" => strict = true,
+            // Accepted and redundant: origin is required by default now.
+            // Kept so v0 invocations do not break.
+            "--require-origin" => require_origin = true,
+            "--require-attestation" => require_attestation = true,
+            "--allow-unsigned-legacy-chains" => require_origin = false,
             "--trusted-keys" => {
                 let v = args
                     .next()
@@ -88,6 +116,15 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Cli, String> {
             }
             _ if arg.starts_with("--trusted-keys=") => {
                 trusted_keys = Some(PathBuf::from(&arg["--trusted-keys=".len()..]));
+            }
+            "--deployment-bundle" => {
+                let v = args
+                    .next()
+                    .ok_or("`--deployment-bundle` expects a file path".to_string())?;
+                deployment_bundle = Some(PathBuf::from(v));
+            }
+            _ if arg.starts_with("--deployment-bundle=") => {
+                deployment_bundle = Some(PathBuf::from(&arg["--deployment-bundle=".len()..]));
             }
             _ if arg.starts_with('-') && arg != "-" => {
                 return Err(format!("unknown option `{arg}`"));
@@ -100,8 +137,11 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Cli, String> {
     Ok(Cli::Verify(VerifyCmd {
         evidence,
         trusted_keys,
+        deployment_bundle,
         json,
         strict,
+        require_origin,
+        require_attestation,
     }))
 }
 
@@ -129,8 +169,25 @@ fn main() -> ExitCode {
 fn run(cmd: VerifyCmd) -> Result<ExitCode> {
     let raw = std::fs::read_to_string(&cmd.evidence)
         .with_context(|| format!("reading {}", cmd.evidence.display()))?;
-    let ev: Evidence = serde_json::from_str(&raw)
+    let mut ev: Evidence = serde_json::from_str(&raw)
         .with_context(|| format!("parsing {}", cmd.evidence.display()))?;
+
+    // A deployment bundle supplied out of band fills in when the pack does
+    // not embed one; a pack that embeds its own is authoritative — that is
+    // the bundle that was in force when it was sealed.
+    if let Some(p) = &cmd.deployment_bundle {
+        let raw =
+            std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?;
+        let supplied = serde_json::from_str(&raw)
+            .with_context(|| format!("parsing {}", p.display()))?;
+        if ev.deployment.is_none() {
+            ev.deployment = Some(supplied);
+        } else {
+            eprintln!(
+                "note: the pack already embeds a deployment bundle; --deployment-bundle ignored"
+            );
+        }
+    }
 
     let trusted: Vec<PublicKeyEntry> = match &cmd.trusted_keys {
         None => Vec::new(),
@@ -141,7 +198,14 @@ fn run(cmd: VerifyCmd) -> Result<ExitCode> {
         }
     };
 
-    let report = evidence::verify(&ev, &trusted);
+    let report = evidence::verify_with(
+        &ev,
+        &trusted,
+        &VerifyOptions {
+            require_origin: cmd.require_origin,
+            require_attestation: cmd.require_attestation,
+        },
+    );
 
     if cmd.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -181,6 +245,14 @@ fn print_report(r: &evidence::Report) {
         println!(
             "  anchors     : {} consistent / {} (RFC 3161)",
             r.anchors_ok, r.anchors_total
+        );
+    }
+    // "0 signed" on a legacy pack is information, not noise — and under
+    // --require-origin it is the headline.
+    if r.records_total > 0 {
+        println!(
+            "  origin      : {} signed by the gateway / {}",
+            r.records_origin_ok, r.records_total
         );
     }
     println!();
@@ -244,8 +316,17 @@ mod tests {
         let cmd = verify(&["verify", "pack.json"]);
         assert_eq!(cmd.evidence, PathBuf::from("pack.json"));
         assert_eq!(cmd.trusted_keys, None);
+        assert_eq!(cmd.deployment_bundle, None);
         assert!(!cmd.json);
         assert!(!cmd.strict);
+        // v1 posture: origin is required unless the operator opts out.
+        assert!(cmd.require_origin);
+    }
+
+    #[test]
+    fn legacy_opt_out_relaxes_the_origin_requirement() {
+        let cmd = verify(&["verify", "--allow-unsigned-legacy-chains", "pack.json"]);
+        assert!(!cmd.require_origin);
     }
 
     #[test]
@@ -254,14 +335,19 @@ mod tests {
             "verify",
             "--json",
             "--strict",
+            "--require-origin",
             "--trusted-keys",
             "keys.json",
+            "--deployment-bundle",
+            "deployment.json",
             "pack.json",
         ]);
         assert_eq!(cmd.evidence, PathBuf::from("pack.json"));
         assert_eq!(cmd.trusted_keys, Some(PathBuf::from("keys.json")));
+        assert_eq!(cmd.deployment_bundle, Some(PathBuf::from("deployment.json")));
         assert!(cmd.json);
         assert!(cmd.strict);
+        assert!(cmd.require_origin);
     }
 
     #[test]

@@ -34,7 +34,7 @@ mod sealer;
 mod store;
 
 pub use anchor::{timestamp_request, validate_response};
-pub use pass::{export, seal_pass};
+pub use pass::{export, seal_pass, OriginPolicy};
 #[cfg(unix)]
 pub use pkcs11::{Pkcs11Sealer, TokenSelector};
 pub use sealer::{sign_checkpoint, FileSealer, Sealer};
@@ -77,6 +77,25 @@ pub enum Error {
          longer matches the sealed head. The WAL was rewritten after sealing."
     )]
     DivergedLog { seq: u64 },
+
+    /// A record past the sealed head that no trusted origin key vouches
+    /// for. Raised *after* the authentic prefix (if any) was sealed: honest
+    /// records keep their path to proof, the forgery keeps none, and the
+    /// error is the alarm — someone wrote to the WAL who is not the gateway.
+    #[error(
+        "record seq {seq} is not authenticated by any trusted origin key \
+         ({reason}). {}; nothing at or past seq {seq} was sealed — the WAL \
+         holds records the gateway did not sign",
+        match .prefix_sealed_to {
+            Some(to) => format!("the authentic prefix was sealed up to seq {to}"),
+            None => "no authentic prefix preceded it".to_string(),
+        }
+    )]
+    UnauthenticatedRecord {
+        seq: u64,
+        reason: String,
+        prefix_sealed_to: Option<u64>,
+    },
 
     #[error("checkpoint store: {0}")]
     StoreBroken(String),

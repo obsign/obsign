@@ -76,6 +76,16 @@ pub mod domain {
     pub const RELEASE_MANIFEST: u8 = 0x07;
     /// Export manifest covering a set of evidence packs.
     pub const EXPORT_MANIFEST: u8 = 0x08;
+    // 0x09 is reserved: SignedChainHead (anchored high-water mark), on its
+    // own branch at the time this file gained 0x0A. Do not reuse.
+    /// Per-record origin signature by the gateway (chain_id + record hash).
+    pub const ORIGIN_RECORD: u8 = 0x0A;
+    /// Deployment bundle: the control-plane-signed set of active gateway
+    /// origin keys.
+    pub const DEPLOYMENT_BUNDLE: u8 = 0x0B;
+    /// Session certificate: the gateway identity key's signature over an
+    /// ephemeral per-session signing key.
+    pub const SESSION_CERT: u8 = 0x0C;
     /// Application content (prompt, arguments, result).
     pub const CONTENT: u8 = 0xF0;
 }

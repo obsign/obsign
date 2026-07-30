@@ -55,11 +55,13 @@ fn keyring(policy_key: &SigningKey) -> Vec<audit_core::checkpoint::PublicKeyEntr
             key_id: "policy-key".to_string(),
             algo: "ed25519".to_string(),
             public_key: hex::encode(policy_key.verifying_key().to_bytes()),
+            role: Default::default(),
         },
         audit_core::checkpoint::PublicKeyEntry {
             key_id: "identity-key".to_string(),
             algo: "ed25519".to_string(),
             public_key: hex::encode(ik.verifying_key().to_bytes()),
+            role: Default::default(),
         },
     ]
 }
@@ -347,8 +349,16 @@ fn evidence(gw: &Gateway, sid: &str) -> Evidence {
     let mut store = ledger::Store::open(&gw.dir.join("ledger").join(sid), &chain_id)
         .expect("opening the store");
     let sealer = ledger::FileSealer::from_seed([0x33; 32], "seal-ledger");
-    ledger::seal_pass(&records, &mut store, &sealer, now, 1).expect("sealing the log");
-    ledger::export(records, &store)
+    ledger::seal_pass(
+        &records,
+        &mut store,
+        &sealer,
+        &ledger::OriginPolicy::permissive(),
+        now,
+        1,
+    )
+    .expect("sealing the log");
+    ledger::export(records, &store, &[], None)
 }
 
 // ===========================================================================
@@ -661,13 +671,13 @@ fn concurrent_identities_keep_their_own_attribution_subtrees() {
     assert!(report.is_valid(), "findings: {:?}", report.findings);
 
     let by_id: std::collections::HashMap<&str, &audit_core::record::Record> =
-        ev.records.iter().map(|r| (r.id.as_str(), r)).collect();
+        ev.records.iter().map(|r| (r.id.as_str(), &r.record)).collect();
 
     let mut checked = 0;
     for rec in &ev.records {
         let Payload::ToolCall(tc) = &rec.payload else { continue };
         // call -> agent_session -> actor -> delegation.
-        let mut cursor = rec;
+        let mut cursor = &rec.record;
         let sub = loop {
             let parent = cursor
                 .parent_id

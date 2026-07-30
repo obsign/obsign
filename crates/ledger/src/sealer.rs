@@ -83,6 +83,7 @@ impl Sealer for FileSealer {
             key_id: self.key_id.clone(),
             algo: "ed25519".to_string(),
             public_key: hex::encode(self.key.verifying_key().to_bytes()),
+            role: audit_core::checkpoint::KeyRole::Seal,
         }
     }
 

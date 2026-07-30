@@ -9,9 +9,10 @@
 //! The signing key is derived from a fixed seed: this is an example, not a
 //! production setup where the key lives in a KMS/HSM.
 
-use audit_core::checkpoint::PublicKeyEntry;
+use audit_core::checkpoint::{KeyRole, PublicKeyEntry};
 use audit_core::evidence::{Evidence, FORMAT};
 use audit_core::record::*;
+use audit_core::SignedRecord;
 use audit_core::{content_hash, ChainWriter};
 use ed25519_dalek::SigningKey;
 use std::path::PathBuf;
@@ -34,6 +35,7 @@ fn main() {
         key_id: KEY_ID.to_string(),
         algo: "ed25519".to_string(),
         public_key: hex::encode(key.verifying_key().to_bytes()),
+        role: KeyRole::Seal,
     };
 
     // Fixed clock: a reproducible example diffs cleanly.
@@ -180,10 +182,11 @@ fn main() {
     let ev = Evidence {
         format: FORMAT.to_string(),
         chain_id: CHAIN_ID.to_string(),
-        records,
+        records: records.into_iter().map(SignedRecord::unsigned).collect(),
         checkpoints: vec![signed],
         keys: vec![pubkey.clone()],
         anchors: Vec::new(),
+        deployment: None,
     };
 
     let ev_path = out.join("evidence.json");

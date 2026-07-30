@@ -131,6 +131,12 @@ pub fn publish(
             serde_json::to_vec_pretty(idb)?,
         ));
     }
+    if let Some(db) = &compiled.deployment {
+        artifacts.push((
+            "deployment-bundle.json".to_string(),
+            serde_json::to_vec_pretty(db)?,
+        ));
+    }
     artifacts.sort_by(|a, b| a.0.cmp(&b.0));
 
     // The ops key becomes (or already is) a trusted key. Refusing a rebound

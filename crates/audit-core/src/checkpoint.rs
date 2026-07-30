@@ -152,6 +152,39 @@ impl SignedCheckpoint {
     }
 }
 
+/// What a key is allowed to attest.
+///
+/// Origin keys authenticate the *writer* (the gateway signs each record as
+/// it writes it); sealing keys certify the *log* (the ledger signs
+/// checkpoints over it). Confusing the two would let the component that
+/// writes the log also certify it — the cohabitation the two-key
+/// architecture exists to prevent — so every verification resolves a key
+/// within its role, and a key found under the wrong role is an error, not a
+/// fallback.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyRole {
+    /// Signs checkpoints. The default: every key that existed before roles
+    /// did was a sealing key.
+    #[default]
+    Seal,
+    /// Signs records at write time.
+    Origin,
+}
+
+impl KeyRole {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            KeyRole::Seal => "seal",
+            KeyRole::Origin => "origin",
+        }
+    }
+
+    fn is_seal(&self) -> bool {
+        *self == KeyRole::Seal
+    }
+}
+
 /// A public key as it appears in an evidence pack.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -161,6 +194,10 @@ pub struct PublicKeyEntry {
     pub algo: String,
     /// Raw public key, 32 bytes in hex.
     pub public_key: String,
+    /// Serialized only when it departs from the default: files and packs
+    /// written before roles existed keep both their bytes and their meaning.
+    #[serde(default, skip_serializing_if = "KeyRole::is_seal")]
+    pub role: KeyRole,
 }
 
 impl PublicKeyEntry {

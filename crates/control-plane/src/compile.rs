@@ -5,6 +5,7 @@
 //! source tree is read in a fixed order). This is what makes `publish`
 //! idempotent and releases comparable by hash.
 
+use audit_core::deployment::{DeploymentBundle, SignedDeploymentBundle, FORMAT as DEPLOYMENT_FORMAT};
 use identity::bundle::{IdentityBundle, SignedIdentityBundle};
 use policy::bundle::{Bundle, SignedBundle};
 
@@ -18,6 +19,7 @@ pub struct Compiled {
     pub source_ref: String,
     pub policy: SignedBundle,
     pub identity: Option<SignedIdentityBundle>,
+    pub deployment: Option<SignedDeploymentBundle>,
 }
 
 /// Compiles and signs. Loading the result through the same code paths the
@@ -62,9 +64,29 @@ pub fn compile(tree: &SourceTree, source_ref: &str, ops: &OpsKey) -> Result<Comp
         }
     };
 
+    let deployment_signed = match &tree.deployment {
+        None => None,
+        Some(origin_keys) => {
+            let db = DeploymentBundle {
+                format: DEPLOYMENT_FORMAT.to_string(),
+                version: format!("deployment@{source_ref}"),
+                origin_keys: origin_keys.clone(),
+                attestations: tree.attestations.clone(),
+            };
+            // The same validation the ledger will run, at compile time: a
+            // seal-role key, a duplicate id or an unusable key must fail here,
+            // in CI, not at the sealing host across the fleet.
+            db.active_origin_keys()?;
+            let signed = db.sign(ops.key_id(), ops.signing_key());
+            signed.verify(&vk)?;
+            Some(signed)
+        }
+    };
+
     Ok(Compiled {
         source_ref: source_ref.to_string(),
         policy: policy_signed,
         identity: identity_signed,
+        deployment: deployment_signed,
     })
 }

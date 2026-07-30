@@ -1,6 +1,8 @@
+use crate::origin::OriginSigner;
 use audit_core::record::*;
-use audit_core::{content_hash, ChainWriter};
+use audit_core::{content_hash, origin_signing_bytes, ChainWriter, SignedRecord};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use wal::Wal;
 
@@ -30,6 +32,11 @@ pub struct Pending {
 pub struct Session {
     pub chain: ChainWriter,
     pub wal: Wal,
+    /// Origin key of this gateway. `None` runs unsigned (legacy, and the
+    /// rollout window before every deployment carries a key): the records
+    /// are still durable and chained, they just prove consistency, not
+    /// authorship.
+    pub origin: Option<Arc<dyn OriginSigner>>,
     pub session_id: String,
     pub agent_record_id: String,
     pub pending: HashMap<String, Pending>,
@@ -42,12 +49,18 @@ pub struct Session {
 }
 
 impl Session {
-    /// Writes a record: chain it, then make it durable in the WAL.
+    /// Writes a record: chain it, sign it, then make it durable in the WAL.
     ///
     /// Order matters. We make it durable **before** the caller forwards the
     /// call to the tool. If the process dies in between, we have a trace of an
     /// act that did not happen — awkward but defensible. The other way round
     /// we would have an act with no trace, which ruins the product.
+    ///
+    /// The origin signature sits between the chain append and the fsync: it
+    /// covers the record's final form (`seq` and `prev_hash` are set by the
+    /// chain), and a record must never become durable unsigned when the
+    /// gateway has a key — the sealer would refuse it later, far from the
+    /// cause.
     pub fn write(
         &mut self,
         id: impl Into<String>,
@@ -56,8 +69,16 @@ impl Session {
     ) -> Result<Record, wal::Error> {
         let sid = self.session_id.clone();
         let rec = self.chain.append(now_ms(), id, parent, sid, payload);
-        self.wal.append(&rec)?;
-        Ok(rec)
+        let sr = match &self.origin {
+            None => SignedRecord::unsigned(rec),
+            Some(signer) => {
+                let msg = origin_signing_bytes(self.chain.chain_id(), &rec.hash());
+                let sig = signer.sign(&msg)?;
+                SignedRecord::signed(rec, signer.key_id(), sig)
+            }
+        };
+        self.wal.append(&sr)?;
+        Ok(sr.record)
     }
 
     pub fn next_call_id(&mut self) -> String {
@@ -99,6 +120,47 @@ pub fn record_config_reloads(
         let id = format!("reload-{}", s.reload_counter);
         s.write(id, None, Payload::ConfigReload(reload))?;
     }
+    Ok(())
+}
+
+/// Records the session certificate as the chain's first record.
+///
+/// Written before anything else, and origin-signed by the very session key it
+/// certifies: the envelope signature proves the session key wrote the record,
+/// the `identity_sig` inside proves the identity key blessed that session key.
+/// From here every record resolves to a key the identity key vouched for.
+pub fn record_session_cert(
+    s: &mut Session,
+    cert: audit_core::record::SessionCert,
+) -> Result<(), wal::Error> {
+    s.write("session-cert", None, Payload::SessionCert(cert))?;
+    Ok(())
+}
+
+/// Records the deployment bundle in force at the top of the chain.
+///
+/// A chain-level event with no attribution parent, like a config reload: it
+/// says which origin keys the gateway trusted while writing this chain,
+/// independent of any principal. Recorded as `Applied` at session open so
+/// every pack is self-contained about its origin trust — the in-chain answer
+/// to "who could have written these records?".
+pub fn record_deployment_bundle(
+    s: &mut Session,
+    trust: &crate::origin::DeploymentTrust,
+) -> Result<(), wal::Error> {
+    s.reload_counter += 1;
+    let id = format!("deployment-{}", s.reload_counter);
+    s.write(
+        id,
+        None,
+        Payload::ConfigReload(ConfigReload {
+            config_kind: ConfigKind::DeploymentBundle,
+            status: ReloadStatus::Applied,
+            bundle_version: trust.version.clone(),
+            bundle_hash: Some(trust.content),
+            reason: None,
+        }),
+    )?;
     Ok(())
 }
 
@@ -161,10 +223,16 @@ pub fn record_delegation(
 }
 
 /// Opens the session on a given log.
-pub fn open(chain: ChainWriter, wal: Wal, session_id: String) -> Session {
+pub fn open(
+    chain: ChainWriter,
+    wal: Wal,
+    session_id: String,
+    origin: Option<Arc<dyn OriginSigner>>,
+) -> Session {
     Session {
         chain,
         wal,
+        origin,
         session_id,
         agent_record_id: String::new(),
         pending: HashMap::new(),
@@ -178,12 +246,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_write_is_signed_when_the_session_holds_an_origin_key() {
+        let dir = std::env::temp_dir()
+            .join(format!("probant-session-origin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let signer = std::sync::Arc::new(crate::origin::FileOriginSigner::from_seed([3u8; 32]));
+        let vk = signer.verifying_key();
+
+        let (wal, chain) = Wal::open(&dir, "t").unwrap();
+        let mut s = open(chain, wal, "sess".into(), Some(signer));
+        let deleg = identity::Delegation {
+            subject: "u:test".into(),
+            issuer: "cli://declared".into(),
+            scopes: vec![],
+            groups: vec![],
+            expires_at_ms: i64::MAX,
+            issued_at_ms: None,
+            actor_chain: vec!["u:test".into()],
+            kind: PrincipalKind::Machine,
+        };
+        record_delegation(&mut s, 1, &deleg, "agent", "policies@test").unwrap();
+
+        let records = s.wal.read_all().unwrap();
+        assert!(!records.is_empty());
+        for r in &records {
+            r.verify_origin("t", &vk)
+                .unwrap_or_else(|e| panic!("record {} unsigned or invalid: {e}", r.id));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn reload_records_chain_outside_the_attribution_tree() {
         let dir = std::env::temp_dir()
             .join(format!("probant-session-reload-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let (wal, chain) = Wal::open(&dir, "t").unwrap();
-        let mut s = open(chain, wal, "sess".into());
+        let mut s = open(chain, wal, "sess".into(), None);
 
         record_config_reloads(
             &mut s,
