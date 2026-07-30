@@ -692,20 +692,18 @@ signing key (its only output is the WAL, every seal comes from the ledger),
 `Pkcs11Sealer` puts the production sealing key behind a KMS/HSM, and
 configuration reloads are recorded in the chain (tag 8).
 
-**Allowlisted notifications are an unrecorded text channel.** The machinery
-allowlist relays the protocol's defined notifications without arbitration or
-record, and several carry free text: `notifications/message` is arbitrary
-`data` at any log level, delivered straight into the agent's context;
-`notifications/progress` carries a `message` and `notifications/cancelled` a
-`reason`, in both directions. Between a complicit server and its agent that
-is a bidirectional side channel the log never names — and one the server can
-work alone: `notifications/message` can spell out the very tool and resource
-names the listing filter hides. Conscious exemption, not an oversight: this
-is liveness/UX machinery, and arbitrating every progress tick would put a
-policy decision and an `fsync` on an unbounded hot path. The exit, when a
-deployment needs it: gate `notifications/message` under its own per-server
-capability action (default deny, as `sampling` is today) and hash what
-passes into an `mcp_access` record.
+**A narrow notification residual remains an unrecorded text channel.**
+`notifications/message` — the one server notification that could spell out
+the very tool and resource names the listing filter hides — is now
+arbitrated per server under its own `notify` capability (default deny, as
+`sampling` is), and what passes leaves an `mcp_access` record with the
+payload hashed, never in clear. What stays exempt is genuine liveness/UX
+machinery that carries free text but cannot enumerate the hidden catalogue:
+`notifications/progress` (a `message`) and `notifications/cancelled` (a
+`reason`), in both directions. Arbitrating every progress tick would put a
+policy decision and an `fsync` on an unbounded hot path, so these remain a
+conscious, documented exemption; the same `notify`-style gating is the exit
+if a deployment ever needs them recorded too.
 
 **Dependency tree.** Measured as unique crates in `cargo tree -e normal`.
 The tree that carries the trust story is the auditor's: `obsign` builds

@@ -87,9 +87,10 @@ impl Act {
 /// recorded, and two of these notifications carry free text —
 /// `notifications/cancelled` (`reason`) and `notifications/progress`
 /// (`message`). An agent can push text to a complicit server outside the
-/// log. Accepted for now as liveness/UX machinery on a hot path; the mirror
-/// exemption and the gating exit are on `server_notification`, the debt
-/// entry in the README ("Allowlisted notifications…").
+/// log — the narrow residual documented in the README. The notification
+/// that *could* enumerate the hidden catalogue, `notifications/message`, is
+/// no longer exempt: it is arbitrated under `Capability::Notify` (see
+/// `server_notification` and `arbitrate_notification`).
 fn machinery(method: &str) -> bool {
     matches!(
         method,
@@ -615,21 +616,21 @@ pub(crate) enum Downstream {
 /// not define is dropped and recorded, not forwarded into the agent's
 /// context.
 ///
-/// Conscious exemption, mirror of `machinery`: what passes here is neither
-/// arbitrated nor recorded, and `notifications/message` is arbitrary `data`
-/// at any log level, delivered straight into the agent's context. A
-/// complicit server can spell out the very names the listing filter hides,
-/// or feed the agent text no record names; with `machinery`'s free-text
-/// fields the channel is bidirectional. Accepted for now — these are
-/// liveness/UX machinery, and arbitrating every progress tick would put a
-/// policy decision and an fsync on an unbounded hot path. The exit, when
-/// needed: gate `notifications/message` under its own per-server capability
-/// action and hash what passes. Debt entry in the README.
+/// `notifications/message` is *not* here on purpose: it carries arbitrary
+/// `data` at any log level straight into the agent's context — the one
+/// server notification that can spell out the resource and prompt names the
+/// listing filter hides — so it is arbitrated per server (`Capability::Notify`,
+/// default deny) and recorded, handled in [`handle_server_initiated`].
+///
+/// What remains here is genuine liveness/UX machinery. `notifications/progress`
+/// (a `message`) and `notifications/cancelled` (a `reason`) still carry free
+/// text and stay a documented, narrower residual: arbitrating every progress
+/// tick would put a policy decision and an fsync on an unbounded hot path,
+/// and neither can enumerate the hidden catalogue the way a log message can.
 fn server_notification(method: &str) -> bool {
     matches!(
         method,
-        "notifications/message"
-            | "notifications/progress"
+        "notifications/progress"
             | "notifications/cancelled"
             | "notifications/resources/updated"
             | "notifications/resources/list_changed"
@@ -808,6 +809,10 @@ fn handle_server_initiated(
             }
             return Downstream::Forward(msg);
         }
+        // A log message is a one-way channel that can leak the hidden
+        // catalogue: arbitrated per server and recorded, its effect closing
+        // the instant it is delivered or refused.
+        "notifications/message" => return arbitrate_notification(msg, state, ctx, session_id),
         m if server_notification(m) => return Downstream::Forward(msg),
         _ => None,
     };
@@ -956,6 +961,95 @@ fn handle_server_initiated(
             -32000,
             &format!("Request refused by policy {}: {}", ctx.bundle_version, reason),
         )
+    }
+}
+
+/// Arbitrates a server `notifications/message` under `Capability::Notify`.
+///
+/// A notification carries no id and no response: the call/decision/effect
+/// triple closes in one pass — `Ok` when the message is delivered, `Blocked`
+/// when policy refuses it or the log cannot be written. Refused or
+/// unrecordable, the message goes nowhere (`Drop`); a notification cannot be
+/// answered, so the record is its only trace.
+fn arbitrate_notification(
+    msg: Value,
+    state: &Arc<Mutex<session::Session>>,
+    ctx: &Ctx,
+    session_id: &str,
+) -> Downstream {
+    let params = msg.get("params").cloned().unwrap_or(Value::Null);
+
+    let mut s = state.lock().unwrap();
+    let deleg = ctx.auth.lock().unwrap().delegation().clone();
+
+    let verdict = if deleg.is_expired(now_ms()) {
+        obsign_policy::Verdict {
+            outcome: Outcome::Deny,
+            policy_id: None,
+            reason: Some("delegation expired".to_string()),
+        }
+    } else {
+        ctx.engine.evaluate_capability(
+            Capability::Notify,
+            &request(&deleg, ctx, session_id, SERVER.to_string(), Value::Null),
+        )
+    };
+
+    let call_id = s.next_call_id();
+    let parent = s.agent_record_id.clone();
+    let decision_id = format!("dec-{}", s.counter);
+    let effect_id = format!("eff-{}", s.counter);
+
+    let written = s
+        .write(
+            call_id.clone(),
+            Some(parent),
+            Payload::McpAccess(McpAccess {
+                server: SERVER.to_string(),
+                method: "notifications/message".to_string(),
+                target: SERVER.to_string(),
+                params_hash: content_hash(params.to_string().as_bytes()),
+            }),
+        )
+        .and_then(|_| {
+            s.write(
+                decision_id.clone(),
+                Some(call_id),
+                Payload::Decision(DecisionRec {
+                    outcome: verdict.outcome,
+                    policy_id: verdict.policy_id.clone(),
+                    bundle_version: ctx.bundle_version.clone(),
+                    reason: verdict.reason.clone(),
+                }),
+            )
+        });
+    if let Err(e) = written {
+        drop(s);
+        eprintln!("[obsign] audit write failed, notifications/message dropped: {e}");
+        return Downstream::Drop;
+    }
+
+    let allowed = verdict.is_allowed();
+    let _ = s.write(
+        effect_id,
+        Some(decision_id),
+        Payload::Effect(Effect {
+            status: if allowed {
+                EffectStatus::Ok
+            } else {
+                EffectStatus::Blocked
+            },
+            result_hash: None,
+            latency_ms: 0,
+        }),
+    );
+    drop(s);
+
+    if allowed {
+        Downstream::Forward(msg)
+    } else {
+        eprintln!("[obsign] REFUSED notifications/message: not permitted by policy");
+        Downstream::Drop
     }
 }
 
@@ -1433,6 +1527,79 @@ mod tests {
         assert!(recs.iter().any(|r| matches!(
             &r.payload,
             Payload::Effect(e) if e.status == EffectStatus::Blocked
+        )));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_log_notification_is_refused_by_default_and_recorded() {
+        // The listing-filter bypass this closes: notifications/message used
+        // to be relayed with neither policy nor record, and its arbitrary
+        // `data` could spell out the very names tools/list hides. Now it is
+        // arbitrated per server and, absent a permit, dropped and recorded.
+        let (dir, state) = open_state("notify-deny");
+        let ctx = ctx(); // permits tool_call only
+
+        let note = json!({
+            "jsonrpc": "2.0", "method": "notifications/message",
+            "params": { "level": "info", "data": "hidden_tool_name: exfiltrate_secrets" }
+        });
+        match handle_from_server(note, &state, &ctx, "sess") {
+            Downstream::Drop => {}
+            Downstream::Forward(_) => panic!("an unpermitted log message must not reach the agent"),
+            Downstream::Reply(_) => panic!("a notification cannot be answered"),
+        }
+
+        let recs = state.lock().unwrap().wal.read_all().unwrap();
+        assert!(
+            recs.iter().any(|r| matches!(
+                &r.payload,
+                Payload::McpAccess(a) if a.method == "notifications/message"
+            )),
+            "the attempt must be recorded, hashed, never in clear"
+        );
+        assert!(recs.iter().any(|r| matches!(
+            &r.payload,
+            Payload::Effect(e) if e.status == EffectStatus::Blocked
+        )));
+        // The leaking string is hashed into params_hash, never stored raw.
+        assert!(!recs.iter().any(|r| matches!(
+            &r.payload,
+            Payload::McpAccess(a) if a.target.contains("exfiltrate")
+        )));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_permitted_log_notification_is_forwarded_and_closed_at_once() {
+        let (dir, state) = open_state("notify-allow");
+        let ctx = ctx_with(
+            "@id(\"allow_notify\")\n\
+             permit (principal, action == Action::\"notify\", resource);\n",
+        );
+
+        let note = json!({
+            "jsonrpc": "2.0", "method": "notifications/message",
+            "params": { "level": "info", "data": "sealing pass complete" }
+        });
+        assert!(matches!(
+            handle_from_server(note, &state, &ctx, "sess"),
+            Downstream::Forward(_)
+        ));
+
+        // No response comes back for a notification: the effect closes in the
+        // same pass as the call and decision.
+        let recs = state.lock().unwrap().wal.read_all().unwrap();
+        assert!(recs.iter().any(|r| matches!(
+            &r.payload,
+            Payload::Decision(d) if d.outcome == Outcome::Allow
+                && d.policy_id.as_deref() == Some("allow_notify")
+        )));
+        assert!(recs.iter().any(|r| matches!(
+            &r.payload,
+            Payload::Effect(e) if e.status == EffectStatus::Ok
         )));
 
         let _ = std::fs::remove_dir_all(&dir);

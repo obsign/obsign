@@ -97,6 +97,14 @@ pub enum Capability {
     /// `elicitation/create`, initiated by the *server*: it puts a question
     /// to the human and carries the answer back. Same shape as sampling.
     Elicitation,
+    /// `notifications/message`, initiated by the *server*: a log message at
+    /// any level, carrying arbitrary `data` straight into the agent's
+    /// context. Unlike progress and cancellation notifications — genuine
+    /// liveness machinery — this one can spell out the very resource and
+    /// prompt names the listing filter hides, so it is arbitrated per
+    /// server like sampling. A notification carries no response, so its
+    /// effect closes the instant it is delivered or refused.
+    Notify,
 }
 
 impl Capability {
@@ -108,6 +116,7 @@ impl Capability {
             Capability::PromptGet => "prompt_get",
             Capability::Sampling => "sampling",
             Capability::Elicitation => "elicitation",
+            Capability::Notify => "notify",
         }
     }
 
@@ -118,7 +127,7 @@ impl Capability {
             Capability::PromptGet => "Prompt",
             // Server-initiated channels are granted per server, not per
             // target: the request names no stable object to key on.
-            Capability::Sampling | Capability::Elicitation => "Server",
+            Capability::Sampling | Capability::Elicitation | Capability::Notify => "Server",
         }
     }
 }
