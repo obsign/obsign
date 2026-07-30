@@ -776,15 +776,62 @@ fn dispatch_from_server(
             // Server-initiated request or notification: only the GET stream
             // can carry it. No stream, no delivery — said out loud, because a
             // lost `tools/list_changed` is a debugging session.
-            let mut events = sess.events.lock().unwrap();
-            let delivered = events.as_ref().map(|tx| tx.send(out.clone()).is_ok());
-            match delivered {
-                Some(true) => {}
-                Some(false) => *events = None,
-                None => eprintln!(
+            let delivered = {
+                let mut events = sess.events.lock().unwrap();
+                match events.as_ref().map(|tx| tx.send(out.clone()).is_ok()) {
+                    Some(true) => true,
+                    Some(false) => {
+                        *events = None;
+                        false
+                    }
+                    None => false,
+                }
+            };
+            if !delivered {
+                eprintln!(
                     "[probant] session {}: server-initiated message dropped (no GET stream open)",
                     &sess.id[..8]
-                ),
+                );
+                // A *request* that cannot reach the agent must not stay
+                // recorded as in flight: the log would show a permitted act
+                // that never happened, the pending slot would block its id
+                // for the session's life, and the server would hang forever.
+                // Close the effect as Blocked and answer in the agent's
+                // place.
+                if let Some(id) = out.get("id").filter(|v| !v.is_null()) {
+                    let key = id.to_string();
+                    {
+                        let mut s = sess.state.lock().unwrap();
+                        if let Some(p) = s.pending_to_agent.remove(&key) {
+                            let _ = s.write(
+                                p.effect_record_id,
+                                Some(p.decision_record_id),
+                                audit_core::record::Payload::Effect(
+                                    audit_core::record::Effect {
+                                        status: audit_core::record::EffectStatus::Blocked,
+                                        result_hash: None,
+                                        latency_ms: p.started.elapsed().as_millis()
+                                            as u64,
+                                    },
+                                ),
+                            );
+                        }
+                        s.relayed_to_agent.remove(&key);
+                    }
+                    let mut guard = sess.child_stdin.lock().unwrap();
+                    if let Some(stdin) = guard.as_mut() {
+                        let reply = json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {
+                                "code": -32000,
+                                "message": "no client stream open to carry this request"
+                            }
+                        });
+                        let _ = writeln!(stdin, "{reply}");
+                        let _ = stdin.flush();
+                    }
+                }
             }
         } else if let Some(id) = out.get("id") {
             let waiter = sess.waiters.lock().unwrap().remove(&id.to_string());

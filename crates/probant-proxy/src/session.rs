@@ -1,7 +1,7 @@
 use crate::origin::OriginSigner;
 use audit_core::record::*;
 use audit_core::{content_hash, origin_signing_bytes, ChainWriter, SignedRecord};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use wal::Wal;
@@ -45,6 +45,14 @@ pub struct Session {
     /// the two directions use independent JSON-RPC id spaces, and a server
     /// id colliding with an agent id must not close the wrong effect.
     pub pending_to_agent: HashMap<String, Pending>,
+    /// Ids of server-initiated machinery requests (`ping`, `roots/list`)
+    /// relayed to the agent without arbitration. The agent's reply to one of
+    /// these passes like the request did; a "response" matching neither this
+    /// set nor `pending_to_agent` is unsolicited — an arbitrary payload
+    /// aimed at the server — and is refused. Bounded: past the cap, new
+    /// machinery requests still relay but their replies will be refused,
+    /// which fails toward refusal, never toward an unarbitrated channel.
+    pub relayed_to_agent: HashSet<String>,
     /// Call counter, used to build readable identifiers.
     pub counter: u64,
     /// Separate counter for `reload-N` identifiers: reloads are rarer than
@@ -242,6 +250,7 @@ pub fn open(
         agent_record_id: String::new(),
         pending: HashMap::new(),
         pending_to_agent: HashMap::new(),
+        relayed_to_agent: HashSet::new(),
         counter: 0,
         reload_counter: 0,
     }

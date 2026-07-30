@@ -48,7 +48,7 @@ say "enrolling: PCR 16, binary hash $HASH"
     --key-id "real-hw-$(hostname -s)" \
     --binary-hash "$HASH" \
     --pcr 16 \
-    "${EK_ARGS[@]}" \
+    ${EK_ARGS[@]+"${EK_ARGS[@]}"} \
     --out "$OUT"
 
 say "PASS — attestation self-verified by audit-core, written to $OUT"

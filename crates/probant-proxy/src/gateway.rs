@@ -157,33 +157,100 @@ pub(crate) fn handle_from_agent(
     let raw = msg.to_string();
 
     // No method: a *response* — the agent answering a server-initiated
-    // request (sampling, elicitation). Not an act of the agent's own; the
-    // act was recorded when the server's request came through, and what
-    // closes here is its effect, with the hash of what actually crossed
-    // back. A response nobody is waiting for is just relayed.
-    let Some(method) = msg.get("method").and_then(Value::as_str) else {
-        if let Some(id) = msg.get("id") {
+    // request. Only two kinds are legitimate: the answer to an arbitrated
+    // request (sampling, elicitation — closes the recorded effect, with the
+    // hash of what actually crossed back) and the answer to relayed
+    // machinery (ping, roots/list — passes like the request did). Anything
+    // else is an arbitrary payload aimed at the server wearing a response's
+    // shape, exactly the channel default-deny exists for: recorded, then
+    // refused, never forwarded. A `method` that exists but is not a string
+    // is not a response either — it flows into the out-of-scope refusal.
+    let method: String = match msg.get("method") {
+        Some(Value::String(m)) => m.clone(),
+        Some(_) => "(non-string method)".to_string(),
+        None => {
             let mut s = state.lock().unwrap();
-            if let Some(p) = s.pending_to_agent.remove(&id.to_string()) {
-                let result = msg.get("result");
-                let is_error = msg.get("error").is_some();
-                let _ = s.write(
-                    p.effect_record_id,
-                    Some(p.decision_record_id),
-                    Payload::Effect(Effect {
-                        status: if is_error {
-                            EffectStatus::Error
-                        } else {
-                            EffectStatus::Ok
-                        },
-                        result_hash: result.map(|r| content_hash(r.to_string().as_bytes())),
-                        latency_ms: p.started.elapsed().as_millis() as u64,
-                    }),
-                );
+            if let Some(id) = msg.get("id").filter(|v| !v.is_null()) {
+                let key = id.to_string();
+                if let Some(p) = s.pending_to_agent.remove(&key) {
+                    let result = msg.get("result");
+                    let is_error = msg.get("error").is_some();
+                    let _ = s.write(
+                        p.effect_record_id,
+                        Some(p.decision_record_id),
+                        Payload::Effect(Effect {
+                            status: if is_error {
+                                EffectStatus::Error
+                            } else {
+                                EffectStatus::Ok
+                            },
+                            result_hash: result
+                                .map(|r| content_hash(r.to_string().as_bytes())),
+                            latency_ms: p.started.elapsed().as_millis() as u64,
+                        }),
+                    );
+                    return Ok(Forward::Pass(raw));
+                }
+                if s.relayed_to_agent.remove(&key) {
+                    return Ok(Forward::Pass(raw));
+                }
             }
+
+            // Unsolicited. The record is written before the refusal, and a
+            // WAL failure refuses too — the `?` propagates like any act's.
+            let call_id = s.next_call_id();
+            let parent = s.agent_record_id.clone();
+            let decision_id = format!("dec-{}", s.counter);
+            let effect_id = format!("eff-{}", s.counter);
+            s.write(
+                call_id.clone(),
+                Some(parent),
+                Payload::McpAccess(McpAccess {
+                    server: SERVER.to_string(),
+                    method: "(unsolicited response)".to_string(),
+                    target: SERVER.to_string(),
+                    params_hash: content_hash(raw.as_bytes()),
+                }),
+            )?;
+            s.write(
+                decision_id.clone(),
+                Some(call_id),
+                Payload::Decision(DecisionRec {
+                    outcome: Outcome::Deny,
+                    policy_id: None,
+                    bundle_version: ctx.bundle_version.clone(),
+                    reason: Some(
+                        "response matches no in-flight server request (default-deny)"
+                            .to_string(),
+                    ),
+                }),
+            )?;
+            s.write(
+                effect_id,
+                Some(decision_id),
+                Payload::Effect(Effect {
+                    status: EffectStatus::Blocked,
+                    result_hash: None,
+                    latency_ms: 0,
+                }),
+            )?;
+            drop(s);
+            eprintln!("[probant] REFUSED unsolicited response-shaped message");
+            return Ok(Forward::Reply(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": Value::Null,
+                    "error": {
+                        "code": -32600,
+                        "message": "Invalid Request: response matches no in-flight \
+                                    server request"
+                    }
+                })
+                .to_string(),
+            ));
         }
-        return Ok(Forward::Pass(raw));
     };
+    let method = method.as_str();
     let params = msg.get("params").cloned().unwrap_or(Value::Null);
 
     // What gets arbitrated: the acts that move data — a tool call, a
@@ -690,16 +757,29 @@ fn handle_server_initiated(
     let cap = match method.as_str() {
         "sampling/createMessage" => Some(Capability::Sampling),
         "elicitation/create" => Some(Capability::Elicitation),
-        "ping" | "roots/list" => return Downstream::Forward(msg),
+        "ping" | "roots/list" => {
+            // Remember the id so the agent's reply passes the response
+            // check: relayed machinery earns a relayed answer, nothing more.
+            if let Some(id) = msg.get("id").filter(|v| !v.is_null()) {
+                let mut s = state.lock().unwrap();
+                if s.relayed_to_agent.len() < 1024 {
+                    s.relayed_to_agent.insert(id.to_string());
+                }
+            }
+            return Downstream::Forward(msg);
+        }
         m if server_notification(m) => return Downstream::Forward(msg),
         _ => None,
     };
+    let out_of_scope = cap.is_none();
 
     let params = msg.get("params").cloned().unwrap_or(Value::Null);
 
     // The refusal the server sees; also what a WAL failure answers, because
-    // an act whose record cannot be written must not proceed.
-    let refuse = |id: &Value, text: &str| {
+    // an act whose record cannot be written must not proceed. The code
+    // matches the agent-side convention: -32601 only for a method nobody
+    // arbitrates, -32000 for a policy refusal, -32603 for the log failing.
+    let refuse = |id: &Value, code: i64, text: &str| {
         if id.is_null() {
             // A notification cannot be answered; the record is the trace.
             Downstream::Drop
@@ -708,7 +788,7 @@ fn handle_server_initiated(
                 json!({
                     "jsonrpc": "2.0",
                     "id": id,
-                    "error": { "code": -32601, "message": text }
+                    "error": { "code": code, "message": text }
                 }),
             )
         }
@@ -770,7 +850,7 @@ fn handle_server_initiated(
     if let Err(e) = written {
         drop(s);
         eprintln!("[probant] audit write failed, server-initiated {method} refused: {e}");
-        return refuse(&id, "audit log unavailable");
+        return refuse(&id, -32603, "audit log unavailable");
     }
 
     if verdict.is_allowed() {
@@ -796,6 +876,7 @@ fn handle_server_initiated(
                     );
                     return refuse(
                         &id,
+                        -32000,
                         &format!("Request refused: JSON-RPC id {id} is already in flight"),
                     );
                 }
@@ -826,10 +907,15 @@ fn handle_server_initiated(
         .reason
         .unwrap_or_else(|| "refused by policy".to_string());
     eprintln!("[probant] REFUSED server-initiated {method}: {reason}");
-    refuse(
-        &id,
-        &format!("Request refused by policy {}: {}", ctx.bundle_version, reason),
-    )
+    if out_of_scope {
+        refuse(&id, -32601, &format!("Method not arbitrated: {reason}"))
+    } else {
+        refuse(
+            &id,
+            -32000,
+            &format!("Request refused by policy {}: {}", ctx.bundle_version, reason),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -938,6 +1024,75 @@ mod tests {
         let ids: std::collections::HashSet<&str> =
             recs.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids.len(), recs.len(), "record identifiers must stay unique");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unsolicited_response_is_refused_and_recorded() {
+        // The bypass this closes: a message with no `method` matching no
+        // in-flight server request was "just relayed" — an arbitrary
+        // payload to the server wearing a response's shape, with no policy
+        // and no record.
+        let (dir, state) = open_state("unsolicited-resp");
+        let ctx = ctx();
+
+        let smuggle = json!({ "jsonrpc": "2.0", "id": 99,
+                              "result": { "exfil": "arbitrary bytes" } });
+        match handle_from_agent(smuggle, &state, &ctx, None).unwrap() {
+            Forward::Reply(r) => {
+                assert!(r.contains("-32600"), "got: {r}");
+                assert!(r.contains("no in-flight"), "got: {r}");
+            }
+            Forward::Pass(_) => panic!("an unsolicited response must not be forwarded"),
+        }
+
+        // A method that is not a string is not a response either.
+        let odd = json!({ "jsonrpc": "2.0", "id": 100, "method": 42 });
+        match handle_from_agent(odd, &state, &ctx, None).unwrap() {
+            Forward::Reply(r) => assert!(r.contains("-32601"), "got: {r}"),
+            Forward::Pass(_) => panic!("a non-string method must not be forwarded"),
+        }
+
+        let recs = state.lock().unwrap().wal.read_all().unwrap();
+        let denied = recs
+            .iter()
+            .filter(|r| {
+                matches!(&r.payload, Payload::Decision(d) if d.outcome == Outcome::Deny)
+            })
+            .count();
+        assert_eq!(denied, 2, "both refusals must leave a deny decision");
+        assert!(recs.iter().any(|r| matches!(
+            &r.payload,
+            Payload::McpAccess(a) if a.method == "(unsolicited response)"
+        )));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_reply_to_relayed_server_machinery_passes() {
+        // The server pings; the relay remembers the id; the agent's pong
+        // passes exactly once. A second message reusing the id is
+        // unsolicited again.
+        let (dir, state) = open_state("relayed-ping");
+        let ctx = ctx();
+
+        let ping = json!({ "jsonrpc": "2.0", "id": "srv-1", "method": "ping" });
+        assert!(matches!(
+            handle_from_server(ping, &state, &ctx, "sess"),
+            Downstream::Forward(_)
+        ));
+
+        let pong = json!({ "jsonrpc": "2.0", "id": "srv-1", "result": {} });
+        assert!(matches!(
+            handle_from_agent(pong.clone(), &state, &ctx, None).unwrap(),
+            Forward::Pass(_)
+        ));
+        assert!(matches!(
+            handle_from_agent(pong, &state, &ctx, None).unwrap(),
+            Forward::Reply(_)
+        ));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
