@@ -119,7 +119,7 @@ pub fn serve(gw: Gateway, addr: &str) -> Result<()> {
     let listener =
         TcpListener::bind(addr).with_context(|| format!("binding {addr}"))?;
     eprintln!(
-        "[probant] Streamable HTTP on http://{}{}",
+        "[obsign] Streamable HTTP on http://{}{}",
         listener.local_addr()?,
         ENDPOINT
     );
@@ -365,7 +365,7 @@ fn handle_post(
             let fwd = match gateway::handle_from_agent(msg, &sess.state, &sess.ctx, bearer) {
                 Ok(f) => f,
                 Err(e) => {
-                    eprintln!("[probant] audit write failed, call refused: {e}");
+                    eprintln!("[obsign] audit write failed, call refused: {e}");
                     respond_json(
                         stream,
                         500,
@@ -424,7 +424,7 @@ fn handle_post(
         Ok(f) => f,
         Err(e) => {
             // WAL write failure: the act must not proceed without its record.
-            eprintln!("[probant] audit write failed, call refused: {e}");
+            eprintln!("[obsign] audit write failed, call refused: {e}");
             respond_json(
                 stream,
                 500,
@@ -512,7 +512,7 @@ fn present_bearer(sess: &McpSession, bearer: Option<&str>) {
     };
     if !reloads.is_empty() {
         if let Err(e) = session::record_config_reloads(&mut s, reloads) {
-            eprintln!("[probant] failed to record config reload: {e}");
+            eprintln!("[obsign] failed to record config reload: {e}");
         }
     }
     if !renewed {
@@ -526,10 +526,10 @@ fn present_bearer(sess: &McpSession, bearer: Option<&str>) {
         &sess.ctx.agent_id,
         &sess.ctx.bundle_version,
     ) {
-        eprintln!("[probant] failed to record renewed delegation: {e}");
+        eprintln!("[obsign] failed to record renewed delegation: {e}");
     } else {
         eprintln!(
-            "[probant] delegation renewed (generation {generation}) — {} — expires in {} s",
+            "[obsign] delegation renewed (generation {generation}) — {} — expires in {} s",
             deleg.subject,
             deleg.remaining_secs(now)
         );
@@ -571,7 +571,7 @@ fn open_session(
             let source = match BundleSource::load(bundle_path, &gw.trusted) {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("[probant] identity bundle unusable: {e}");
+                    eprintln!("[obsign] identity bundle unusable: {e}");
                     respond_json(
                         stream,
                         500,
@@ -585,7 +585,7 @@ fn open_session(
             match Auth::oidc_presented(source, token) {
                 Ok(a) => a,
                 Err(e) => {
-                    eprintln!("[probant] session refused: {e}");
+                    eprintln!("[obsign] session refused: {e}");
                     respond_json(
                         stream,
                         401,
@@ -602,7 +602,7 @@ fn open_session(
     let sid = match new_session_id() {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[probant] cannot generate a session id: {e}");
+            eprintln!("[obsign] cannot generate a session id: {e}");
             respond_json(
                 stream,
                 500,
@@ -663,7 +663,7 @@ fn open_session(
             )?;
             let d = a.delegation();
             eprintln!(
-                "[probant] session {} opened — {} via {} ({})",
+                "[obsign] session {} opened — {} via {} ({})",
                 &sid[..8],
                 d.subject,
                 d.issuer,
@@ -699,7 +699,7 @@ fn open_session(
     let sess = match opened {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("[probant] session refused: {e:#}");
+            eprintln!("[obsign] session refused: {e:#}");
             respond_json(
                 stream,
                 500,
@@ -753,7 +753,7 @@ fn dispatch_from_server(
         }
         let Ok(msg) = serde_json::from_str::<Value>(&line) else {
             // stdio relays unknown bytes as-is; HTTP has no channel for them.
-            eprintln!("[probant] session {}: non-JSON server line dropped", &sess.id[..8]);
+            eprintln!("[obsign] session {}: non-JSON server line dropped", &sess.id[..8]);
             continue;
         };
 
@@ -789,7 +789,7 @@ fn dispatch_from_server(
             };
             if !delivered {
                 eprintln!(
-                    "[probant] session {}: server-initiated message dropped (no GET stream open)",
+                    "[obsign] session {}: server-initiated message dropped (no GET stream open)",
                     &sess.id[..8]
                 );
                 // A *request* that cannot reach the agent must not stay
@@ -840,7 +840,7 @@ fn dispatch_from_server(
                     let _ = tx.send(out);
                 }
                 None => eprintln!(
-                    "[probant] session {}: unmatched response dropped (id {id})",
+                    "[obsign] session {}: unmatched response dropped (id {id})",
                     &sess.id[..8]
                 ),
             }
@@ -863,7 +863,7 @@ fn dispatch_from_server(
     // Nothing is sealed here: the WAL already holds every record, and sealing
     // belongs to the ledger, with a key this process never held.
     eprintln!(
-        "[probant] session {} closed — {}",
+        "[obsign] session {} closed — {}",
         &sess.id[..8],
         sess.state.lock().unwrap().closing_report()
     );
@@ -920,7 +920,7 @@ fn handle_delete(
         // The wrapped server is ignoring EOF. Killing it now would race the
         // dispatcher; better to say what is happening.
         eprintln!(
-            "[probant] session {}: server has not exited, log still open",
+            "[obsign] session {}: server has not exited, log still open",
             &sess.id[..8]
         );
         respond(stream, 202, "Accepted", &[], None, b"")?;

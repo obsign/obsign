@@ -1,11 +1,12 @@
-# syntax=docker/dockerfile:1
-#
 # One build stage, several runtime targets — pick with `--target`:
+# (no `# syntax=` directive on purpose: it forces a registry lookup at every
+# build, a network dependency the air-gapped build story does not want, and
+# nothing here needs a frontend beyond the engine's built-in.)
 #
-#   proxy     ghcr.io/…/probant-proxy     the gateway (extensible base image)
-#   ledger    ghcr.io/…/probant-ledger    sealing, anchoring, evidence export
-#   control   ghcr.io/…/probant-control   compile/publish/export/console
-#   verifier  ghcr.io/…/probant           offline verifier (convenience only:
+#   proxy     ghcr.io/…/obsign-proxy     the gateway (extensible base image)
+#   ledger    ghcr.io/…/obsign-ledger    sealing, anchoring, evidence export
+#   control   ghcr.io/…/obsign-control   compile/publish/export/console
+#   verifier  ghcr.io/…/obsign           offline verifier (convenience only:
 #                                         the auditor's canonical channel is
 #                                         building it from source)
 #   demo      local only                  every binary + the demo generators
@@ -28,32 +29,32 @@ RUN cargo build --release --workspace --bins --examples --locked
 # Gateway. Deliberately does not contain an MCP server: extend this image and
 # add yours (see docs/deploy-docker.md), or run --http and point it at one.
 FROM gcr.io/distroless/cc-debian12:nonroot AS proxy
-COPY --from=build /src/target/release/probant-proxy /usr/local/bin/probant-proxy
+COPY --from=build /src/target/release/obsign-proxy /usr/local/bin/obsign-proxy
 # The WAL must land on a volume that honours fsync — see the deploy doc.
-VOLUME ["/var/lib/probant/wal"]
-ENTRYPOINT ["/usr/local/bin/probant-proxy"]
+VOLUME ["/var/lib/obsign/wal"]
+ENTRYPOINT ["/usr/local/bin/obsign-proxy"]
 
 # ---------------------------------------------------------------------------
 # Ledger. Runs on another host or at least another container than the
 # gateway: the sealing key and the WAL writer must never cohabit.
 FROM gcr.io/distroless/cc-debian12:nonroot AS ledger
-COPY --from=build /src/target/release/probant-ledger /usr/local/bin/probant-ledger
-ENTRYPOINT ["/usr/local/bin/probant-ledger"]
+COPY --from=build /src/target/release/obsign-ledger /usr/local/bin/obsign-ledger
+ENTRYPOINT ["/usr/local/bin/obsign-ledger"]
 
 # ---------------------------------------------------------------------------
 # Control plane: compile, publish, export, console. The console has no
 # authentication — never publish its port beyond loopback or a private
 # network you trust (auth is the commercial layer).
 FROM gcr.io/distroless/cc-debian12:nonroot AS control
-COPY --from=build /src/target/release/probant-control /usr/local/bin/probant-control
-ENTRYPOINT ["/usr/local/bin/probant-control"]
+COPY --from=build /src/target/release/obsign-control /usr/local/bin/obsign-control
+ENTRYPOINT ["/usr/local/bin/obsign-control"]
 
 # ---------------------------------------------------------------------------
 # Verifier. A convenience for pipelines; the auditor-facing story remains
-# `cargo build -p probant` from the published source.
+# `cargo build -p obsign` from the published source.
 FROM gcr.io/distroless/cc-debian12:nonroot AS verifier
-COPY --from=build /src/target/release/probant /usr/local/bin/probant
-ENTRYPOINT ["/usr/local/bin/probant"]
+COPY --from=build /src/target/release/obsign /usr/local/bin/obsign
+ENTRYPOINT ["/usr/local/bin/obsign"]
 
 # ---------------------------------------------------------------------------
 # Demo: everything in one image, with a shell — for docker-compose only,
@@ -63,10 +64,10 @@ FROM debian:bookworm-slim AS demo
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl openssl \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=build /src/target/release/probant-proxy \
-                  /src/target/release/probant-ledger \
-                  /src/target/release/probant-control \
-                  /src/target/release/probant \
+COPY --from=build /src/target/release/obsign-proxy \
+                  /src/target/release/obsign-ledger \
+                  /src/target/release/obsign-control \
+                  /src/target/release/obsign \
                   /src/target/release/mock-mcp-server \
                   /usr/local/bin/
 COPY --from=build /src/target/release/examples/mkbundle \

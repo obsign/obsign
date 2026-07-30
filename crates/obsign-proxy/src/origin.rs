@@ -553,19 +553,19 @@ mod tests {
     /// Gated on a provisioned token, like the ledger's PKCS#11 test:
     ///
     ///     source scripts/pkcs11-test-env.sh
-    ///     cargo test -p probant-proxy
+    ///     cargo test -p obsign-proxy
     ///
-    /// Without `PROBANT_TEST_PKCS11_MODULE` it passes vacuously and says so —
+    /// Without `OBSIGN_TEST_PKCS11_MODULE` it passes vacuously and says so —
     /// an unprovisioned machine must not fail the suite.
     #[test]
     fn an_hsm_identity_key_certifies_a_memory_session_key() {
-        let Ok(module) = std::env::var("PROBANT_TEST_PKCS11_MODULE") else {
-            eprintln!("skipped: set PROBANT_TEST_PKCS11_MODULE (scripts/pkcs11-test-env.sh)");
+        let Ok(module) = std::env::var("OBSIGN_TEST_PKCS11_MODULE") else {
+            eprintln!("skipped: set OBSIGN_TEST_PKCS11_MODULE (scripts/pkcs11-test-env.sh)");
             return;
         };
-        let pin = std::env::var("PROBANT_TEST_PKCS11_PIN").expect("PROBANT_TEST_PKCS11_PIN");
+        let pin = std::env::var("OBSIGN_TEST_PKCS11_PIN").expect("OBSIGN_TEST_PKCS11_PIN");
         let label =
-            std::env::var("PROBANT_TEST_PKCS11_KEY_LABEL").expect("PROBANT_TEST_PKCS11_KEY_LABEL");
+            std::env::var("OBSIGN_TEST_PKCS11_KEY_LABEL").expect("OBSIGN_TEST_PKCS11_KEY_LABEL");
 
         let identity = Pkcs11IdentitySigner::open(
             std::path::Path::new(&module),

@@ -39,7 +39,7 @@ if command -v tpm2_getekcertificate >/dev/null 2>&1; then
     fi
 fi
 
-BIN=target/release/probant-tpm-enroll
+BIN=target/release/obsign-tpm-enroll
 HASH="$(sha256sum "$BIN" | cut -d' ' -f1)"
 
 say "enrolling: PCR 16, binary hash $HASH"

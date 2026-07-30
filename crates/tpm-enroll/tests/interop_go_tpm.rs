@@ -36,7 +36,7 @@ use tpm_enroll::{enroll, tpm, EnrollmentRequest, Tpm};
 /// are a skip, not a failure: the common cause is a cold module cache with
 /// no network, which must not fail an unprovisioned machine.
 fn build_go_harness(dir: &std::path::Path) -> Option<std::path::PathBuf> {
-    let bin = std::env::temp_dir().join(format!("probant-tpm-interop-{}", std::process::id()));
+    let bin = std::env::temp_dir().join(format!("obsign-tpm-interop-{}", std::process::id()));
     // Two attempts: a default build, then external linking — Go toolchains
     // before 1.20 emit Mach-O without LC_UUID, which recent macOS dyld
     // refuses to load; the system linker adds it.

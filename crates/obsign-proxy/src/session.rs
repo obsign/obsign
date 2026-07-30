@@ -108,7 +108,7 @@ impl Session {
     /// where to point the sealer.
     pub fn closing_report(&self) -> String {
         format!(
-            "{} record(s) durable in {} — seal with: probant-ledger seal \
+            "{} record(s) durable in {} — seal with: obsign-ledger seal \
              --wal <dir> --chain-id {}",
             self.chain.next_seq(),
             self.wal.path().display(),
@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn every_write_is_signed_when_the_session_holds_an_origin_key() {
         let dir = std::env::temp_dir()
-            .join(format!("probant-session-origin-{}", std::process::id()));
+            .join(format!("obsign-session-origin-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let signer = std::sync::Arc::new(crate::origin::FileOriginSigner::from_seed([3u8; 32]));
         let vk = signer.verifying_key();
@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn reload_records_chain_outside_the_attribution_tree() {
         let dir = std::env::temp_dir()
-            .join(format!("probant-session-reload-{}", std::process::id()));
+            .join(format!("obsign-session-reload-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let (wal, chain) = Wal::open(&dir, "t").unwrap();
         let mut s = open(chain, wal, "sess".into(), None);

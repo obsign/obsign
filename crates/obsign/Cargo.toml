@@ -1,5 +1,5 @@
 [package]
-name = "probant"
+name = "obsign"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -19,5 +19,5 @@ ed25519-dalek = { workspace = true }
 hex = { workspace = true }
 
 [[bin]]
-name = "probant"
+name = "obsign"
 path = "src/main.rs"

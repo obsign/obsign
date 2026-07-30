@@ -17,5 +17,5 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 
 [[bin]]
-name = "probant-tpm-enroll"
+name = "obsign-tpm-enroll"
 path = "src/main.rs"

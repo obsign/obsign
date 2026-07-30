@@ -190,7 +190,7 @@ fn rewriting_the_whole_chain_is_stopped_by_the_signature() {
 
     // And with no key anchoring, the same pack would pass — hence the
     // mandatory warning AND the self_referential flag, which callers use to
-    // refuse presenting the run as proof (probant exits 3, not 0).
+    // refuse presenting the run as proof (obsign exits 3, not 0).
     let unanchored = evidence::verify(&forged, &[]);
     assert!(unanchored.is_valid());
     assert!(

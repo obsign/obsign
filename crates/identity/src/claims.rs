@@ -26,7 +26,7 @@ pub struct ClaimMap {
     /// Used to recognise a service token (`sub` == `client_id`).
     pub client_id: Vec<String>,
     /// What marks a token as a machine's. `#[serde(default)]` so a
-    /// `probant-identity/1` bundle deserializes unchanged — but for that
+    /// `obsign-identity/1` bundle deserializes unchanged — but for that
     /// format the signature does not cover this field, so [`crate::bundle`]
     /// refuses a v1 bundle carrying anything but the defaults.
     #[serde(default)]
@@ -179,7 +179,7 @@ pub struct MarkerMatch {
 /// are: no two providers mark their service tokens the same way, and a
 /// hard-coded list means "we support your IdP" instead of "we speak the
 /// standard". But they decide `PrincipalKind`, hence which Cedar rules apply
-/// — so they travel inside the signed identity bundle (`probant-identity/2`),
+/// — so they travel inside the signed identity bundle (`obsign-identity/2`),
 /// never as a plain file option. A verifier that removes a marker widens what
 /// counts as human; that change must be signed like any other authorization
 /// change.
@@ -304,7 +304,7 @@ mod tests {
             "sub": "u:marie",
             "realm_access": { "roles": ["support-n2", "offline_access"] },
             "resource_access": {
-                "probant-proxy": { "roles": ["dba"] },
+                "obsign-proxy": { "roles": ["dba"] },
                 "account": { "roles": ["view-profile"] }
             }
         });
@@ -331,8 +331,8 @@ mod tests {
 
     #[test]
     fn plain_user_token() {
-        let c = json!({ "sub": "u:marie", "azp": "probant-proxy" });
-        let (chain, kind) = chain(&c, "u:marie", Some("probant-proxy"));
+        let c = json!({ "sub": "u:marie", "azp": "obsign-proxy" });
+        let (chain, kind) = chain(&c, "u:marie", Some("obsign-proxy"));
         assert_eq!(chain, vec!["u:marie"]);
         assert_eq!(kind, PrincipalKind::Human);
         assert!(kind.has_human());
@@ -383,11 +383,11 @@ mod tests {
         // A normal `preferred_username` and no `idtyp` stays Human.
         let c = json!({
             "sub": "u:marie",
-            "azp": "probant-proxy",
+            "azp": "obsign-proxy",
             "preferred_username": "marie",
             "idtyp": "user"
         });
-        let (_, kind) = chain(&c, "u:marie", Some("probant-proxy"));
+        let (_, kind) = chain(&c, "u:marie", Some("obsign-proxy"));
         assert_eq!(kind, PrincipalKind::Human);
         assert!(kind.has_human());
     }
@@ -395,7 +395,7 @@ mod tests {
     #[test]
     fn single_hop_delegation_via_token_exchange() {
         let c = json!({ "sub": "u:marie", "act": { "sub": "support-copilot" } });
-        let (chain, kind) = chain(&c, "u:marie", Some("probant-proxy"));
+        let (chain, kind) = chain(&c, "u:marie", Some("obsign-proxy"));
         assert_eq!(chain, vec!["support-copilot", "u:marie"]);
         assert_eq!(kind, PrincipalKind::DelegatedHuman);
     }

@@ -1,6 +1,6 @@
 //! Exit-code contract of the binary, exercised end to end.
 //!
-//! Exit 0 is the product: pipelines gate on `probant verify … && deploy`.
+//! Exit 0 is the product: pipelines gate on `obsign verify … && deploy`.
 //! The one scenario that must never happen is a fully forged pack — signed
 //! with the attacker's own key, embedded in the pack itself — coming out
 //! with exit 0. These tests run the real binary on real files.
@@ -56,18 +56,18 @@ fn pack(key: &SigningKey, key_id: &str) -> Evidence {
 }
 
 fn write_tmp(name: &str, contents: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("probant-cli-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("obsign-cli-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(name);
     std::fs::write(&path, contents).unwrap();
     path
 }
 
-fn probant(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_probant"))
+fn obsign(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_obsign"))
         .args(args)
         .output()
-        .expect("running probant")
+        .expect("running obsign")
 }
 
 #[test]
@@ -79,7 +79,7 @@ fn honest_pack_with_trusted_keys_is_proven() {
         &serde_json::to_string(&vec![entry(&key, "k1")]).unwrap(),
     );
 
-    let out = probant(&[
+    let out = obsign(&[
         "verify",
         "--allow-unsigned-legacy-chains",
         "--trusted-keys",
@@ -96,7 +96,7 @@ fn self_referential_run_exits_3_and_says_not_proven() {
     let key = SigningKey::from_bytes(&[1u8; 32]);
     let ev = write_tmp("selfref.json", &serde_json::to_string(&pack(&key, "k1")).unwrap());
 
-    let out = probant(&["verify", "--allow-unsigned-legacy-chains", ev.to_str().unwrap()]);
+    let out = obsign(&["verify", "--allow-unsigned-legacy-chains", ev.to_str().unwrap()]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(3), "stdout: {stdout}");
     assert!(stdout.contains("NOT PROVEN"), "stdout: {stdout}");
@@ -117,7 +117,7 @@ fn forged_pack_without_trusted_keys_must_not_exit_0() {
         &serde_json::to_string(&pack(&attacker, "k1")).unwrap(),
     );
 
-    let out = probant(&["verify", "--allow-unsigned-legacy-chains", ev.to_str().unwrap()]);
+    let out = obsign(&["verify", "--allow-unsigned-legacy-chains", ev.to_str().unwrap()]);
     assert_eq!(
         out.status.code(),
         Some(3),
@@ -138,7 +138,7 @@ fn forged_pack_against_trusted_keys_exits_1() {
         &serde_json::to_string(&vec![entry(&real, "k1")]).unwrap(),
     );
 
-    let out = probant(&[
+    let out = obsign(&[
         "verify",
         "--trusted-keys",
         keys.to_str().unwrap(),
@@ -154,7 +154,7 @@ fn json_report_carries_the_self_referential_flag() {
     let key = SigningKey::from_bytes(&[1u8; 32]);
     let ev = write_tmp("json.json", &serde_json::to_string(&pack(&key, "k1")).unwrap());
 
-    let out = probant(&[
+    let out = obsign(&[
         "verify",
         "--json",
         "--allow-unsigned-legacy-chains",

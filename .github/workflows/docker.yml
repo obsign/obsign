@@ -23,13 +23,13 @@ jobs:
       matrix:
         include:
           - target: proxy
-            image: probant-proxy
+            image: obsign-proxy
           - target: ledger
-            image: probant-ledger
+            image: obsign-ledger
           - target: control
-            image: probant-control
+            image: obsign-control
           - target: verifier
-            image: probant
+            image: obsign
     steps:
       - uses: actions/checkout@v4
 

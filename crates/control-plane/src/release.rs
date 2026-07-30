@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use crate::compile::Compiled;
 use crate::{record_trusted_key, write_atomic, Error, OpsKey};
 
-pub const FORMAT: &str = "probant-release/1";
+pub const FORMAT: &str = "obsign-release/1";
 
 /// What a release contains, hashed file by file.
 ///

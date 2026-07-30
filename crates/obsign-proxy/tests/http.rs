@@ -20,7 +20,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 const ISSUER: &str = "https://sso.acme.fr/realms/corp";
-const AUDIENCE: &str = "probant-proxy";
+const AUDIENCE: &str = "obsign-proxy";
 
 /// PKCS8 v1 prefix of an Ed25519 private key.
 const PKCS8_PREFIX: &[u8] = &[
@@ -106,7 +106,7 @@ fn mint_for(sub: &str, exp_offset: i64, scopes: &str) -> String {
 
     let claims = json!({
         "sub": sub, "iss": ISSUER, "aud": AUDIENCE,
-        "azp": "probant-proxy",
+        "azp": "obsign-proxy",
         "exp": now + exp_offset, "iat": now - 10,
         "scope": scopes,
         "realm_access": { "roles": ["support-n2"] },
@@ -132,7 +132,7 @@ impl Drop for Gateway {
 /// Starts the gateway on an OS-assigned port and reads the port back from its
 /// stderr announcement — the only place it exists.
 fn start(name: &str, oidc: bool, extra: &[&str]) -> Gateway {
-    let dir = std::env::temp_dir().join(format!("probant-http-{name}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("obsign-http-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
@@ -174,7 +174,7 @@ fn start(name: &str, oidc: bool, extra: &[&str]) -> Gateway {
     )
     .unwrap();
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_probant-proxy"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_obsign-proxy"));
     cmd.args(["--policy", dir.join("bundle.json").to_str().unwrap()])
         .args(["--trusted-keys", dir.join("keys.json").to_str().unwrap()])
         .args(["--wal", dir.join("wal").to_str().unwrap()])
@@ -200,14 +200,14 @@ fn start(name: &str, oidc: bool, extra: &[&str]) -> Gateway {
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawning probant-proxy");
+        .expect("spawning obsign-proxy");
 
     let stderr = child.stderr.take().unwrap();
     let mut reader = BufReader::new(stderr);
     let mut addr = None;
     let mut line = String::new();
     while reader.read_line(&mut line).unwrap_or(0) > 0 {
-        if let Some(rest) = line.trim().strip_prefix("[probant] Streamable HTTP on http://") {
+        if let Some(rest) = line.trim().strip_prefix("[obsign] Streamable HTTP on http://") {
             addr = rest.strip_suffix("/mcp").map(str::to_string);
             break;
         }

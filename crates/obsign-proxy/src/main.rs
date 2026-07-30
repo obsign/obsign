@@ -48,7 +48,7 @@ use wal::Wal;
 
 #[derive(Parser)]
 #[command(
-    name = "probant-proxy",
+    name = "obsign-proxy",
     about = "MCP proxy enforcing a signed policy and logging every act",
     long_about = "Sits between an agent and an MCP server (stdio or Streamable\n\
                   HTTP transport). Filters discovery (tools/list, resources/list,\n\
@@ -146,7 +146,7 @@ struct Cli {
     #[arg(long, requires = "identity_hsm_module")]
     identity_hsm_slot: Option<u64>,
 
-    /// File holding the user PIN. Without it, the PROBANT_HSM_PIN environment
+    /// File holding the user PIN. Without it, the OBSIGN_HSM_PIN environment
     /// variable. Never an argument: arguments end up in `ps` and shell history.
     #[arg(long, requires = "identity_hsm_module")]
     identity_hsm_pin_file: Option<PathBuf>,
@@ -223,7 +223,7 @@ fn main() -> Result<()> {
     let bundle_version = engine.version().to_string();
 
     eprintln!(
-        "[probant] policy {} — {} tool(s) in catalogue — env {}",
+        "[obsign] policy {} — {} tool(s) in catalogue — env {}",
         bundle_version,
         engine.known_tools().count(),
         cli.env
@@ -235,7 +235,7 @@ fn main() -> Result<()> {
     // accepted a session it cannot sign for.
     let two_tier = |identity: Arc<dyn origin::IdentitySigner>| {
         eprintln!(
-            "[probant] identity key {} — certifies a session key per chain — public entry: {}",
+            "[obsign] identity key {} — certifies a session key per chain — public entry: {}",
             identity.key_id(),
             serde_json::to_string(&identity.public_key()).expect("serializing a key entry")
         );
@@ -248,7 +248,7 @@ fn main() -> Result<()> {
     let signing = match (&cli.origin_key, &cli.identity_key, &cli.identity_hsm_module) {
         (None, None, None) => {
             eprintln!(
-                "[probant] WARNING: no signing key. Records are chained but \
+                "[obsign] WARNING: no signing key. Records are chained but \
                  unsigned: nothing proves this gateway wrote them."
             );
             origin::Signing::None
@@ -256,7 +256,7 @@ fn main() -> Result<()> {
         (Some(path), None, None) => {
             let s = Arc::new(origin::FileOriginSigner::from_seed_file(path)?);
             eprintln!(
-                "[probant] origin key {} — every record signed directly — public entry: {}",
+                "[obsign] origin key {} — every record signed directly — public entry: {}",
                 s.key_id(),
                 serde_json::to_string(&s.public_key()).expect("serializing a key entry")
             );
@@ -281,7 +281,7 @@ fn main() -> Result<()> {
         Some(path) => {
             let trust = origin::DeploymentTrust::load(path, &trusted)?;
             eprintln!(
-                "[probant] deployment bundle {} — {} gateway key(s) trusted on resume",
+                "[obsign] deployment bundle {} — {} gateway key(s) trusted on resume",
                 trust.version,
                 trust.active.len()
             );
@@ -340,7 +340,7 @@ fn run_http(
             .clone()
             .context("--principal is required with --insecure-declared-identity")?;
         eprintln!(
-            "[probant] WARNING: identity DECLARED, unverified — \"{principal}\". \
+            "[obsign] WARNING: identity DECLARED, unverified — \"{principal}\". \
              The log will carry the issuer cli://declared. \
              Never use in production."
         );
@@ -403,8 +403,8 @@ fn build_hsm_identity(cli: &Cli, module: &std::path::Path) -> Result<origin::Pkc
             .with_context(|| format!("reading the PIN file {}", path.display()))?
             .trim()
             .to_string(),
-        None => std::env::var("PROBANT_HSM_PIN").map_err(|_| {
-            anyhow::anyhow!("no PIN: give --identity-hsm-pin-file or set PROBANT_HSM_PIN")
+        None => std::env::var("OBSIGN_HSM_PIN").map_err(|_| {
+            anyhow::anyhow!("no PIN: give --identity-hsm-pin-file or set OBSIGN_HSM_PIN")
         })?,
     };
     origin::Pkcs11IdentitySigner::open(module, &token, &pin, label)
@@ -428,7 +428,7 @@ fn run_stdio(
         let d = a.delegation();
         if a.is_proven() {
             eprintln!(
-                "[probant] identity PROVEN — {} via {} — expires in {} s — bundle {}",
+                "[obsign] identity PROVEN — {} via {} — expires in {} s — bundle {}",
                 d.subject,
                 d.issuer,
                 d.remaining_secs(now_ms()),
@@ -436,7 +436,7 @@ fn run_stdio(
             );
         } else {
             eprintln!(
-                "[probant] WARNING: identity DECLARED, unverified — \"{}\". \
+                "[obsign] WARNING: identity DECLARED, unverified — \"{}\". \
                  The log will carry the issuer cli://declared. \
                  Never use in production.",
                 d.subject
@@ -459,7 +459,7 @@ fn run_stdio(
     };
     if chain.next_seq() > 0 {
         eprintln!(
-            "[probant] log resumed at seq={} (head {})",
+            "[obsign] log resumed at seq={} (head {})",
             chain.next_seq(),
             chain.head()
         );
@@ -595,7 +595,7 @@ fn run_stdio(
     let _ = downstream.join();
     let _ = child.wait();
 
-    eprintln!("[probant] {}", state.lock().unwrap().closing_report());
+    eprintln!("[obsign] {}", state.lock().unwrap().closing_report());
     Ok(())
 }
 

@@ -255,7 +255,7 @@ pub fn seal_pass(
 
 /// Assembles the evidence pack an auditor receives.
 ///
-/// Assembly, not judgement: the pack is handed to `probant verify` (or run
+/// Assembly, not judgement: the pack is handed to `obsign verify` (or run
 /// through `audit_core::evidence::verify` by the caller) for that. An export
 /// that filtered or repaired on the way out would be doing exactly what the
 /// product exists to make impossible.

@@ -1,6 +1,6 @@
 //! End-to-end gateway tests.
 //!
-//! Runs the real `probant-proxy` binary in front of an MCP server that obeys everything,
+//! Runs the real `obsign-proxy` binary in front of an MCP server that obeys everything,
 //! sends it JSON-RPC traffic, and checks both what the agent receives and what
 //! the audit log contains.
 //!
@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const ISSUER: &str = "https://sso.acme.fr/realms/corp";
-const AUDIENCE: &str = "probant-proxy";
+const AUDIENCE: &str = "obsign-proxy";
 
 /// PKCS8 v1 prefix of an Ed25519 private key.
 const PKCS8_PREFIX: &[u8] = &[
@@ -99,11 +99,11 @@ fn mint_full(exp_offset: i64, scopes: &str, act: Option<&str>, service: bool) ->
     // Keycloak shape: roles are not flat.
     let mut claims = json!({
         "sub": "u:marie.dupont", "iss": ISSUER, "aud": AUDIENCE,
-        "azp": "probant-proxy",
+        "azp": "obsign-proxy",
         "exp": now + exp_offset, "iat": now - 10,
         "scope": scopes,
         "realm_access": { "roles": ["support-n2"] },
-        "resource_access": { "probant-proxy": { "roles": ["ticket-writer"] } },
+        "resource_access": { "obsign-proxy": { "roles": ["ticket-writer"] } },
     });
     if let Some(a) = act {
         claims["act"] = json!({ "sub": a });
@@ -222,7 +222,7 @@ fn run_with(
     traffic: &[&str],
     key_mode: KeyMode,
 ) -> Fixture {
-    let dir = std::env::temp_dir().join(format!("probant-e2e-{name}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("obsign-e2e-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
@@ -249,7 +249,7 @@ fn run_with(
     std::fs::write(&bundle_path, serde_json::to_string(&signed).unwrap()).unwrap();
     std::fs::write(&keys_path, serde_json::to_string(&keys).unwrap()).unwrap();
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_probant-proxy"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_obsign-proxy"));
     cmd.arg("--policy")
         .arg(&bundle_path)
         .arg("--trusted-keys")
@@ -311,14 +311,14 @@ fn run_with(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let mut child = cmd.spawn().expect("spawning probant-proxy");
+    let mut child = cmd.spawn().expect("spawning obsign-proxy");
     {
         let mut stdin = child.stdin.take().unwrap();
         for line in traffic {
             let _ = writeln!(stdin, "{line}");
         }
     }
-    let out = child.wait_with_output().expect("waiting for probant-proxy");
+    let out = child.wait_with_output().expect("waiting for obsign-proxy");
 
     let stdout = String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -511,7 +511,7 @@ fn the_produced_evidence_pack_is_verifiable() {
 fn the_log_resumes_after_restart() {
     // Two successive runs against the same WAL: the chain must continue, not
     // restart from zero.
-    let dir = std::env::temp_dir().join(format!("probant-e2e-resume-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("obsign-e2e-resume-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
@@ -535,7 +535,7 @@ fn the_log_resumes_after_restart() {
 
     let mut seqs = Vec::new();
     for _ in 0..2 {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_probant-proxy"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_obsign-proxy"))
             .args(["--policy", dir.join("bundle.json").to_str().unwrap()])
             .args(["--trusted-keys", dir.join("keys.json").to_str().unwrap()])
             .args(["--wal", dir.join("wal").to_str().unwrap()])
@@ -574,10 +574,10 @@ fn the_log_resumes_after_restart() {
 // Identite : declaree contre prouvee
 // =====================================================================
 
-/// Runs `probant-proxy` with raw arguments and no traffic. Used to check startup
+/// Runs `obsign-proxy` with raw arguments and no traffic. Used to check startup
 /// refusals.
 fn start_only(name: &str, extra: &[&str]) -> std::process::Output {
-    let dir = std::env::temp_dir().join(format!("probant-start-{name}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("obsign-start-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
@@ -599,7 +599,7 @@ fn start_only(name: &str, extra: &[&str]) -> std::process::Output {
     std::fs::write(dir.join("identity-bundle.json"), identity_bundle_json()).unwrap();
     std::fs::write(dir.join("token.jwt"), mint(1800, "support:read", None)).unwrap();
 
-    let out = Command::new(env!("CARGO_BIN_EXE_probant-proxy"))
+    let out = Command::new(env!("CARGO_BIN_EXE_obsign-proxy"))
         .args(["--policy", dir.join("bundle.json").to_str().unwrap()])
         .args(["--trusted-keys", dir.join("keys.json").to_str().unwrap()])
         .args(["--wal", dir.join("wal").to_str().unwrap()])
@@ -616,7 +616,7 @@ fn start_only(name: &str, extra: &[&str]) -> std::process::Output {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .expect("spawning probant-proxy");
+        .expect("spawning obsign-proxy");
 
     let _ = std::fs::remove_dir_all(&dir);
     out

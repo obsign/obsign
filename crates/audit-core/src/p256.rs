@@ -399,11 +399,11 @@ mod tests {
     /// -sign` over the message below, key generated with `openssl ecparam
     /// -name prime256v1`), cross-verified with `openssl dgst -verify` before
     /// being embedded here.
-    const KAT_QX: &str = "96701b4243646dd8521884decec66a02f340eb129e1d55ca9e8350c79f21ec6c";
-    const KAT_QY: &str = "2fea23acb6e8d354ccaa238b30b4e66ed261e50582e687e2ad4e1d868a8d49e2";
-    const KAT_R: &str = "a61d38170e78329d947c6b1e39b4cffb315f80cbf51a3b1790937be909ab6e54";
-    const KAT_S: &str = "4278f5bf8517541c9c4590b762086c03de93edd93892ddd6a66a3c0d364a3779";
-    const KAT_MSG: &[u8] = b"probant p256 known-answer message";
+    const KAT_QX: &str = "be7d631b8d3803f1edd820088d1ed1c028339268b204f4b2e8b757fbb3b1b83b";
+    const KAT_QY: &str = "aefc0b4433b744ace50db833ffb5ad2e9f1d3a7dcc0b18564ddbd29e4eb06063";
+    const KAT_R: &str = "8083de9b34821bc9442127e004537f95ae468e1bee6695aa9df42111b1519abf";
+    const KAT_S: &str = "5f8f26ed4895c6843feae332c49ead0302a5f3906418a133158c92949151da28";
+    const KAT_MSG: &[u8] = b"obsign p256 known-answer message";
 
     fn kat() -> (Vec<u8>, [u8; 32], [u8; 64]) {
         let mut public = vec![0x04];

@@ -4,7 +4,7 @@
 //! a token, then adds its public key to the trusted keys file produced by
 //! `mkbundle`.
 //!
-//!     cargo run -p probant-proxy --example mint_demo_token -- /tmp/demo [ttl_s] [mode] [kid]
+//!     cargo run -p obsign-proxy --example mint_demo_token -- /tmp/demo [ttl_s] [mode] [kid]
 //!
 //! A negative `ttl_s` produces an already-expired token. `kid` (default `k1`)
 //! selects the IdP signing key: changing it simulates a key rotation on the
@@ -29,7 +29,7 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde_json::json;
 
 const ISSUER: &str = "https://sso.acme.fr/realms/corp";
-const AUDIENCE: &str = "probant-proxy";
+const AUDIENCE: &str = "obsign-proxy";
 const KEY_ID: &str = "identity-key-2026";
 
 /// PKCS8 v1 prefix of an Ed25519 private key.
@@ -116,12 +116,12 @@ fn main() {
         "sub": "u:marie.dupont",
         "iss": ISSUER,
         "aud": AUDIENCE,
-        "azp": "probant-proxy",
+        "azp": "obsign-proxy",
         "exp": now + exp,
         "iat": now - 10,
         "scope": "support:read support:ticket_update",
         "realm_access": { "roles": ["support-n2", "offline_access"] },
-        "resource_access": { "probant-proxy": { "roles": ["ticket-writer"] } },
+        "resource_access": { "obsign-proxy": { "roles": ["ticket-writer"] } },
     });
 
     match mode.as_str() {

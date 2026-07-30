@@ -11,7 +11,7 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde_json::json;
 
 const ISSUER: &str = "https://sso.acme.fr/realms/corp";
-const AUDIENCE: &str = "probant-proxy";
+const AUDIENCE: &str = "obsign-proxy";
 
 /// PKCS8 v1 prefix of an Ed25519 private key: a fixed structure, you just
 /// append the 32-byte seed behind it.

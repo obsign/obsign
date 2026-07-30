@@ -15,15 +15,15 @@ decisions in §10 were resolved as follows:
 - **(3) done:** the ops-signed bundle is embedded in the evidence pack
   (`Evidence.deployment`, `#[serde(default)]`), so the auditor verifies the
   whole origin chain of trust from the ops key alone.
-- **(2) deferred:** the `probant-identity/2` claims machine-marker fix is a
+- **(2) deferred:** the `obsign-identity/2` claims machine-marker fix is a
   separable HIGH (the deployment bundle is a *new* artifact, not an identity
   format rev, so it does not force the identity change). Left as its own
   next increment.
 
 Live-attack verified on the built binaries: a fabricated record with a
 correctly recomputed hash chain, appended after the sealed head, yields
-`probant-ledger seal --deployment-bundle` exit 1 and a gateway restart that
-refuses to resume; the default `probant verify` (require-origin now on)
+`obsign-ledger seal --deployment-bundle` exit 1 and a gateway restart that
+refuses to resume; the default `obsign verify` (require-origin now on)
 fails a legacy unsigned pack, and `--allow-unsigned-legacy-chains` restores
 the warning-only verdict.
 
@@ -48,7 +48,7 @@ Two operational facts make this urgent, not cosmetic:
 
 ## 2. Decision
 
-**A new control-plane-signed artifact, `probant-deployment/1`, listing the
+**A new control-plane-signed artifact, `obsign-deployment/1`, listing the
 active gateway origin keys. It rides the existing `compile → publish`
 pipeline and the existing ops-key trust root. The ledger and the offline
 verifier resolve origin trust through it instead of through a hand-kept file.
@@ -85,7 +85,7 @@ properly.
 ## 3. The artifact
 
 ```rust
-pub const FORMAT: &str = "probant-deployment/1";
+pub const FORMAT: &str = "obsign-deployment/1";
 
 /// The set of gateway origin keys a deployment currently trusts.
 ///
@@ -168,7 +168,7 @@ list.
 
 ## 5. The ledger resolves trust through the bundle
 
-`probant-ledger seal`/`run`/`export` learn `--deployment-bundle <file>`. The
+`obsign-ledger seal`/`run`/`export` learn `--deployment-bundle <file>`. The
 ledger already needs the ops public key to trust it, so:
 
 - `--deployment-bundle <ops-signed file>` and the ops key supplied the way
@@ -194,7 +194,7 @@ ops key  ─signs→  deployment bundle  ─lists→  origin keys  ─verify→ 
 seal key ──────────────────────────────────────sign→  checkpoints
 ```
 
-`probant verify --deployment-bundle <ops-signed file> --trusted-keys
+`obsign verify --deployment-bundle <ops-signed file> --trusted-keys
 <ops+seal keys>`:
 
 - verify the deployment bundle under the ops key from `--trusted-keys`;
@@ -260,7 +260,7 @@ Each step green on its own, same discipline as v0:
    default-on `require` with `--allow-unsigned-legacy-chains`. Tests: sealing
    trust resolved from a signed bundle; a key revoked (removed + republished)
    no longer seals; both-sources error.
-4. **probant verify**: `--deployment-bundle`, the two new findings, the
+4. **obsign verify**: `--deployment-bundle`, the two new findings, the
    ops→bundle→origin chain, default `--require-origin` +
    `--allow-unsigned-legacy-chains`. Tests: forged bundle rejected; the
    one-root-of-trust happy path; legacy pack under the new default.
@@ -293,7 +293,7 @@ the tests are the bulk.
    My recommendation: ship (a) for v1, add the `ConfigKind` variant now as a
    reserved additive extension, and schedule (b) with the rotation work.
 
-2. **Bundle the deferred `probant-identity/2` claims fix into this train.**
+2. **Bundle the deferred `obsign-identity/2` claims fix into this train.**
    The review's HIGH on `claims.rs` machine detection (`sub == client_id`
    misfires on Keycloak/Entra) was deferred because the real fix —
    configurable machine markers — needs a signed-bundle format rev, which we

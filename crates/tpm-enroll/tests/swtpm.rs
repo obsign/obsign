@@ -147,7 +147,7 @@ fn enrolls_against_a_real_software_tpm_and_the_verifier_accepts_it() {
     drop(tpm);
 
     let out_path = swtpm.state.join("attestation.json");
-    let output = Command::new(env!("CARGO_BIN_EXE_probant-tpm-enroll"))
+    let output = Command::new(env!("CARGO_BIN_EXE_obsign-tpm-enroll"))
         .args(["--tpm", &swtpm.tpm_addr])
         .args(["--key-id", "gw-tpm-2"])
         .args(["--binary-hash", &hex::encode(binary_hash)])
@@ -155,7 +155,7 @@ fn enrolls_against_a_real_software_tpm_and_the_verifier_accepts_it() {
         .arg("--out")
         .arg(&out_path)
         .output()
-        .expect("run probant-tpm-enroll");
+        .expect("run obsign-tpm-enroll");
     assert!(
         output.status.success(),
         "stderr: {}",

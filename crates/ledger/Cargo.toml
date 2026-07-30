@@ -22,5 +22,5 @@ clap = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 
 [[bin]]
-name = "probant-ledger"
+name = "obsign-ledger"
 path = "src/main.rs"

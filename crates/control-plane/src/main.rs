@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Parser)]
 #[command(
-    name = "probant-control",
+    name = "obsign-control",
     about = "Compiles signed bundles from a git checkout and distributes them",
     long_about = "The operator-side counterpart of the gateway: compiles a\n\
                   policy source tree into signed bundles (the version carries\n\

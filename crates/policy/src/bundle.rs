@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Error;
 
-pub const FORMAT: &str = "probant-policy/1";
+pub const FORMAT: &str = "obsign-policy/1";
 
 /// What the gateway loads in order to decide.
 ///

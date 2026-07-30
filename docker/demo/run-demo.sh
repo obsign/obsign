@@ -1,7 +1,7 @@
 #!/bin/sh
 # The README demo, in containers: drive the gateway over Streamable HTTP,
 # then seal the session's WAL with the ledger and verify the evidence pack
-# offline. Exits with `probant verify`'s status — 0 means the pack proved
+# offline. Exits with `obsign verify`'s status — 0 means the pack proved
 # intact against keys obtained outside the pack.
 set -eu
 
@@ -51,11 +51,11 @@ echo "[demo] closing the session (completes the log)"
 curl -s -X DELETE "$GW" -H "$AUTH" -H "Mcp-Session-Id: $SID" > /dev/null
 
 echo "[demo] sealing — the key never enters the gateway container"
-probant-ledger seal \
+obsign-ledger seal \
     --wal "$WAL" --chain-id "$CHAIN" --store "$STORE" \
     --key "$DEMO/seal-seed.hex" --key-id seal-demo
 
-probant-ledger export \
+obsign-ledger export \
     --wal "$WAL" --chain-id "$CHAIN" --store "$STORE" \
     --out "$DEMO/evidence-$SID.json"
 
@@ -63,6 +63,6 @@ echo "[demo] offline verification against keys from outside the pack."
 echo "[demo] (the demo gateway runs without an origin key, so verification"
 echo "[demo]  needs the explicit legacy opt-out; production gateways sign"
 echo "[demo]  every record — see the origin-authentication section of the README)"
-probant verify "$DEMO/evidence-$SID.json" \
+obsign verify "$DEMO/evidence-$SID.json" \
     --trusted-keys "$STORE/keys.json" \
     --allow-unsigned-legacy-chains

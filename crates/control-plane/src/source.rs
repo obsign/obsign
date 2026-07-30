@@ -470,7 +470,7 @@ mod tests {
 
     #[test]
     fn a_traversal_symref_in_head_is_an_error_not_a_file_read() {
-        let dir = std::env::temp_dir().join(format!("probant-symref-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("obsign-symref-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".git")).unwrap();
         // A file outside the git directory whose content is a plausible sha:

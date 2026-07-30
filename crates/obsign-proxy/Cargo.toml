@@ -1,5 +1,5 @@
 [package]
-name = "probant-proxy"
+name = "obsign-proxy"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -38,7 +38,7 @@ policy = { path = "../policy" }
 ledger = { path = "../ledger" }
 
 [[bin]]
-name = "probant-proxy"
+name = "obsign-proxy"
 path = "src/main.rs"
 
 # Demo MCP server. Declared as a binary rather than an example so integration

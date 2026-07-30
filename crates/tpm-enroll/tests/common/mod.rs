@@ -58,7 +58,7 @@ fn ephemeral_port() -> u16 {
 pub fn start_swtpm(tag: &str) -> Swtpm {
     for attempt in 0..3 {
         let state = std::env::temp_dir().join(format!(
-            "probant-swtpm-{tag}-{}-{attempt}",
+            "obsign-swtpm-{tag}-{}-{attempt}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&state);

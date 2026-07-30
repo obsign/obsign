@@ -83,8 +83,8 @@ pub enum Error {
     #[error("unknown identity bundle format: {0}")]
     UnknownBundleFormat(String),
 
-    #[error("a probant-identity/1 bundle carries machine markers its signature \
-             does not cover: recompile it as probant-identity/2")]
+    #[error("a obsign-identity/1 bundle carries machine markers its signature \
+             does not cover: recompile it as obsign-identity/2")]
     UnsignedMachineMarkers,
 
     #[error("identity bundle signed with key \"{0}\", absent from the trusted keys")]

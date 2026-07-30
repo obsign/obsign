@@ -903,7 +903,7 @@ mod swtpm_fixture_tests {
     use super::*;
     use crate::checkpoint::KeyRole;
 
-    /// Emitted by `probant-tpm-enroll` pointed at a fresh swtpm: PCR 16
+    /// Emitted by `obsign-tpm-enroll` pointed at a fresh swtpm: PCR 16
     /// extended with sha256("gateway-binary"), then certify + quote.
     const FIXTURE_ATTESTATION: &str = include_str!("../tests/fixtures/swtpm-attestation.json");
     const FIXTURE_ENTRY: &str = include_str!("../tests/fixtures/swtpm-identity-entry.json");

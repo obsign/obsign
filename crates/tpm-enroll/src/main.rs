@@ -1,8 +1,8 @@
-//! `probant-tpm-enroll` — runs the enrollment ceremony against a TPM 2.0
+//! `obsign-tpm-enroll` — runs the enrollment ceremony against a TPM 2.0
 //! command socket and emits the attestation the deployment bundle carries.
 //!
 //! ```sh
-//! probant-tpm-enroll \
+//! obsign-tpm-enroll \
 //!     --tpm 127.0.0.1:2321 --ctrl 127.0.0.1:2322 \
 //!     --key-id gw-1 --binary-hash "$(sha256sum gateway | cut -d' ' -f1)" \
 //!     --out attestation.json
@@ -19,7 +19,7 @@ use tpm_enroll::{ctrl::SwtpmCtrl, enroll, EnrollmentRequest, Tpm};
 
 #[derive(Parser)]
 #[command(
-    name = "probant-tpm-enroll",
+    name = "obsign-tpm-enroll",
     about = "Enroll a gateway identity key with a TPM 2.0: AK, certify, quote"
 )]
 struct Args {
@@ -111,7 +111,7 @@ fn main() -> anyhow::Result<()> {
     // entry must wait for P-256 origin-key support.
     if enrollment.algorithm.as_str() != "ed25519" {
         eprintln!(
-            "[probant-tpm-enroll] warning: this TPM produced a {} identity key; \
+            "[obsign-tpm-enroll] warning: this TPM produced a {} identity key; \
              deployment bundles accept only ed25519 origin keys for now, so do \
              NOT paste identity_entry into origin-keys.json — the bundle would \
              stop verifying. Keep the attestation; enroll the entry once P-256 \

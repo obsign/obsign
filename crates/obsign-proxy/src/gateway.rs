@@ -243,7 +243,7 @@ pub(crate) fn handle_from_agent(
                 }),
             )?;
             drop(s);
-            eprintln!("[probant] REFUSED unsolicited response-shaped message");
+            eprintln!("[obsign] REFUSED unsolicited response-shaped message");
             return Ok(Forward::Reply(
                 json!({
                     "jsonrpc": "2.0",
@@ -381,7 +381,7 @@ pub(crate) fn handle_from_agent(
             &ctx.bundle_version,
         )?;
         eprintln!(
-            "[probant] delegation renewed (generation {generation}) — {} — expires in {} s",
+            "[obsign] delegation renewed (generation {generation}) — {} — expires in {} s",
             deleg.subject,
             deleg.remaining_secs(now)
         );
@@ -474,7 +474,7 @@ pub(crate) fn handle_from_agent(
     if verdict.is_allowed() {
         if verdict.outcome == Outcome::AllowFailOpen {
             eprintln!(
-                "[probant] DEGRADED {}: {}",
+                "[obsign] DEGRADED {}: {}",
                 act.label(),
                 verdict.reason.clone().unwrap_or_default()
             );
@@ -500,7 +500,7 @@ pub(crate) fn handle_from_agent(
                     )?;
                     drop(s);
                     eprintln!(
-                        "[probant] REFUSED {}: JSON-RPC id {id} is already in flight",
+                        "[obsign] REFUSED {}: JSON-RPC id {id} is already in flight",
                         act.label()
                     );
                     return Ok(Forward::Reply(refusal_reply(
@@ -539,7 +539,7 @@ pub(crate) fn handle_from_agent(
     let reason = verdict
         .reason
         .unwrap_or_else(|| "refused by policy".to_string());
-    eprintln!("[probant] REFUSED {}: {reason}", act.label());
+    eprintln!("[obsign] REFUSED {}: {reason}", act.label());
 
     Ok(Forward::Reply(refusal_reply(
         &act,
@@ -729,7 +729,7 @@ pub(crate) fn handle_from_server(
 
         if !removed.is_empty() {
             eprintln!(
-                "[probant] {label}: {} hidden — {}",
+                "[obsign] {label}: {} hidden — {}",
                 removed.len(),
                 removed.join(", ")
             );
@@ -868,7 +868,7 @@ fn handle_server_initiated(
         });
     if let Err(e) = written {
         drop(s);
-        eprintln!("[probant] audit write failed, server-initiated {method} refused: {e}");
+        eprintln!("[obsign] audit write failed, server-initiated {method} refused: {e}");
         return refuse(&id, -32603, "audit log unavailable");
     }
 
@@ -890,7 +890,7 @@ fn handle_server_initiated(
                     );
                     drop(s);
                     eprintln!(
-                        "[probant] REFUSED server-initiated {method}: \
+                        "[obsign] REFUSED server-initiated {method}: \
                          JSON-RPC id {id} is already in flight"
                     );
                     return refuse(
@@ -925,7 +925,7 @@ fn handle_server_initiated(
     let reason = verdict
         .reason
         .unwrap_or_else(|| "refused by policy".to_string());
-    eprintln!("[probant] REFUSED server-initiated {method}: {reason}");
+    eprintln!("[obsign] REFUSED server-initiated {method}: {reason}");
     if out_of_scope {
         refuse(&id, -32601, &format!("Method not arbitrated: {reason}"))
     } else {
@@ -978,7 +978,7 @@ mod tests {
     }
 
     fn open_state(tag: &str) -> (std::path::PathBuf, Arc<Mutex<session::Session>>) {
-        let dir = std::env::temp_dir().join(format!("probant-gw-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("obsign-gw-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let (wal, chain) = Wal::open(&dir, "t").unwrap();
         (dir, Arc::new(Mutex::new(session::open(chain, wal, "sess".into(), None))))
@@ -990,7 +990,7 @@ mod tests {
         // agent reused a JSON-RPC id, so the displaced call's Effect record
         // was never written — a forwarded act with no recorded outcome.
         let dir = std::env::temp_dir().join(format!(
-            "probant-gw-id-collision-{}",
+            "obsign-gw-id-collision-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);

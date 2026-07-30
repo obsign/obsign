@@ -29,7 +29,7 @@ services:
         condition: service_completed_successfully
     command:
       [
-        "probant-proxy",
+        "obsign-proxy",
         "--policy", "/demo/policy-bundle.json",
         "--trusted-keys", "/demo/trusted-keys.json",
         "--identity-bundle", "/demo/identity-bundle.json",
@@ -71,7 +71,7 @@ services:
         condition: service_completed_successfully
     command:
       [
-        "probant-control", "console",
+        "obsign-control", "console",
         "--wal", "/wal",
         "--store", "/store",
         "--listen", "0.0.0.0:9090",

@@ -1,4 +1,4 @@
-module probant.dev/tpm-interop
+module obsign.dev/tpm-interop
 
 go 1.19
 

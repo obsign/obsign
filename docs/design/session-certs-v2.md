@@ -253,11 +253,11 @@ Each step green on its own, the established discipline:
    and `Pkcs11IdentitySigner` behind the existing PKCS#11 module (reused, not
    rewritten). Where these live: a new `origin-signer` home, or extend the
    ledger's PKCS#11 module into a shared crate — see open decision 3.
-4. **probant-proxy**: generate the session key, certify at session open,
+4. **obsign-proxy**: generate the session key, certify at session open,
    write the `SessionCert` record, resume against the certified session key.
    `--identity-key` (file seed) / `--identity-hsm-*` (PKCS#11), replacing
    `--origin-key`. The `OriginSigner` backed by the ephemeral key.
-5. **probant verify**: report the certificate chain, the window verdict.
+5. **obsign verify**: report the certificate chain, the window verdict.
 6. **control-plane / docs**: the enrolled key is now an *identity* key; the
    `deployment/origin-keys.json` semantics and the runbook updated.
 

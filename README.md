@@ -1,4 +1,4 @@
-# Probant — enforceable audit log of agent actions
+# Obsign — enforceable audit log of agent actions
 
 Verifiable proof of what your AI agents did to your systems: which human
 delegated, to which agent, to call which tool, with which policy verdict.
@@ -17,11 +17,11 @@ policy decides, the log is sealed, and the auditor verifies offline.
 | Crate | Role | State |
 |---|---|---|
 | `audit-core` | Record format, hash chain, Merkle, signed sealing, verification | done |
-| `probant` | Offline verifier — the CLI the auditor runs | done |
+| `obsign` | Offline verifier — the CLI the auditor runs | done |
 | `policy` | Signed bundles, Cedar evaluation, tool catalogue | done |
 | `identity` | Signed identity bundle, claim mapping, RFC 8693 actor chain, hot rotation | done |
 | `wal` | Durable local log, replay on startup | done |
-| `probant-proxy` | MCP proxy (stdio and Streamable HTTP), discovery filtering (`tools/list`, `resources/list`, `prompts/list`), arbitration of every act (`tools/call`, `resources/read`, `prompts/get`, subscriptions, `completion/complete`, server-initiated `sampling`/`elicitation`), default-deny method space | done |
+| `obsign-proxy` | MCP proxy (stdio and Streamable HTTP), discovery filtering (`tools/list`, `resources/list`, `prompts/list`), arbitration of every act (`tools/call`, `resources/read`, `prompts/get`, subscriptions, `completion/complete`, server-initiated `sampling`/`elicitation`), default-deny method space | done |
 | `ledger` | Sealing away from the gateway, checkpoint store, RFC 3161 anchoring, evidence export | done |
 | `control-plane` | Compiling policies from git, immutable signed releases, fleet evidence export, read-only console | done |
 
@@ -30,13 +30,13 @@ policy decides, the log is sealed, and the auditor verifies offline.
 ```bash
 cargo build --workspace
 cargo run -p policy --example mkbundle -- /tmp/demo
-cargo run -p probant-proxy --example mint_demo_token -- /tmp/demo 1800 user
+cargo run -p obsign-proxy --example mint_demo_token -- /tmp/demo 1800 user
 
 printf '%s\n' \
  '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
  '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"delete_production_db","arguments":{"database":"customers"}}}' \
  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ticket_update","arguments":{"ticket":"T-8821"}}}' \
- | ./target/debug/probant-proxy \
+ | ./target/debug/obsign-proxy \
      --policy /tmp/demo/policy-bundle.json \
      --trusted-keys /tmp/demo/trusted-keys.json \
      --identity-bundle /tmp/demo/identity-bundle.json \
@@ -48,9 +48,9 @@ printf '%s\n' \
 What happens:
 
 ```
-[probant] identity PROVEN — u:marie.dupont via https://sso.acme.fr/realms/corp — expires in 1756 s
-[probant] REFUSED delete_production_db: forbidden by an explicit rule
-[probant] tools/list: 2 hidden — delete_production_db, exfiltrate_secrets
+[obsign] identity PROVEN — u:marie.dupont via https://sso.acme.fr/realms/corp — expires in 1756 s
+[obsign] REFUSED delete_production_db: forbidden by an explicit rule
+[obsign] tools/list: 2 hidden — delete_production_db, exfiltrate_secrets
 [server] EXECUTING ticket_update
 ```
 
@@ -88,7 +88,7 @@ puts it. Deleting the session closes its chain; the ledger then seals it like
 any other WAL, under `<chain-id>-<session>`.
 
 ```bash
-cargo run -p probant-proxy -- \
+cargo run -p obsign-proxy -- \
     --http 127.0.0.1:8080 \
     --policy /tmp/demo/policy-bundle.json \
     --trusted-keys /tmp/demo/trusted-keys.json \
@@ -111,7 +111,7 @@ curl -s http://127.0.0.1:8080/mcp \
 curl -s -X DELETE http://127.0.0.1:8080/mcp \
      -H "Mcp-Session-Id: $SID"
 # → when this returns, the WAL holds the complete session (chain demo-$SID),
-#   ready for a probant-ledger pass to seal
+#   ready for a obsign-ledger pass to seal
 ```
 
 The HTTP layer is written by hand on `std::net` — no async runtime, no web
@@ -165,7 +165,7 @@ already-expired delegation.
 ## Delegation chain
 
 A token that says "marie.dupont" does not say *who was acting in her name*.
-RFC 8693 token exchange does, and Probant records it.
+RFC 8693 token exchange does, and Obsign records it.
 
 | Token mode | Actor chain | `principal_kind` |
 |---|---|---|
@@ -193,8 +193,8 @@ chain." Cedar also receives `context.actor_chain` (a set),
 Try the three modes:
 
 ```bash
-cargo run -p probant-proxy --example mint_demo_token -- /tmp/demo 1800 exchange
-cargo run -p probant-proxy --example mint_demo_token -- /tmp/demo 1800 service
+cargo run -p obsign-proxy --example mint_demo_token -- /tmp/demo 1800 exchange
+cargo run -p obsign-proxy --example mint_demo_token -- /tmp/demo 1800 service
 ```
 
 ## Identity providers
@@ -225,7 +225,7 @@ no `principal in Group::"dba"` rule ever matches — with no visible error.
 
 The same goes for what marks a token as a machine's. The defaults recognise
 the three shapes the target IdPs emit; an IdP with its own convention is
-described, not special-cased (format `probant-identity/2`):
+described, not special-cased (format `obsign-identity/2`):
 
 ```json
 "claims": {
@@ -241,7 +241,7 @@ Marker paths speak the same language as the claim paths, wildcard included.
 Because these markers decide `principal_kind` — hence which Cedar rules apply
 — they live **inside the signed bundle**, never as a file option: widening
 what counts as human must be signed like any other authorization change. A
-`probant-identity/1` bundle still verifies unchanged, but only with the
+`obsign-identity/1` bundle still verifies unchanged, but only with the
 default markers; carrying custom ones requires re-signing as `/2`, since the
 v1 signature does not cover them.
 
@@ -269,11 +269,11 @@ python3 scripts/demo-rotation.py /tmp/rot
 ```
 
 ```
-[probant] identity PROVEN — u:marie.dupont via …/realms/corp — expires in 2 s — bundle identity@k1
+[obsign] identity PROVEN — u:marie.dupont via …/realms/corp — expires in 2 s — bundle identity@k1
 [server] EXECUTING ticket_update
 >>> rotation: the IdP moves to k2, the control plane republishes the bundle
-[probant] rotation detected (unknown kid "k2") — identity bundle reloaded: identity@k2, 1 key(s)
-[probant] delegation renewed (generation 2) — u:marie.dupont — expires in 3596 s
+[obsign] rotation detected (unknown kid "k2") — identity bundle reloaded: identity@k2, 1 key(s)
+[obsign] delegation renewed (generation 2) — u:marie.dupont — expires in 3596 s
 [server] EXECUTING ticket_update
 ```
 
@@ -314,23 +314,23 @@ investigation wants to see.
 As long as sealing happens inside the gateway, the signing key and the log
 cohabit on one host: whoever compromises it can rewrite the log *and* re-seal
 it, and the checkpoints then certify the attacker's version of history.
-`probant-ledger` runs elsewhere — another machine, or a cron under another
+`obsign-ledger` runs elsewhere — another machine, or a cron under another
 identity — reads the WAL without ever writing to it, and seals with a key the
 gateway never holds:
 
 ```bash
 openssl rand -hex 32 > /tmp/demo/seal-seed.hex
 
-./target/debug/probant-ledger seal \
+./target/debug/obsign-ledger seal \
     --wal /tmp/demo/wal --chain-id demo \
     --store /tmp/demo/ledger \
     --key /tmp/demo/seal-seed.hex --key-id seal-prod
 
-./target/debug/probant-ledger export \
+./target/debug/obsign-ledger export \
     --wal /tmp/demo/wal --chain-id demo \
     --store /tmp/demo/ledger --out /tmp/demo/evidence.json
 
-./target/debug/probant verify /tmp/demo/evidence.json \
+./target/debug/obsign verify /tmp/demo/evidence.json \
     --trusted-keys /tmp/demo/ledger/keys.json
 ```
 
@@ -360,19 +360,19 @@ seven calls sealing needs, not a binding crate that drags in the other
 sixty-one.
 
 ```bash
-./target/debug/probant-ledger seal \
+./target/debug/obsign-ledger seal \
     --wal /tmp/demo/wal --chain-id demo \
     --store /tmp/demo/ledger \
     --hsm-module /usr/lib/pkcs11/vendor.so \
     --hsm-key-label seal-prod \
-    --hsm-pin-file /etc/probant/hsm-pin \
+    --hsm-pin-file /etc/obsign/hsm-pin \
     --key-id seal-prod
 ```
 
 The key pair (Ed25519, both halves under the same label) is provisioned with
 the vendor's tooling; the ledger only ever asks the token to sign, over a
 read-only session. When the module exposes several tokens, `--hsm-token-label`
-or `--hsm-slot` picks one; the PIN comes from a file or `PROBANT_HSM_PIN`,
+or `--hsm-slot` picks one; the PIN comes from a file or `OBSIGN_HSM_PIN`,
 never from an argument (arguments end up in `ps` and shell history).
 Everything that can be misconfigured fails at startup with the vendor's error
 code in clear text — wrong PIN, absent key, or a key of the wrong type: a
@@ -395,17 +395,17 @@ makes the date enforceable against a third party. The exchange is by file —
 no HTTP client anywhere, air-gapped deployments come first:
 
 ```bash
-./target/debug/probant-ledger anchor request \
+./target/debug/obsign-ledger anchor request \
     --store /tmp/demo/ledger --chain-id demo --out /tmp/demo/checkpoint.tsq
 # carry the .tsq to your TSA (openssl ts reads and produces these), then:
-./target/debug/probant-ledger anchor attach \
+./target/debug/obsign-ledger anchor attach \
     --store /tmp/demo/ledger --chain-id demo \
     --response /tmp/demo/checkpoint.tsr --tsa "tsa.internal.acme.fr"
 ```
 
 The response is only attached if the TSA granted it and the token imprints
 exactly the checkpoint hash — the token names its own checkpoint, there is no
-flag to get wrong. In the evidence pack, `probant verify` re-checks both
+flag to get wrong. In the evidence pack, `obsign verify` re-checks both
 structurally and reports the anchors; the CMS signature of the token itself is
 validated against the TSA certificate with standard tooling (`openssl ts
 -verify`), and the report says so rather than passing a structural check off
@@ -413,7 +413,7 @@ as a cryptographic one.
 
 ## The control plane: from git to the fleet
 
-Everything the gateway trusts arrives as a signed file. `probant-control` is
+Everything the gateway trusts arrives as a signed file. `obsign-control` is
 where those files come from — and the reason a rule change is a dated,
 reviewed pull request rather than a click in a UI:
 
@@ -422,11 +422,11 @@ reviewed pull request rather than a click in a UI:
 #   policies/*.cedar   tools.json   fail-mode.json   identity/{provider,jwks}.json
 openssl rand -hex 32 > /tmp/ops.hex
 
-./target/debug/probant-control publish \
+./target/debug/obsign-control publish \
     --source ~/acme-policies --key /tmp/ops.hex --key-id ops-2026 \
-    --dist /srv/probant/dist
+    --dist /srv/obsign/dist
 # [control] compiled policies@847d4fca5754 — 1 rule file(s), 2 tool(s), ...
-# [control] published release 847d4fca5754 -> /srv/probant/dist/releases/847d4fca5754
+# [control] published release 847d4fca5754 -> /srv/obsign/dist/releases/847d4fca5754
 ```
 
 The version *is* the commit sha, resolved by reading `.git` directly — no git
@@ -458,13 +458,13 @@ names?" must be answerable with nothing but `sha256sum`.
 
 ### The audit dossier
 
-`probant-ledger export` produces one pack for one chain; an auditor asks for
+`obsign-ledger export` produces one pack for one chain; an auditor asks for
 a period. With the HTTP transport every agent session is its own chain, so
 "what did your agents do in Q3" is dozens of packs:
 
 ```bash
-./target/debug/probant-control export \
-    --wal /srv/probant/wal --store /srv/probant/ledger \
+./target/debug/obsign-control export \
+    --wal /srv/obsign/wal --store /srv/obsign/ledger \
     --out /tmp/dossier --key /tmp/ops.hex --key-id ops-2026
 ```
 
@@ -477,8 +477,8 @@ exactly what the product exists to make impossible. The exit code says so.
 ### The console
 
 ```bash
-./target/debug/probant-control console \
-    --wal /srv/probant/wal --store /srv/probant/ledger --dist /srv/probant/dist
+./target/debug/obsign-control console \
+    --wal /srv/obsign/wal --store /srv/obsign/ledger --dist /srv/obsign/dist
 ```
 
 Three server-rendered HTML pages on `std::net` — current release with its
@@ -493,7 +493,7 @@ commercial layer's job, not a reason to weaken the core.
 
 ```bash
 cargo run -p audit-core --example gen_sample -- /tmp/sample
-cargo run -p probant -- verify /tmp/sample/evidence.json \
+cargo run -p obsign -- verify /tmp/sample/evidence.json \
     --trusted-keys /tmp/sample/trusted-keys.json
 ```
 
@@ -501,7 +501,7 @@ Tamper with the result and re-run:
 
 ```bash
 sed -i '' 's/"outcome": "deny"/"outcome": "allow"/' /tmp/sample/evidence.json
-cargo run -p probant -- verify /tmp/sample/evidence.json \
+cargo run -p obsign -- verify /tmp/sample/evidence.json \
     --trusted-keys /tmp/sample/trusted-keys.json    # exit 1
 ```
 
@@ -544,7 +544,7 @@ different batches with the same root.
 hashed with distinct prefixes, so none can be presented as another.
 
 **A single implementation.** `audit-core` is the only place a hash is computed.
-The gateway, the ledger, the control plane and the `probant` CLI all depend on it.
+The gateway, the ledger, the control plane and the `obsign` CLI all depend on it.
 Two implementations would diverge, and the day the export says "valid" while
 the verifier says "tampered", the product is worth nothing.
 
@@ -626,7 +626,7 @@ that test fails, the question is not "how do I update the constants" but
 Signed *bundles* evolve differently: their format string is part of the
 signed bytes, so a revision is a new string, and every revision an artifact
 was published under keeps verifying with the signing bytes of its day.
-Exercised once: `probant-identity/2` extended the signed bytes with the
+Exercised once: `obsign-identity/2` extended the signed bytes with the
 machine markers; a `/1` bundle keeps its hash and signature, and a `/1` file
 carrying the fields only `/2` signs is refused rather than trusted.
 
@@ -653,14 +653,14 @@ capability action (default deny, as `sampling` is today) and hash what
 passes into an `mcp_access` record.
 
 **Dependency tree.** Measured as unique crates in `cargo tree -e normal`.
-The tree that carries the trust story is the auditor's: `probant` builds
+The tree that carries the trust story is the auditor's: `obsign` builds
 from 31 crates (`audit-core` 29) — argument parsing is hand-rolled, so
 `clap` and its subtree are gone from that build. Of the 31, five are the
 `serde` derive machinery (`serde_derive`, `syn`, `quote`, `proc-macro2`,
 `unicode-ident`); manual `serde` implementations in `audit-core` — the
 remaining lever — would leave ~26, nearly all of it the cryptography itself
 (`curve25519-dalek`, `sha2` and their arithmetic support). The gateway is a
-different story and deliberately so: `probant-proxy` builds from 114 crates,
+different story and deliberately so: `obsign-proxy` builds from 114 crates,
 dominated by two justified subtrees — Cedar (68 crates; a closed decision)
 and `jsonwebtoken`→`ring` (34; enterprise IdPs sign RS256/ES256, and
 hand-rolling RSA verification is not an option). Neither reaches the
@@ -721,7 +721,7 @@ Six families, each with a distinct role:
   resolves from loose refs, packed refs and detached HEAD without a git
   binary. Compilation is byte-for-byte deterministic, tested by compiling
   twice.
-- `probant-proxy` — unit tests on expiry, delegation renewal and rotation recovery (at
+- `obsign-proxy` — unit tests on expiry, delegation renewal and rotation recovery (at
   startup and mid-session, applied reloads and rejected ones both surfacing as
   `config_reload` records), plus `tests/e2e.rs` which runs the real binary in
   front of an MCP server and checks that the refused call **never reaches the

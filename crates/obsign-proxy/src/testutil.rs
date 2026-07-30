@@ -15,7 +15,7 @@ use serde_json::json;
 use std::path::PathBuf;
 
 pub const ISSUER: &str = "https://sso.acme.fr/realms/corp";
-pub const AUDIENCE: &str = "probant-proxy";
+pub const AUDIENCE: &str = "obsign-proxy";
 
 /// PKCS8 v1 prefix of an Ed25519 private key.
 const PKCS8_PREFIX: &[u8] = &[

@@ -28,5 +28,5 @@ clap = { workspace = true }
 base64 = "0.22"
 
 [[bin]]
-name = "probant-control"
+name = "obsign-control"
 path = "src/main.rs"

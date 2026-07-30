@@ -36,10 +36,10 @@ or by hand:
 
 ```sh
 cargo build --release -p tpm-enroll
-sudo target/release/probant-tpm-enroll \
+sudo target/release/obsign-tpm-enroll \
     --tpm /dev/tpmrm0 \
     --key-id lab-hw-1 \
-    --binary-hash "$(sha256sum target/release/probant-tpm-enroll | cut -d' ' -f1)" \
+    --binary-hash "$(sha256sum target/release/obsign-tpm-enroll | cut -d' ' -f1)" \
     --pcr 16 \
     --out attestation.json
 ```

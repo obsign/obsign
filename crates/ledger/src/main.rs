@@ -20,7 +20,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Parser)]
 #[command(
-    name = "probant-ledger",
+    name = "obsign-ledger",
     about = "Seals the gateway's audit log with a key the gateway never holds",
     long_about = "Reads the WAL the gateway produced (never writes to it),\n\
                   seals it into signed checkpoints, anchors them per RFC 3161\n\
@@ -74,7 +74,7 @@ struct SealArgs {
     #[arg(long, requires = "hsm_module")]
     hsm_slot: Option<u64>,
 
-    /// File holding the user PIN. Without it, the PROBANT_HSM_PIN
+    /// File holding the user PIN. Without it, the OBSIGN_HSM_PIN
     /// environment variable. Never an argument: arguments end up in `ps`
     /// output and shell history.
     #[arg(long, requires = "hsm_module")]
@@ -275,8 +275,8 @@ fn make_sealer(args: &SealArgs) -> Result<Box<dyn Sealer>> {
                     .with_context(|| format!("reading the PIN file {}", path.display()))?
                     .trim()
                     .to_string(),
-                None => std::env::var("PROBANT_HSM_PIN").map_err(|_| {
-                    anyhow::anyhow!("no PIN: give --hsm-pin-file or set PROBANT_HSM_PIN")
+                None => std::env::var("OBSIGN_HSM_PIN").map_err(|_| {
+                    anyhow::anyhow!("no PIN: give --hsm-pin-file or set OBSIGN_HSM_PIN")
                 })?,
             };
             Ok(Box::new(Pkcs11Sealer::open(
@@ -520,7 +520,7 @@ fn anchor_request(
         sc.checkpoint.to_seq,
         out.display()
     );
-    eprintln!("[ledger] send it to your TSA, then: probant-ledger anchor attach --response <file.tsr>");
+    eprintln!("[ledger] send it to your TSA, then: obsign-ledger anchor attach --response <file.tsr>");
     Ok(())
 }
 

@@ -771,8 +771,8 @@ mod tests {
     #[test]
     fn token_label_trims_padding_only_on_the_right() {
         let mut raw = [b' '; 32];
-        raw[..12].copy_from_slice(b"probant-seal");
-        assert_eq!(token_label(&raw), "probant-seal");
+        raw[..11].copy_from_slice(b"obsign-seal");
+        assert_eq!(token_label(&raw), "obsign-seal");
         let mut raw = [b' '; 32];
         raw[1..5].copy_from_slice(b"abcd");
         assert_eq!(token_label(&raw), " abcd");

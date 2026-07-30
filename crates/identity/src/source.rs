@@ -191,7 +191,7 @@ mod tests {
     use serde_json::json;
 
     const ISSUER: &str = "https://sso.acme.fr/realms/corp";
-    const AUDIENCE: &str = "probant-proxy";
+    const AUDIENCE: &str = "obsign-proxy";
 
     fn b64(b: &[u8]) -> String {
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b)

@@ -270,7 +270,7 @@ fn verify_token(
                     content,
                 } => {
                     eprintln!(
-                        "[probant] rotation detected (unknown kid \"{kid}\") — identity \
+                        "[obsign] rotation detected (unknown kid \"{kid}\") — identity \
                          bundle reloaded: {version}, {keys} key(s)"
                     );
                     reloads.push(ConfigReload {
@@ -285,7 +285,7 @@ fn verify_token(
                     // The previous bundle stays in place: we fail on this
                     // token, not on the service.
                     eprintln!(
-                        "[probant] WARNING: identity bundle reload failed ({reason}) \
+                        "[obsign] WARNING: identity bundle reload failed ({reason}) \
                          — previous configuration kept"
                     );
                     reloads.push(ConfigReload {
@@ -319,14 +319,14 @@ mod tests {
     /// Bundle that only knows `k1`.
     fn source(name: &str) -> (BundleSource, PathBuf) {
         let p = std::env::temp_dir()
-            .join(format!("probant-auth-{name}-{}.bundle.json", std::process::id()));
+            .join(format!("obsign-auth-{name}-{}.bundle.json", std::process::id()));
         write_bundle(&p, "identity@1", &[("k1", 1)]);
         (BundleSource::load(&p, &keyring()).unwrap(), p)
     }
 
     fn token_file(name: &str, exp_offset: i64, scopes: &str) -> PathBuf {
         let p = std::env::temp_dir()
-            .join(format!("probant-auth-{name}-{}.jwt", std::process::id()));
+            .join(format!("obsign-auth-{name}-{}.jwt", std::process::id()));
         std::fs::write(&p, mint(1, exp_offset, scopes)).unwrap();
         p
     }

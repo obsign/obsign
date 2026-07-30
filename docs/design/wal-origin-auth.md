@@ -15,7 +15,7 @@ were adjusted on contact with the code, both noted inline and marked
   The hard error is reserved for what only tampering can produce: a bad
   signature under a *trusted* key, a role-confused key, half a
   signature/key-id pair.
-- `probant-ledger export` (and `seal`/`run`) takes `--trusted-origin-keys`;
+- `obsign-ledger export` (and `seal`/`run`) takes `--trusted-origin-keys`;
   export embeds those entries in the pack beside the sealing keys, so a
   signed log self-describes. The gateway prints its public entry on stderr
   at startup — the operator's copy-paste path into that file.
@@ -27,7 +27,7 @@ public: an attacker with write access to the WAL directory — and nothing
 else, no key — can fabricate a perfectly well-formed record and append it
 after the sealed head. The honest ledger, on its next pass, finds a
 consistent chain extension and **seals the forgery with the real key**.
-`probant verify --strict --trusted-keys` exits 0 over an act that never
+`obsign verify --strict --trusted-keys` exits 0 over an act that never
 happened.
 
 The hash chain proves *internal consistency*; the checkpoint proves *who
@@ -143,7 +143,7 @@ pub struct SignedRecord {
 - Old JSONL lines deserialize with `None` fields; new lines are readable by
   `tail` exactly as before, two hex fields longer (+~150 bytes/line).
 - `Evidence.records` becomes `Vec<SignedRecord>`; old packs (plain records)
-  still parse, `FORMAT` string stays `probant-evidence/1`. Bumping the format
+  still parse, `FORMAT` string stays `obsign-evidence/1`. Bumping the format
   would make every existing pack unverifiable for a purely additive change —
   the `anchors` precedent applies.
 - `wal::replay` keeps validating the hash chain on `record` exactly as
@@ -248,7 +248,7 @@ chains are session-scoped and short-lived; rotate between sessions.
   the unresolvable-key case was moved here from `origin_invalid` — see the
   status header)*. Self-referential key material is already covered by
   `keys_not_anchored`.
-- `origin_not_required` semantics via `--require-origin` on `probant
+- `origin_not_required` semantics via `--require-origin` on `obsign
   verify`: upgrades `origin_unverified` to an error. Auditors of deployments
   that mandate origin auth run with the flag; `--strict` already fails on
   warnings, so strict runs catch stripped signatures today.
@@ -301,14 +301,14 @@ Order chosen so each step lands green on its own:
 2. **wal**: envelopes in `append`/`replay`; `Wal::open` verification +
    `ForeignRecord`; signer plumbed in from the caller so the crate stays
    dependency-light (it takes a `&dyn` or a closure, not a key file).
-3. **probant-proxy**: `OriginSigner` + `FileOriginSigner`, `Session::write`
+3. **obsign-proxy**: `OriginSigner` + `FileOriginSigner`, `Session::write`
    signs before `wal.append` (durability order unchanged: chain → sign →
    fsync → forward). Config: `--origin-key` / env.
 4. **ledger**: trusted-origin-keys config, 3.4 in `seal_pass` with
    prefix-seal semantics, `--require-origin`. Tests: forged tail after
    sealed head → prefix sealed + `UnauthenticatedRecord`; e2e: fabricated
    record can no longer reach a sealed checkpoint.
-5. **probant verify**: `--require-origin`, report fields
+5. **obsign verify**: `--require-origin`, report fields
    (`records_origin_ok`), docs.
 6. **control-plane export**: passes envelopes through untouched (export
    assembles, never judges).

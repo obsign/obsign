@@ -1,6 +1,6 @@
 //! Fleet export: the audit dossier.
 //!
-//! `probant-ledger export` produces one evidence pack for one chain. An
+//! `obsign-ledger export` produces one evidence pack for one chain. An
 //! auditor asks for a period, not a chain: with the Streamable HTTP transport
 //! every agent session is its own chain, and "what did your agents do in Q3"
 //! is dozens of packs. This module walks every chain the WAL holds, exports
@@ -9,7 +9,7 @@
 //! the loss being visible.
 //!
 //! Pack hashes are plain SHA-256 of the files as written: the recipient
-//! checks them with `sha256sum`, then verifies each pack with `probant
+//! checks them with `sha256sum`, then verifies each pack with `obsign
 //! verify`. Nothing here requires our tooling twice.
 
 use audit_core::canonical::Encoder;
@@ -22,7 +22,7 @@ use std::path::Path;
 
 use crate::{write_atomic, Error, OpsKey};
 
-pub const FORMAT: &str = "probant-export/1";
+pub const FORMAT: &str = "obsign-export/1";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]

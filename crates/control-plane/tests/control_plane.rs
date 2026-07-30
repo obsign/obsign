@@ -66,7 +66,7 @@ fn write_source_tree(root: &Path) {
         root.join("identity/provider.json"),
         serde_json::json!({
             "issuer": "https://sso.acme.fr/realms/corp",
-            "audience": "probant-proxy"
+            "audience": "obsign-proxy"
         })
         .to_string(),
     )

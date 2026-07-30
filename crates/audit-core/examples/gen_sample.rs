@@ -202,5 +202,5 @@ fn main() {
     println!("evidence pack : {}", ev_path.display());
     println!("trusted keys  : {}", keys_path.display());
     println!();
-    println!("  probant verify {} --trusted-keys {}", ev_path.display(), keys_path.display());
+    println!("  obsign verify {} --trusted-keys {}", ev_path.display(), keys_path.display());
 }

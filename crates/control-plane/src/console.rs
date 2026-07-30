@@ -8,7 +8,7 @@
 //! Read-only **by construction**: the only accepted method is GET and no
 //! handler writes anything. The console can therefore never become a second
 //! write path around git — rules change through a reviewed commit and
-//! `probant-control publish`, or not at all.
+//! `obsign-control publish`, or not at all.
 //!
 //! Everything is re-read from disk on every request. No cache to invalidate,
 //! and what the console shows is what the files say *now* — the same property
@@ -303,7 +303,7 @@ fn overview(console: &Console) -> Option<String> {
         }
     }
 
-    Some(page("Probant — control plane", &body))
+    Some(page("Obsign — control plane", &body))
 }
 
 fn release_summary(dist: &Path) -> String {
@@ -458,7 +458,7 @@ fn chain_page(console: &Console, id: &str) -> Option<String> {
         let _ = write!(
             body,
             "<p class=\"mut\">showing the last {MAX_ROWS} of {} records — \
-             run <code>probant-control export</code> for the full log</p>",
+             run <code>obsign-control export</code> for the full log</p>",
             records.len()
         );
         &records[records.len() - MAX_ROWS..]
@@ -596,7 +596,7 @@ fn page(title: &str, body: &str) -> String {
          .mut{{color:#777}}a{{color:#1d4ed8}}\
          </style></head><body><h1>{t}</h1>{body}\
          <p class=\"mut\">read-only console — rules change through git and \
-         <code>probant-control publish</code>, not here</p></body></html>",
+         <code>obsign-control publish</code>, not here</p></body></html>",
         t = esc(title),
     )
 }

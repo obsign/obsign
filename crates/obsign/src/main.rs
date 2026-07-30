@@ -23,7 +23,7 @@ const USAGE: &str = "\
 Checks offline that an evidence pack has not been tampered with.
 Makes no network connection and depends on no service.
 
-Usage: probant verify [OPTIONS] <EVIDENCE>
+Usage: obsign verify [OPTIONS] <EVIDENCE>
 
 Arguments:
   <EVIDENCE>  Evidence pack file (JSON)

@@ -3,7 +3,7 @@
 Status: **verification layer AND enrollment signer implemented, exercised
 end-to-end against swtpm** (2026-07-30, branch `los-angeles`, 263 tests).
 The §8-item-3 piece the first landing deferred now exists: `tpm-enroll`
-(binary `probant-tpm-enroll`) speaks the TPM2 command stream directly over
+(binary `obsign-tpm-enroll`) speaks the TPM2 command stream directly over
 swtpm's TCP sockets — hand-rolled marshalling of Startup, GetCapability,
 CreatePrimary, PCR_Extend/Read, Certify, Quote, FlushContext plus the swtpm
 control channel (CMD_INIT), no TSS stack — creates the AK and the identity
@@ -77,7 +77,7 @@ tested:
   `VerifyOptions.require_attestation`.
 - **control-plane**: `deployment/attestation.json` read and validated
   (each attestation must name an enrolled key), embedded at compile.
-- **probant verify**: `--require-attestation`.
+- **obsign verify**: `--require-attestation`.
 
 Live through the built binary: a bundle with an enrolled but **unattested**
 identity key verifies with an `identity_not_attested` warning by default and
@@ -189,7 +189,7 @@ pub struct KeyAttestation {
 Because it lives inside the bundle, the **ops key already signs it** (the
 bundle `signing_bytes` covers every entry). So the attestation a verifier
 reads is the attestation the control plane blessed at publish time — no new
-probant-level signature, no new domain byte. The AK's own signatures over the
+obsign-level signature, no new domain byte. The AK's own signatures over the
 quote and certify are TPM-native (the TPM defines those bytes), carried
 opaquely as the RFC 3161 token is.
 
@@ -291,7 +291,7 @@ and, on this machine, cannot be exercised (§10.4). Split accordingly:
    for CI the way SoftHSM backs the PKCS#11 test, **gated on a provisioned
    TPM and skipped-vacuously without one** — and, here, unverified until a
    TPM/`swtpm` exists.
-4. **probant verify**: `--require-attestation`, report the attestation
+4. **obsign verify**: `--require-attestation`, report the attestation
    verdict and the out-of-band caveat.
 
 ## 9. Rejected alternatives
@@ -301,7 +301,7 @@ and, on this machine, cannot be exercised (§10.4). Split accordingly:
   question (what booted) that does not change per session. Enrollment is its
   natural cadence. (Runtime re-quote *would* go in the chain — §7 — but that
   is a different, later thing.)
-- **A probant-defined signature over the quote.** The TPM already signs
+- **A obsign-defined signature over the quote.** The TPM already signs
   `TPMS_ATTEST` with the AK; re-wrapping it in our own signature adds a key
   to trust and proves nothing more. Carry the TPM's bytes opaquely, verify
   them as the TPM defines — the RFC 3161 stance.
@@ -341,7 +341,7 @@ and, on this machine, cannot be exercised (§10.4). Split accordingly:
      turns (a)'s deferred piece into a tested one.
    - **(c) Design-only for now.** Stop at this document until a regulator or
      design partner actually pulls v3 (its §7.5 framing: pulled, not pushed),
-     and spend the effort on the deferred `probant-identity/2` claims HIGH or
+     and spend the effort on the deferred `obsign-identity/2` claims HIGH or
      the open mediums instead.
 
    My recommendation: **(a)** if v3 is wanted in code now — it lands the

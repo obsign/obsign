@@ -9,12 +9,12 @@ use ed25519_dalek::VerifyingKey;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const FORMAT: &str = "probant-evidence/1";
+pub const FORMAT: &str = "obsign-evidence/1";
 
 /// Evidence pack: what we hand to an auditor.
 ///
 /// Deliberately self-contained and in readable JSON. The auditor must be able
-/// to open it in a text editor and check it with `probant verify` without any
+/// to open it in a text editor and check it with `obsign verify` without any
 /// access to our infrastructure. If verification needs a server, it is no
 /// longer proof, it is a claim.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,7 +29,7 @@ pub struct Evidence {
     pub records: Vec<SignedRecord>,
     pub checkpoints: Vec<SignedCheckpoint>,
     /// Sealing public keys. Including them is a reading convenience, not
-    /// proof: `probant verify` must be run with a trusted key set obtained through
+    /// proof: `obsign verify` must be run with a trusted key set obtained through
     /// another channel (--trusted-keys), otherwise a forged pack signed with a
     /// made-up key would validate itself.
     pub keys: Vec<PublicKeyEntry>,

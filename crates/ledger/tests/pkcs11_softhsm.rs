@@ -9,7 +9,7 @@
 //! cargo test -p ledger --test pkcs11_softhsm
 //! ```
 //!
-//! Without `PROBANT_TEST_PKCS11_MODULE` the test passes vacuously and says
+//! Without `OBSIGN_TEST_PKCS11_MODULE` the test passes vacuously and says
 //! so — an unprovisioned machine must not fail the suite, but the skip has
 //! to be visible, not silent.
 //!
@@ -34,11 +34,11 @@ struct Env {
 }
 
 fn test_env() -> Option<Env> {
-    let module = std::env::var("PROBANT_TEST_PKCS11_MODULE").ok()?;
+    let module = std::env::var("OBSIGN_TEST_PKCS11_MODULE").ok()?;
     Some(Env {
         module: PathBuf::from(module),
-        pin: std::env::var("PROBANT_TEST_PKCS11_PIN").ok()?,
-        key_label: std::env::var("PROBANT_TEST_PKCS11_KEY_LABEL").ok()?,
+        pin: std::env::var("OBSIGN_TEST_PKCS11_PIN").ok()?,
+        key_label: std::env::var("OBSIGN_TEST_PKCS11_KEY_LABEL").ok()?,
     })
 }
 
@@ -70,7 +70,7 @@ fn tmpdir(name: &str) -> PathBuf {
 #[test]
 fn seals_through_a_real_token() {
     let Some(env) = test_env() else {
-        eprintln!("skipped: PROBANT_TEST_PKCS11_MODULE not set (see scripts/pkcs11-test-env.sh)");
+        eprintln!("skipped: OBSIGN_TEST_PKCS11_MODULE not set (see scripts/pkcs11-test-env.sh)");
         return;
     };
 
@@ -103,7 +103,7 @@ fn seals_through_a_real_token() {
 
     // A key of the wrong type under a correct label must be refused by type,
     // not by a later signature mismatch. Provisioned by the env script.
-    if let Ok(p256) = std::env::var("PROBANT_TEST_PKCS11_P256_LABEL") {
+    if let Ok(p256) = std::env::var("OBSIGN_TEST_PKCS11_P256_LABEL") {
         let e = Pkcs11Sealer::open(
             &env.module,
             &TokenSelector::Only,
@@ -185,7 +185,7 @@ fn seals_through_a_real_token() {
 #[test]
 fn cli_seals_with_hsm_flags() {
     let Some(env) = test_env() else {
-        eprintln!("skipped: PROBANT_TEST_PKCS11_MODULE not set (see scripts/pkcs11-test-env.sh)");
+        eprintln!("skipped: OBSIGN_TEST_PKCS11_MODULE not set (see scripts/pkcs11-test-env.sh)");
         return;
     };
 
@@ -195,7 +195,7 @@ fn cli_seals_with_hsm_flags() {
     let pin_file = tmpdir("cli-pin").with_extension("txt");
     std::fs::write(&pin_file, format!("{}\n", env.pin)).unwrap();
 
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_probant-ledger"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_obsign-ledger"))
         .args(["seal", "--chain-id", "c1"])
         .arg("--wal")
         .arg(&wal_dir)

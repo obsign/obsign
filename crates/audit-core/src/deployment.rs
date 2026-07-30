@@ -25,7 +25,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const FORMAT: &str = "probant-deployment/1";
+pub const FORMAT: &str = "obsign-deployment/1";
 
 /// The active gateway origin keys of a deployment.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

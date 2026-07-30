@@ -983,6 +983,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "obsign"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "audit-core",
+ "ed25519-dalek",
+ "hex",
+ "serde_json",
+]
+
+[[package]]
+name = "obsign-proxy"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "audit-core",
+ "base64",
+ "clap",
+ "ed25519-dalek",
+ "getrandom",
+ "hex",
+ "identity",
+ "jsonwebtoken",
+ "ledger",
+ "pkcs11",
+ "policy",
+ "serde",
+ "serde_json",
+ "wal",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1111,38 +1143,6 @@ dependencies = [
  "arrayvec",
  "typed-arena",
  "unicode-width 0.2.2",
-]
-
-[[package]]
-name = "probant"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "audit-core",
- "ed25519-dalek",
- "hex",
- "serde_json",
-]
-
-[[package]]
-name = "probant-proxy"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "audit-core",
- "base64",
- "clap",
- "ed25519-dalek",
- "getrandom",
- "hex",
- "identity",
- "jsonwebtoken",
- "ledger",
- "pkcs11",
- "policy",
- "serde",
- "serde_json",
- "wal",
 ]
 
 [[package]]

@@ -8,11 +8,11 @@ use crate::jwks::{Jwk, JwkSet};
 use crate::Error;
 
 /// Current format: machine markers are part of the signed bytes.
-pub const FORMAT: &str = "probant-identity/2";
+pub const FORMAT: &str = "obsign-identity/2";
 /// First format. Still verifiable — a bundle published before the revision
 /// keeps its hash and its signature — but its signature does not cover
 /// machine markers, so only the default markers are accepted with it.
-pub const FORMAT_V1: &str = "probant-identity/1";
+pub const FORMAT_V1: &str = "obsign-identity/1";
 
 /// Identity configuration, signed and distributed by the control plane.
 ///
@@ -133,7 +133,7 @@ impl SignedIdentityBundle {
                 // file that carries non-default ones would let unsigned JSON
                 // decide who counts as human — exactly the threat the signed
                 // bundle exists to close. Re-signing as v2 is one
-                // `probant-control compile` away.
+                // `obsign-control compile` away.
                 if self.bundle.claims.machine != crate::claims::MachineMarkers::default() {
                     return Err(Error::UnsignedMachineMarkers);
                 }
@@ -158,7 +158,7 @@ mod tests {
             format: format.into(),
             version: "identity@test".into(),
             issuer: "https://idp.example".into(),
-            audience: "probant".into(),
+            audience: "obsign".into(),
             jwks: JwkSet { keys: vec![] },
             claims: ClaimMap::default(),
         }
