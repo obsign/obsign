@@ -82,6 +82,14 @@ impl Act {
 /// allowlist — the method space is default-deny. Default-forward would mean
 /// one server update, or one agent speaking a vendor dialect, opens a data
 /// channel no policy ever saw and no record ever named.
+///
+/// Conscious exemption: what this allowlist relays is neither arbitrated nor
+/// recorded, and two of these notifications carry free text —
+/// `notifications/cancelled` (`reason`) and `notifications/progress`
+/// (`message`). An agent can push text to a complicit server outside the
+/// log. Accepted for now as liveness/UX machinery on a hot path; the mirror
+/// exemption and the gating exit are on `server_notification`, the debt
+/// entry in the README ("Allowlisted notifications…").
 fn machinery(method: &str) -> bool {
     matches!(
         method,
@@ -589,6 +597,17 @@ pub(crate) enum Downstream {
 /// posture as the agent-side method space: a notification the protocol does
 /// not define is dropped and recorded, not forwarded into the agent's
 /// context.
+///
+/// Conscious exemption, mirror of `machinery`: what passes here is neither
+/// arbitrated nor recorded, and `notifications/message` is arbitrary `data`
+/// at any log level, delivered straight into the agent's context. A
+/// complicit server can spell out the very names the listing filter hides,
+/// or feed the agent text no record names; with `machinery`'s free-text
+/// fields the channel is bidirectional. Accepted for now — these are
+/// liveness/UX machinery, and arbitrating every progress tick would put a
+/// policy decision and an fsync on an unbounded hot path. The exit, when
+/// needed: gate `notifications/message` under its own per-server capability
+/// action and hash what passes. Debt entry in the README.
 fn server_notification(method: &str) -> bool {
     matches!(
         method,

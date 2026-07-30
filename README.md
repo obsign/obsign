@@ -589,11 +589,12 @@ recorded.
 
 **The method space is default-deny, in both directions.** A fixed allowlist
 of protocol machinery (`initialize`, `ping`, the three `*/list` discoveries,
-`logging/setLevel`, the defined notifications) is relayed as-is; every
-arbitrated act goes through the gate; anything else — a vendor extension, a
-future protocol revision — is refused with `-32601` and recorded. The
-refusal's `policy_id` is absent: the log tells a scope refusal apart from a
-rule's.
+`logging/setLevel`, the defined notifications) is relayed as-is — and *only*
+relayed: neither arbitrated nor recorded, an exemption with teeth (see the
+notifications entry under Known debt); every arbitrated act goes through the
+gate; anything else — a vendor extension, a future protocol revision — is
+refused with `-32601` and recorded. The refusal's `policy_id` is absent: the
+log tells a scope refusal apart from a rule's.
 
 **Server-initiated channels are inside the perimeter.**
 `sampling/createMessage` borrows the agent's model; `elicitation/create` puts
@@ -635,6 +636,21 @@ Three long-standing entries are paid off: the gateway no longer holds any
 signing key (its only output is the WAL, every seal comes from the ledger),
 `Pkcs11Sealer` puts the production sealing key behind a KMS/HSM, and
 configuration reloads are recorded in the chain (tag 8).
+
+**Allowlisted notifications are an unrecorded text channel.** The machinery
+allowlist relays the protocol's defined notifications without arbitration or
+record, and several carry free text: `notifications/message` is arbitrary
+`data` at any log level, delivered straight into the agent's context;
+`notifications/progress` carries a `message` and `notifications/cancelled` a
+`reason`, in both directions. Between a complicit server and its agent that
+is a bidirectional side channel the log never names — and one the server can
+work alone: `notifications/message` can spell out the very tool and resource
+names the listing filter hides. Conscious exemption, not an oversight: this
+is liveness/UX machinery, and arbitrating every progress tick would put a
+policy decision and an `fsync` on an unbounded hot path. The exit, when a
+deployment needs it: gate `notifications/message` under its own per-server
+capability action (default deny, as `sampling` is today) and hash what
+passes into an `mcp_access` record.
 
 **Dependency tree.** Measured as unique crates in `cargo tree -e normal`.
 The tree that carries the trust story is the auditor's: `probant` builds
