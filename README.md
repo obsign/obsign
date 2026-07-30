@@ -674,7 +674,9 @@ tag; the gateway image is a base image the deployment extends with its MCP
 server. Air-gapped delivery works from `docker save` tarballs — the registry
 is a convenience, not a dependency. Deployment guide, including the fsync
 and key-separation caveats that survive containerisation:
-[docs/deploy-docker.md](docs/deploy-docker.md).
+[docs/deploy-docker.md](docs/deploy-docker.md). Day-2 operations — backup,
+restore and the 24-month retention procedure:
+[docs/runbook-backup-restore.md](docs/runbook-backup-restore.md).
 
 ```bash
 docker compose up -d gateway console
