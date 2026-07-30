@@ -2,7 +2,10 @@
 
 The operator's counterpart to [deploy-docker.md](deploy-docker.md): how to
 back up the WAL and the ledger store, restore them after a loss, and keep
-proofs verifiable over a 24-month retention window.
+proofs verifiable over your retention window. How long that window is comes
+from your contract or your regulator; this runbook uses 24 months — a
+common regulatory floor — as the worked example, and the procedure is the
+same for longer windows.
 
 One property shapes everything here: **integrity travels with the data, not
 with the backup**. Every record is hash-chained and origin-signed, every
@@ -157,11 +160,11 @@ under a **new** `key_id`, and distribute the updated public key to whoever
 verifies. The old id stays bound to the old key forever — that binding is
 what keeps old seals verifiable.
 
-## Retention: the 24-month window
+## Retention
 
 The retention artifact is the **evidence pack**, not the raw WAL. A pack is
 one JSON file, self-contained, offline-verifiable for as long as you can
-run `sha256` and Ed25519 — the right shape for a 24-month shelf. The WAL
+run `sha256` and Ed25519 — the right shape for a multi-year shelf. The WAL
 and store are the working set; the archive is packs.
 
 Per chain (with the HTTP transport: per session), the lifecycle is:
@@ -177,8 +180,8 @@ Per chain (with the HTTP transport: per session), the lifecycle is:
    the *out-of-band* copy of the keys, exit 0 required. This is the check
    an auditor would run; run it before they do.
 6. **Archive** — pack plus its `sha256` into immutable storage (S3 Object
-   Lock or equivalent), retention 24 months from the anchor's TSA time,
-   two locations. A layout that ages well: `archive/<yyyy>/<mm>/<chain>.pack.json`.
+   Lock or equivalent), retention set to your window (here: 24 months)
+   counted from the anchor's TSA time, two locations. A layout that ages well: `archive/<yyyy>/<mm>/<chain>.pack.json`.
 7. **Prune** — only now may the chain's WAL file and its
    `<chain>.checkpoints.jsonl` / `<chain>.anchors.jsonl` be deleted.
    Pruning removes whole chains' files, never lines within a file — a

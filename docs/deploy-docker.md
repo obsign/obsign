@@ -1,7 +1,7 @@
 # Deploying with Docker
 
 Day-2 operations — backing up the WAL and the store, restoring after a
-loss, 24-month retention: [runbook-backup-restore.md](runbook-backup-restore.md).
+loss, long-term retention: [runbook-backup-restore.md](runbook-backup-restore.md).
 
 Four images, one binary each, distroless (no shell, nonroot, glibc):
 
