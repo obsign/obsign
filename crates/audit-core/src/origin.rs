@@ -103,7 +103,11 @@ pub fn origin_signing_bytes(chain_id: &str, record_hash: &Hash) -> Vec<u8> {
 /// `#[serde(flatten)]` keeps the wire format additive: a line written before
 /// origin authentication existed deserializes with `None` fields, and a line
 /// written after stays readable with `tail` — two hex fields longer.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+///
+/// Deserialize is written by hand: serde silently disables the inner
+/// struct's `deny_unknown_fields` across a `flatten`, and a smuggled field
+/// on a record is exactly the parser ambiguity the pack format refuses.
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SignedRecord {
     #[serde(flatten)]
     pub record: Record,
@@ -115,6 +119,37 @@ pub struct SignedRecord {
     /// role `origin`, never against sealing keys.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_key_id: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for SignedRecord {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        // Split the two origin fields off by hand, then let `Record` — which
+        // does carry `deny_unknown_fields` — refuse whatever is left over.
+        let mut map = serde_json::Map::deserialize(deserializer)?;
+        let take_hex_field = |map: &mut serde_json::Map<String, serde_json::Value>,
+                              name: &str|
+         -> Result<Option<String>, D::Error> {
+            match map.remove(name) {
+                None | Some(serde_json::Value::Null) => Ok(None),
+                Some(serde_json::Value::String(s)) => Ok(Some(s)),
+                Some(_) => Err(D::Error::custom(format!("`{name}` must be a string"))),
+            }
+        };
+        let origin_sig = take_hex_field(&mut map, "origin_sig")?;
+        let origin_key_id = take_hex_field(&mut map, "origin_key_id")?;
+        let record = Record::deserialize(serde_json::Value::Object(map))
+            .map_err(D::Error::custom)?;
+        Ok(SignedRecord {
+            record,
+            origin_sig,
+            origin_key_id,
+        })
+    }
 }
 
 impl SignedRecord {

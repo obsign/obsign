@@ -5,8 +5,9 @@
 //! with the attacker's own key, embedded in the pack itself — coming out
 //! with exit 0. These tests run the real binary on real files.
 
-use audit_core::checkpoint::PublicKeyEntry;
+use audit_core::checkpoint::{KeyRole, PublicKeyEntry};
 use audit_core::evidence::{Evidence, FORMAT};
+use audit_core::origin::SignedRecord;
 use audit_core::record::{Effect, EffectStatus, Payload};
 use audit_core::ChainWriter;
 use ed25519_dalek::SigningKey;
@@ -18,6 +19,7 @@ fn entry(key: &SigningKey, key_id: &str) -> PublicKeyEntry {
         key_id: key_id.to_string(),
         algo: "ed25519".to_string(),
         public_key: hex::encode(key.verifying_key().to_bytes()),
+        role: KeyRole::Seal,
     }
 }
 
@@ -39,6 +41,7 @@ fn pack(key: &SigningKey, key_id: &str) -> Evidence {
                 }),
             )
         })
+        .map(SignedRecord::unsigned)
         .collect();
     let cp = chain.seal(99, key_id).unwrap().sign(key);
     Evidence {
@@ -48,6 +51,7 @@ fn pack(key: &SigningKey, key_id: &str) -> Evidence {
         checkpoints: vec![cp],
         keys: vec![entry(key, key_id)],
         anchors: Vec::new(),
+        deployment: None,
     }
 }
 
@@ -77,6 +81,7 @@ fn honest_pack_with_trusted_keys_is_proven() {
 
     let out = probant(&[
         "verify",
+        "--allow-unsigned-legacy-chains",
         "--trusted-keys",
         keys.to_str().unwrap(),
         ev.to_str().unwrap(),
@@ -91,7 +96,7 @@ fn self_referential_run_exits_3_and_says_not_proven() {
     let key = SigningKey::from_bytes(&[1u8; 32]);
     let ev = write_tmp("selfref.json", &serde_json::to_string(&pack(&key, "k1")).unwrap());
 
-    let out = probant(&["verify", ev.to_str().unwrap()]);
+    let out = probant(&["verify", "--allow-unsigned-legacy-chains", ev.to_str().unwrap()]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(3), "stdout: {stdout}");
     assert!(stdout.contains("NOT PROVEN"), "stdout: {stdout}");
@@ -112,7 +117,7 @@ fn forged_pack_without_trusted_keys_must_not_exit_0() {
         &serde_json::to_string(&pack(&attacker, "k1")).unwrap(),
     );
 
-    let out = probant(&["verify", ev.to_str().unwrap()]);
+    let out = probant(&["verify", "--allow-unsigned-legacy-chains", ev.to_str().unwrap()]);
     assert_eq!(
         out.status.code(),
         Some(3),
@@ -149,7 +154,12 @@ fn json_report_carries_the_self_referential_flag() {
     let key = SigningKey::from_bytes(&[1u8; 32]);
     let ev = write_tmp("json.json", &serde_json::to_string(&pack(&key, "k1")).unwrap());
 
-    let out = probant(&["verify", "--json", ev.to_str().unwrap()]);
+    let out = probant(&[
+        "verify",
+        "--json",
+        "--allow-unsigned-legacy-chains",
+        ev.to_str().unwrap(),
+    ]);
     assert_eq!(out.status.code(), Some(3));
     let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(report["self_referential"], serde_json::Value::Bool(true));

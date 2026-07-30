@@ -8,3 +8,4 @@
 # they can contain real subjects, real issuers and real signing seeds.
 /tmp-demo
 *.jwt
+.playwright-mcp/

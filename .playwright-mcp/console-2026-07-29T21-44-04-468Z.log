@@ -1,4 +1,0 @@
-[     354ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ https://www.tmdn.org/tmview/api/users/details:0
-[    3322ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ https://www.tmdn.org/tmview/api/trademark/detail/TR502024000042024?translate=true:0
-[    3351ms] BackendError: Internal Server Error
-    at e.value (https://www.tmdn.org/tmview/index.e1860496.js:1:1394633)

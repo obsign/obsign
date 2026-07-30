@@ -420,7 +420,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         let (wal, chain) = Wal::open(&dir, "t").unwrap();
-        let state = Arc::new(Mutex::new(session::open(chain, wal, "sess".into())));
+        let state = Arc::new(Mutex::new(session::open(chain, wal, "sess".into(), None)));
         let ctx = ctx();
 
         let call = json!({
