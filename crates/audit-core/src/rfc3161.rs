@@ -62,6 +62,7 @@ const TAG_OCTET_STRING: u8 = 0x04;
 const TAG_OID: u8 = 0x06;
 const TAG_GENERALIZED_TIME: u8 = 0x18;
 const TAG_SEQUENCE: u8 = 0x30;
+const TAG_SET: u8 = 0x31;
 const TAG_CONTEXT_0: u8 = 0xA0;
 
 /// Cursor over a run of sibling TLV elements.
@@ -72,10 +73,6 @@ struct Der<'a> {
 impl<'a> Der<'a> {
     fn new(b: &'a [u8]) -> Self {
         Der { b }
-    }
-
-    fn done(&self) -> bool {
-        self.b.is_empty()
     }
 
     /// Reads one element, returns (tag, content) and advances past it.
@@ -124,6 +121,16 @@ impl<'a> Der<'a> {
         }
         Ok(v)
     }
+
+    /// Requires that the container held nothing beyond what was read. Trailing
+    /// bytes tolerated anywhere would let one blob parse as two different
+    /// tokens depending on the reader.
+    fn finish(self, what: &str) -> Result<(), Error> {
+        if !self.b.is_empty() {
+            return Err(Error::BadDer(format!("{what}: trailing bytes")));
+        }
+        Ok(())
+    }
 }
 
 fn int_value(bytes: &[u8]) -> Result<u64, Error> {
@@ -136,11 +143,19 @@ fn int_value(bytes: &[u8]) -> Result<u64, Error> {
 /// Parses a `TimeStampResp` down to its TSTInfo.
 ///
 /// Path walked: TimeStampResp → PKIStatusInfo.status, then
-/// ContentInfo → `[0]` → SignedData → encapContentInfo (the SEQUENCE whose
-/// first child is the id-ct-TSTInfo OID) → `[0]` → OCTET STRING → TSTInfo.
+/// ContentInfo → `[0]` → SignedData → version, digestAlgorithms,
+/// encapContentInfo (eContentType must be id-ct-TSTInfo) → `[0]` →
+/// OCTET STRING → TSTInfo.
+///
+/// Every field is read at its RFC 5652 position and every closed container
+/// must be fully consumed. Scanning SignedData for a TSTInfo-shaped child
+/// instead — as this function once did — would let a decoy placed ahead of
+/// the real encapContentInfo shadow the eContent the TSA actually signed,
+/// diverging from what `openssl ts -verify` validates.
 pub fn parse_timestamp_response(der: &[u8]) -> Result<TimestampInfo, Error> {
     let mut top = Der::new(der);
     let mut resp = Der::new(top.expect(TAG_SEQUENCE, "TimeStampResp")?);
+    top.finish("TimeStampResp")?;
 
     let status_info = resp.expect(TAG_SEQUENCE, "PKIStatusInfo")?;
     let status = int_value(Der::new(status_info).expect(TAG_INTEGER, "PKIStatus")?)?;
@@ -151,33 +166,33 @@ pub fn parse_timestamp_response(der: &[u8]) -> Result<TimestampInfo, Error> {
     }
 
     let mut content_info = Der::new(resp.expect(TAG_SEQUENCE, "ContentInfo")?);
+    resp.finish("TimeStampResp body")?;
     content_info.expect(TAG_OID, "contentType")?;
     let wrapped = content_info.expect(TAG_CONTEXT_0, "content [0]")?;
-    let signed_data = Der::new(wrapped).expect(TAG_SEQUENCE, "SignedData")?;
+    content_info.finish("ContentInfo")?;
+    let mut outer = Der::new(wrapped);
+    let signed_data = outer.expect(TAG_SEQUENCE, "SignedData")?;
+    outer.finish("content [0]")?;
 
-    // encapContentInfo sits between optional fields (certificates, crls):
-    // we look for its shape rather than counting positions.
+    // SignedData is not consumed to the end: certificates, crls and
+    // signerInfos legitimately follow encapContentInfo, and their contents
+    // are the CMS layer's business, not ours.
     let mut sd = Der::new(signed_data);
-    let tst_der = loop {
-        if sd.done() {
-            return Err(Error::BadDer("no TSTInfo in the token".into()));
-        }
-        let (tag, val) = sd.tlv()?;
-        if tag != TAG_SEQUENCE {
-            continue;
-        }
-        let mut eci = Der::new(val);
-        let Ok((TAG_OID, oid)) = eci.tlv() else {
-            continue;
-        };
-        if oid != OID_ID_CT_TST_INFO {
-            continue;
-        }
-        let econtent = eci.expect(TAG_CONTEXT_0, "eContent [0]")?;
-        break Der::new(econtent).expect(TAG_OCTET_STRING, "eContent")?;
-    };
+    sd.expect(TAG_INTEGER, "SignedData.version")?;
+    sd.expect(TAG_SET, "digestAlgorithms")?;
+    let mut eci = Der::new(sd.expect(TAG_SEQUENCE, "encapContentInfo")?);
+    if eci.expect(TAG_OID, "eContentType")? != OID_ID_CT_TST_INFO {
+        return Err(Error::BadDer("eContentType is not id-ct-TSTInfo".into()));
+    }
+    let econtent = eci.expect(TAG_CONTEXT_0, "eContent [0]")?;
+    eci.finish("encapContentInfo")?;
+    let mut econtent_wrap = Der::new(econtent);
+    let tst_der = econtent_wrap.expect(TAG_OCTET_STRING, "eContent")?;
+    econtent_wrap.finish("eContent [0]")?;
 
-    let mut tst = Der::new(Der::new(tst_der).expect(TAG_SEQUENCE, "TSTInfo")?);
+    let mut tst_wrap = Der::new(tst_der);
+    let mut tst = Der::new(tst_wrap.expect(TAG_SEQUENCE, "TSTInfo")?);
+    tst_wrap.finish("eContent OCTET STRING")?;
     tst.expect(TAG_INTEGER, "TSTInfo.version")?;
     tst.expect(TAG_OID, "TSTInfo.policy")?;
     let mut imprint = Der::new(tst.expect(TAG_SEQUENCE, "MessageImprint")?);
@@ -222,8 +237,8 @@ pub(crate) mod testutil {
     const OID_SHA256: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01];
     const OID_DEMO_POLICY: &[u8] = &[0x2A, 0x03, 0x04];
 
-    /// A minimal granted TimeStampResp over the given imprint.
-    pub fn granted_response(imprint: &[u8], gen_time: &[u8]) -> Vec<u8> {
+    /// A bare TSTInfo SEQUENCE over the given imprint.
+    pub fn tst_info(imprint: &[u8], gen_time: &[u8]) -> Vec<u8> {
         let message_imprint = tlv(
             0x30,
             &[
@@ -232,7 +247,7 @@ pub(crate) mod testutil {
             ]
             .concat(),
         );
-        let tst_info = tlv(
+        tlv(
             0x30,
             &[
                 tlv(0x02, &[1]),
@@ -242,31 +257,43 @@ pub(crate) mod testutil {
                 tlv(0x18, gen_time),
             ]
             .concat(),
-        );
-        let encap = tlv(
+        )
+    }
+
+    /// An encapContentInfo carrying the given TSTInfo.
+    pub fn tst_encap(imprint: &[u8], gen_time: &[u8]) -> Vec<u8> {
+        tlv(
             0x30,
             &[
                 tlv(0x06, super::OID_ID_CT_TST_INFO),
-                tlv(0xA0, &tlv(0x04, &tst_info)),
+                tlv(0xA0, &tlv(0x04, &tst_info(imprint, gen_time))),
             ]
             .concat(),
-        );
-        let signed_data = tlv(
-            0x30,
-            &[
-                tlv(0x02, &[3]),   // version
-                tlv(0x31, &[]),    // digestAlgorithms SET
-                encap,
-                tlv(0x31, &[]),    // signerInfos SET
-            ]
-            .concat(),
-        );
+        )
+    }
+
+    /// Wraps raw SignedData children into a granted TimeStampResp.
+    pub fn granted_response_from(signed_data_fields: &[u8]) -> Vec<u8> {
+        let signed_data = tlv(0x30, signed_data_fields);
         let content_info = tlv(
             0x30,
             &[tlv(0x06, OID_SIGNED_DATA), tlv(0xA0, &signed_data)].concat(),
         );
         let status_info = tlv(0x30, &tlv(0x02, &[0]));
         tlv(0x30, &[status_info, content_info].concat())
+    }
+
+    /// A minimal granted TimeStampResp over the given imprint.
+    pub fn granted_response(imprint: &[u8], gen_time: &[u8]) -> Vec<u8> {
+        granted_response_from(
+            &[
+                tlv(0x02, &[3]),   // version
+                tlv(0x31, &[]),    // digestAlgorithms SET
+                tst_encap(imprint, gen_time),
+                tlv(0x31, &[]),    // signerInfos SET
+            ]
+            .concat(),
+        )
     }
 
     /// A response where the TSA refused (status 2, no token).
@@ -277,7 +304,7 @@ pub(crate) mod testutil {
 
 #[cfg(test)]
 mod tests {
-    use super::testutil::{granted_response, rejected_response};
+    use super::testutil::{granted_response, granted_response_from, rejected_response, tlv, tst_encap, tst_info};
     use super::*;
 
     #[test]
@@ -314,6 +341,60 @@ mod tests {
         // to prevent.
         let err = parse_timestamp_response(&[0x30, 0x80, 0x00, 0x00]).unwrap_err();
         assert!(matches!(err, Error::BadDer(_)));
+    }
+
+    #[test]
+    fn decoy_encap_content_info_is_rejected() {
+        // A TSTInfo-shaped SEQUENCE smuggled in where digestAlgorithms
+        // belongs. The shape-scanning parser this module used to have
+        // returned the decoy's imprint and time — diverging from the
+        // eContent the CMS layer verifies. Positional parsing refuses
+        // the token outright.
+        let decoy = tst_encap(&[0xEEu8; 32], b"19990101000000Z");
+        let real = tst_encap(&[0xABu8; 32], b"20260728120000Z");
+        let der = granted_response_from(
+            &[tlv(0x02, &[3]), decoy, tlv(0x31, &[]), real, tlv(0x31, &[])].concat(),
+        );
+        assert!(matches!(
+            parse_timestamp_response(&der),
+            Err(Error::BadDer(_))
+        ));
+    }
+
+    #[test]
+    fn trailing_bytes_are_rejected() {
+        // After the TimeStampResp itself.
+        let mut der = granted_response(&[0xABu8; 32], b"20260728120000Z");
+        der.push(0x00);
+        assert!(matches!(
+            parse_timestamp_response(&der),
+            Err(Error::BadDer(_))
+        ));
+
+        // Inside eContent [0], after the OCTET STRING: a NULL rides along
+        // next to the TSTInfo.
+        let encap = tlv(
+            0x30,
+            &[
+                tlv(0x06, OID_ID_CT_TST_INFO),
+                tlv(
+                    0xA0,
+                    &[
+                        tlv(0x04, &tst_info(&[0xABu8; 32], b"20260728120000Z")),
+                        tlv(0x05, &[]),
+                    ]
+                    .concat(),
+                ),
+            ]
+            .concat(),
+        );
+        let der = granted_response_from(
+            &[tlv(0x02, &[3]), tlv(0x31, &[]), encap, tlv(0x31, &[])].concat(),
+        );
+        assert!(matches!(
+            parse_timestamp_response(&der),
+            Err(Error::BadDer(_))
+        ));
     }
 
     #[test]
