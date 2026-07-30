@@ -47,6 +47,11 @@ pub enum Payload {
     LlmTurn(LlmTurn),
     /// An attempted tool call: the act itself.
     ToolCall(ToolCall),
+    /// An attempted MCP capability access outside tool calls: a resource
+    /// read or subscription, a prompt fetch. Data leaves the server on this
+    /// channel exactly as it does on `tools/call`, so it is recorded — and
+    /// arbitrated — the same way.
+    McpAccess(McpAccess),
     /// The policy decision applied to that call.
     Decision(Decision),
     /// What actually happened.
@@ -92,6 +97,10 @@ impl Payload {
             // by the gateway's hardware identity key, is what a verifier
             // resolves that session key against.
             Payload::SessionCert(_) => 9,
+            // Added later, same rule: resource and prompt accesses used to
+            // traverse the gateway with no record at all — a read channel
+            // invisible to the proof.
+            Payload::McpAccess(_) => 10,
         }
     }
 
@@ -159,6 +168,12 @@ impl Payload {
                     .i64(c.not_before_ms)
                     .i64(c.not_after_ms)
                     .str(&c.identity_sig);
+            }
+            Payload::McpAccess(a) => {
+                e.str(&a.server)
+                    .str(&a.method)
+                    .str(&a.target)
+                    .hash(&a.params_hash);
             }
         }
     }
@@ -288,6 +303,25 @@ pub struct ToolCall {
     /// content retention. The key stays with them: we can prove *what*
     /// without ever being able to read it ourselves.
     pub args_sealed: Option<SealedRef>,
+}
+
+/// An MCP capability access outside tool calls.
+///
+/// The investigation needs to know *what* was touched, so the target — a
+/// resource URI or a prompt name — is recorded verbatim: it is an
+/// identifier, like a tool name, not a payload. The content that came back
+/// only ever appears as the effect's `result_hash`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct McpAccess {
+    pub server: String,
+    /// JSON-RPC method: `resources/read`, `resources/subscribe`,
+    /// `resources/unsubscribe`, `prompts/get`.
+    pub method: String,
+    /// Resource URI or prompt name, as sent by the agent.
+    pub target: String,
+    /// Hash of the full request params.
+    pub params_hash: Hash,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

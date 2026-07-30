@@ -1076,3 +1076,102 @@ fn two_tier_gateway_certifies_a_session_key_and_never_writes_it() {
     assert!(report.is_valid(), "findings: {:?}", report.findings);
     assert_eq!(report.records_origin_ok, report.records_total);
 }
+
+// ===========================================================================
+// Resource and prompt channels: the read paths tools/call never covers
+// ===========================================================================
+
+#[test]
+fn resource_and_prompt_accesses_are_arbitrated_and_leave_records() {
+    // The scope gap this locks down: resources/* and prompts/* used to
+    // traverse the gateway with neither policy nor record. An agent could
+    // read any resource the server exposes without leaving a trace in the
+    // proof — the one sentence the product cannot survive.
+    let cedar = r#"
+@id("allow_docs_resources")
+permit (principal, action == Action::"resource_read", resource)
+when { context.target like "docs://*" };
+
+@id("allow_unscoped")
+permit (principal, action == Action::"tool_call", resource)
+when { resource.required_scope == "" };
+"#;
+
+    let f = run(
+        "resources",
+        cedar,
+        declared(),
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"resources/list","params":{}}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"docs://runbook"}}"#,
+            r#"{"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":"db://prod/customers"}}"#,
+            r#"{"jsonrpc":"2.0","id":5,"method":"prompts/get","params":{"name":"summarize"}}"#,
+        ],
+    );
+
+    // Discovery is filtered: the customer dump is not even visible.
+    let listed: Vec<&str> = f
+        .reply(2)
+        .pointer("/result/resources")
+        .and_then(Value::as_array)
+        .expect("resources/list must answer")
+        .iter()
+        .filter_map(|r| r.get("uri").and_then(Value::as_str))
+        .collect();
+    assert_eq!(listed, vec!["docs://runbook"]);
+
+    // The permitted read reaches the server; the refused one never does —
+    // blocking after the fact is useless.
+    assert!(
+        f.reply(3).pointer("/result/contents").is_some(),
+        "the permitted read must return the resource"
+    );
+    assert!(
+        f.reply(4).get("error").is_some(),
+        "the refusal must be a JSON-RPC error, not fabricated contents"
+    );
+    assert!(f.stderr.contains("[server] READING docs://runbook"));
+    assert!(
+        !f.stderr.contains("[server] READING db://prod/customers"),
+        "the refused read reached the MCP server:\n{}",
+        f.stderr
+    );
+
+    // No permit covers prompts: refused, and the server never served it.
+    assert!(f.reply(5).get("error").is_some());
+    assert!(!f.stderr.contains("[server] SERVING PROMPT"));
+
+    // Every attempt — allowed or refused — is in the sealed evidence, with
+    // its verdict and its outcome.
+    let accesses: Vec<_> = f
+        .evidence
+        .records
+        .iter()
+        .filter_map(|r| match &r.payload {
+            Payload::McpAccess(a) => Some((a.method.as_str(), a.target.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        accesses,
+        vec![
+            ("resources/read", "docs://runbook"),
+            ("resources/read", "db://prod/customers"),
+            ("prompts/get", "summarize"),
+        ]
+    );
+    let decisions = f.decisions();
+    assert!(decisions.contains(&(
+        "allow".to_string(),
+        Some("allow_docs_resources".to_string())
+    )));
+    // Both refusals are Cedar's default deny: no rule, no policy_id.
+    assert_eq!(
+        decisions
+            .iter()
+            .filter(|(o, p)| o == "deny" && p.is_none())
+            .count(),
+        2
+    );
+}

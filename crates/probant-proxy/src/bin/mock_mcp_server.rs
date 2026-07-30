@@ -27,7 +27,7 @@ fn main() {
         let result = match method {
             "initialize" => json!({
                 "protocolVersion": "2024-11-05",
-                "capabilities": { "tools": {} },
+                "capabilities": { "tools": {}, "resources": {}, "prompts": {} },
                 "serverInfo": { "name": "mock-db-ops", "version": "0.1.0" }
             }),
 
@@ -74,6 +74,50 @@ fn main() {
                         "text": format!("{name} executed")
                     }],
                     "isError": false
+                })
+            }
+
+            // The read channels the gateway must arbitrate exactly like tool
+            // calls: same obedience, same absence of self-defence.
+            "resources/list" => json!({
+                "resources": [
+                    { "uri": "docs://runbook", "name": "Operations runbook" },
+                    { "uri": "db://prod/customers", "name": "Customer table dump" }
+                ]
+            }),
+
+            "resources/read" => {
+                let uri = msg
+                    .pointer("/params/uri")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                eprintln!("[server] READING {uri}");
+                json!({
+                    "contents": [{
+                        "uri": uri,
+                        "mimeType": "text/plain",
+                        "text": format!("contents of {uri}")
+                    }]
+                })
+            }
+
+            "prompts/list" => json!({
+                "prompts": [
+                    { "name": "summarize", "description": "Summarizes a document" }
+                ]
+            }),
+
+            "prompts/get" => {
+                let name = msg
+                    .pointer("/params/name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                eprintln!("[server] SERVING PROMPT {name}");
+                json!({
+                    "messages": [{
+                        "role": "user",
+                        "content": { "type": "text", "text": format!("prompt {name}") }
+                    }]
                 })
             }
 

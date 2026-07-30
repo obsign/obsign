@@ -13,7 +13,7 @@ pub mod bundle;
 pub mod engine;
 
 pub use bundle::{Bundle, FailBehaviour, FailMode, SignedBundle, ToolDef, FORMAT};
-pub use engine::{Engine, ToolRequest, Verdict};
+pub use engine::{Capability, Engine, ToolRequest, Verdict};
 
 use thiserror::Error as ThisError;
 
