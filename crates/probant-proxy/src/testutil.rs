@@ -79,6 +79,19 @@ pub fn mint(seed: u8, exp_offset: i64, scopes: &str) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
+    mint_at(seed, now + exp_offset, scopes, None)
+}
+
+/// Mints a token with an explicit absolute expiry (seconds) and, optionally,
+/// an RFC 8693 `act` claim naming the actor really acting on behalf of the
+/// subject. Two tokens minted with the same `exp` differ only by their `act`
+/// chain — the token-exchange shape, where the delegated token is bounded by
+/// its parent's expiry.
+pub fn mint_at(seed: u8, exp: i64, scopes: &str, act_sub: Option<&str>) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
 
     let mut der = PKCS8_PREFIX.to_vec();
     der.extend_from_slice(&[seed; 32]);
@@ -86,18 +99,19 @@ pub fn mint(seed: u8, exp_offset: i64, scopes: &str) -> String {
     let mut header = Header::new(Algorithm::EdDSA);
     header.kid = Some(format!("k{seed}"));
 
-    jsonwebtoken::encode(
-        &header,
-        &json!({
-            "sub": "u:marie.dupont",
-            "iss": ISSUER,
-            "aud": AUDIENCE,
-            "exp": now + exp_offset,
-            "iat": now - 10,
-            "scope": scopes,
-            "groups": ["support-n2"],
-        }),
-        &EncodingKey::from_ed_der(&der),
-    )
-    .expect("minting the test token")
+    let mut claims = json!({
+        "sub": "u:marie.dupont",
+        "iss": ISSUER,
+        "aud": AUDIENCE,
+        "exp": exp,
+        "iat": now - 10,
+        "scope": scopes,
+        "groups": ["support-n2"],
+    });
+    if let Some(actor) = act_sub {
+        claims["act"] = json!({ "sub": actor });
+    }
+
+    jsonwebtoken::encode(&header, &claims, &EncodingKey::from_ed_der(&der))
+        .expect("minting the test token")
 }

@@ -160,10 +160,12 @@ impl Auth {
         // session. We re-read before concluding a refusal.
         match read_and_verify(source, path, now_ms, &mut self.reloads) {
             Ok(fresh) if !fresh.is_expired(now_ms) => {
-                let changed = fresh.subject != self.current.subject
-                    || fresh.scopes != self.current.scopes
-                    || fresh.groups != self.current.groups
-                    || fresh.expires_at_ms != self.current.expires_at_ms;
+                // Whole-struct comparison, deliberately: an enumeration of
+                // fields silently goes stale when one is added, and a change
+                // in `actor_chain` or `kind` alone (a token-exchange hop
+                // bounded by the parent's expiry) alters who the log must
+                // attribute the acts to.
+                let changed = fresh != self.current;
                 self.current = fresh;
                 if changed {
                     self.generation += 1;
@@ -214,10 +216,10 @@ impl Auth {
         match verify_token(source, token, now_ms, &mut self.reloads) {
             Ok(fresh) if !fresh.is_expired(now_ms) => {
                 self.presented = Some(token.to_string());
-                let changed = fresh.subject != self.current.subject
-                    || fresh.scopes != self.current.scopes
-                    || fresh.groups != self.current.groups
-                    || fresh.expires_at_ms != self.current.expires_at_ms;
+                // Same rationale as `refresh`: whole-struct comparison, so a
+                // delegation that differs only by `actor_chain` or `kind`
+                // still gets its own record in the log.
+                let changed = fresh != self.current;
                 self.current = fresh;
                 if changed {
                     self.generation += 1;
@@ -311,7 +313,7 @@ fn verify_token(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{mint, keyring, write_bundle, ISSUER};
+    use crate::testutil::{mint, mint_at, keyring, write_bundle, ISSUER};
     use identity::BundleSource;
 
     /// Bundle that only knows `k1`.
@@ -403,6 +405,34 @@ mod tests {
         assert_eq!(a.generation(), 2, "the generation must advance");
         assert!(a.delegation().scopes.contains(&"db:admin".to_string()));
         let _ = std::fs::remove_file(p);
+        let _ = std::fs::remove_file(bp);
+    }
+
+    #[test]
+    fn a_token_exchange_hop_is_signalled_even_with_identical_expiry() {
+        // RFC 8693 token exchange: a service obtains a token to act on
+        // behalf of the same principal, bounded by the parent token's
+        // expiry. Subject, scopes, groups and expiry are all identical —
+        // only the actor chain and the principal kind change. That change
+        // decides which Cedar rules apply and who the log attributes the
+        // acts to: it must be signalled as a renewal.
+        let (src, bp) = source("act-hop");
+        let exp = now() / 1000 + 1800;
+        let direct = mint_at(1, exp, "support:read", None);
+        let exchanged = mint_at(1, exp, "support:read", Some("svc:automation"));
+
+        let mut a = Auth::oidc_presented(src, &direct).unwrap();
+        assert_eq!(a.delegation().actor_chain, vec!["u:marie.dupont".to_string()]);
+        assert_eq!(a.delegation().kind, PrincipalKind::Human);
+
+        let changed = a.present(&exchanged, now()).unwrap();
+        assert!(changed, "a new actor chain must be signalled as a renewal");
+        assert_eq!(a.generation(), 2, "the generation must advance");
+        assert_eq!(
+            a.delegation().actor_chain,
+            vec!["svc:automation".to_string(), "u:marie.dupont".to_string()]
+        );
+        assert_eq!(a.delegation().kind, PrincipalKind::DelegatedHuman);
         let _ = std::fs::remove_file(bp);
     }
 
