@@ -43,6 +43,9 @@ const RC_INITIALIZE: u32 = 0x100;
 
 const CAP_ALGS: u32 = 0x0000_0000;
 const CAP_ECC_CURVES: u32 = 0x0000_0008;
+/// Properties requested per `TPM2_GetCapability` page; a page claiming more
+/// than this is a protocol violation.
+const CAP_PROPERTY_COUNT: u32 = 256;
 
 pub const ALG_SHA256: u16 = 0x000B;
 pub const ALG_NULL: u16 = 0x0010;
@@ -162,53 +165,62 @@ impl Tpm {
 
     /// The algorithms the TPM implements (`TPM_CAP_ALGS`).
     pub fn algorithms(&mut self) -> Result<Vec<u16>, Error> {
-        let name = "TPM2_GetCapability(algs)";
-        let mut algs = Vec::new();
-        // Real TPMs may answer a capability in pages (moreData set); libtpms
-        // answers in one. The next page starts after the last property seen.
-        let mut first = 0u32;
-        for _page in 0..8 {
-            let (more, body) = self.get_capability(name, CAP_ALGS, first)?;
-            let mut r = Reader::new(name, &body);
-            let count = r.u32()?;
-            if count == 0 {
-                break;
-            }
-            for _ in 0..count.min(1024) {
-                let alg = r.u16()?; // TPM_ALG_ID
-                r.u32()?; // TPMA_ALGORITHM
-                algs.push(alg);
-                first = alg as u32 + 1;
-            }
-            if !more {
-                break;
-            }
-        }
-        Ok(algs)
+        self.capability_u16_list("TPM2_GetCapability(algs)", CAP_ALGS, |r| {
+            let alg = r.u16()?; // TPM_ALG_ID
+            r.u32()?; // TPMA_ALGORITHM
+            Ok(alg)
+        })
     }
 
     /// The ECC curves the TPM implements (`TPM_CAP_ECC_CURVES`).
     pub fn ecc_curves(&mut self) -> Result<Vec<u16>, Error> {
-        let name = "TPM2_GetCapability(curves)";
-        let mut curves = Vec::new();
+        self.capability_u16_list("TPM2_GetCapability(curves)", CAP_ECC_CURVES, |r| r.u16())
+    }
+
+    /// Reads a complete `u16`-keyed capability list. Real TPMs may answer in
+    /// pages (moreData set); libtpms answers in one. The next page starts
+    /// after the last property seen. A response this loop cannot prove
+    /// complete — the page budget exhausted with moreData still set, an
+    /// empty page claiming more, a count above what was asked for — is an
+    /// error, never a silently shortened list: callers pick key algorithms
+    /// off this answer.
+    fn capability_u16_list(
+        &mut self,
+        name: &'static str,
+        cap: u32,
+        parse: fn(&mut Reader) -> Result<u16, Error>,
+    ) -> Result<Vec<u16>, Error> {
+        let mut values = Vec::new();
         let mut first = 0u32;
         for _page in 0..8 {
-            let (more, body) = self.get_capability(name, CAP_ECC_CURVES, first)?;
+            let (more, body) = self.get_capability(name, cap, first)?;
             let mut r = Reader::new(name, &body);
             let count = r.u32()?;
-            if count == 0 {
-                break;
+            if count > CAP_PROPERTY_COUNT {
+                return Err(Error::Protocol {
+                    command: name,
+                    what: format!("count {count} exceeds the {CAP_PROPERTY_COUNT} requested"),
+                });
             }
-            for _ in 0..count.min(1024) {
-                let curve = r.u16()?;
-                curves.push(curve);
-                first = curve as u32 + 1;
+            for _ in 0..count {
+                let v = parse(&mut r)?;
+                values.push(v);
+                first = v as u32 + 1;
             }
             if !more {
-                break;
+                return Ok(values);
+            }
+            if count == 0 {
+                return Err(Error::Protocol {
+                    command: name,
+                    what: "empty capability page with moreData set".into(),
+                });
             }
         }
-        Ok(curves)
+        Err(Error::Protocol {
+            command: name,
+            what: "capability list still incomplete after 8 pages".into(),
+        })
     }
 
     fn get_capability(
@@ -220,7 +232,7 @@ impl Tpm {
         let mut c = Vec::new();
         c.extend_from_slice(&cap.to_be_bytes());
         c.extend_from_slice(&first_property.to_be_bytes());
-        c.extend_from_slice(&256u32.to_be_bytes()); // property count
+        c.extend_from_slice(&CAP_PROPERTY_COUNT.to_be_bytes());
         let body = self.exec(name, TAG_NO_SESSIONS, CC_GET_CAPABILITY, &c)?;
         // moreData (u8) + capability (u32), then the capability-specific list.
         let mut r = Reader::new(name, &body);
@@ -613,6 +625,89 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A TPM that serves scripted responses over a loopback socket: each
+    /// incoming command (whatever it says) is answered with the next one.
+    fn scripted_tpm(responses: Vec<Vec<u8>>) -> Tpm {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            for resp in responses {
+                let mut head = [0u8; 10];
+                if s.read_exact(&mut head).is_err() {
+                    return;
+                }
+                let size = u32::from_be_bytes(head[2..6].try_into().unwrap()) as usize;
+                if s.read_exact(&mut vec![0u8; size - 10]).is_err() {
+                    return;
+                }
+                if s.write_all(&resp).is_err() {
+                    return;
+                }
+            }
+        });
+        Tpm::connect(&addr.to_string()).unwrap()
+    }
+
+    /// One success-framed `TPM2_GetCapability(algs)` response page. `count`
+    /// overrides the announced entry count where it must lie.
+    fn algs_page(more: bool, algs: &[u16], count: Option<u32>) -> Vec<u8> {
+        let mut body = vec![more as u8];
+        body.extend_from_slice(&CAP_ALGS.to_be_bytes());
+        body.extend_from_slice(&count.unwrap_or(algs.len() as u32).to_be_bytes());
+        for a in algs {
+            body.extend_from_slice(&a.to_be_bytes());
+            body.extend_from_slice(&0u32.to_be_bytes()); // TPMA_ALGORITHM
+        }
+        let mut resp = 0x8001u16.to_be_bytes().to_vec();
+        resp.extend_from_slice(&((10 + body.len()) as u32).to_be_bytes());
+        resp.extend_from_slice(&0u32.to_be_bytes());
+        resp.extend_from_slice(&body);
+        resp
+    }
+
+    #[test]
+    fn paged_capabilities_assemble_across_pages() {
+        let mut tpm = scripted_tpm(vec![
+            algs_page(true, &[ALG_ECDSA, ALG_ECC], None),
+            algs_page(false, &[ALG_EDDSA], None),
+        ]);
+        assert_eq!(
+            tpm.algorithms().unwrap(),
+            vec![ALG_ECDSA, ALG_ECC, ALG_EDDSA]
+        );
+    }
+
+    #[test]
+    fn an_unfinished_capability_list_is_an_error_not_a_truncation() {
+        // moreData still set when the page budget runs out: the list is
+        // provably incomplete, and an incomplete list must not be returned —
+        // pick_algorithm would silently choose off missing data.
+        let mut tpm = scripted_tpm(vec![algs_page(true, &[ALG_ECDSA], None); 8]);
+        match tpm.algorithms() {
+            Err(Error::Protocol { what, .. }) => assert!(what.contains("incomplete")),
+            other => panic!("expected a protocol error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_empty_page_claiming_more_is_an_error() {
+        let mut tpm = scripted_tpm(vec![algs_page(true, &[], None)]);
+        match tpm.algorithms() {
+            Err(Error::Protocol { what, .. }) => assert!(what.contains("moreData")),
+            other => panic!("expected a protocol error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_count_beyond_the_request_is_an_error() {
+        let mut tpm = scripted_tpm(vec![algs_page(false, &[], Some(CAP_PROPERTY_COUNT + 1))]);
+        match tpm.algorithms() {
+            Err(Error::Protocol { what, .. }) => assert!(what.contains("exceeds")),
+            other => panic!("expected a protocol error, got {other:?}"),
+        }
+    }
 
     #[test]
     fn pcr_selection_sets_the_right_bit() {
