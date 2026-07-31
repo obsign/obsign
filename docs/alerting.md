@@ -104,6 +104,59 @@ The ledger's refusal message — which sequence number diverged, whether an
 authentic prefix was sealed — is on stderr, hence in the journal of the
 failed unit. The alert only has to point at it.
 
+## Slack, without breaking the air gap
+
+A chat alert is worth having, and it does not contradict the design — as
+long as the same rule holds: **the network call lives in the supervisor, not
+in the ledger.** The ledger still makes none. Slack is reached, when it is
+reached at all, from the alert unit, over whatever egress the enclave
+already permits. `scripts/obsign-slack-alert.sh` posts to a Slack Incoming
+Webhook under three constraints that keep it honest in an air-gapped site:
+
+- **Best-effort, never load-bearing.** It runs *alongside* the local
+  channels, not instead of them: journal, `wall` and mail are the guarantee
+  — they always deliver inside the enclave. Slack is a convenience on top.
+  If it cannot be reached the script logs a warning and exits `0`; an alert
+  channel must never become the incident.
+- **Bounded.** A hung proxy cannot wedge the oneshot unit
+  (`--connect-timeout`/`--max-time`), and the webhook URL — a secret that
+  grants posting to a channel — is read from a root-owned file, never baked
+  into a unit or an argument.
+- **Egress-aware.** A real enclave reaches Slack only through the site's
+  approved proxy, if at all. The script honours `https_proxy`/`HTTPS_PROXY`;
+  with no proxy and no direct route it degrades to the journal warning. A
+  site with no egress at all runs a **store-and-forward relay** instead:
+  point the webhook at an internal collector on the management network and
+  let a forwarder in a DMZ deliver to Slack — the enclave itself still never
+  opens an outbound connection.
+
+Add it to `obsign-raise-alert` as one more channel, after the local ones:
+
+```sh
+# 5. Slack, best-effort, through the site's egress. Runs last: the local
+#    channels above have already delivered the guarantee.
+SLACK_WEBHOOK_FILE=/etc/obsign/slack-webhook \
+    /usr/local/bin/obsign-slack-alert "$unit"
+```
+
+Provision the webhook as a secret, and (if the enclave uses one) the egress
+proxy, in an `EnvironmentFile` the alert unit reads — so the URL stays out of
+`ps` and the unit text:
+
+```ini
+# /etc/obsign/slack-alert.conf  (root:root, chmod 600)
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/T00000000/B00000000/xxxxxxxx
+# HTTPS_PROXY=http://egress.mgmt.internal:3128   # only if the enclave has one
+```
+
+Validate the wiring offline before an incident ever fires — the dry run
+builds the exact payload and names the target and proxy without posting:
+
+```sh
+OBSIGN_ALERT_DRYRUN=1 SLACK_WEBHOOK_URL=https://example/invalid \
+    obsign-slack-alert obsign-ledger.service
+```
+
 ## Cron-style deployments: `seal` + a timer
 
 One-pass `seal` is the cron- and air-gap-friendly mode, and the same pattern
