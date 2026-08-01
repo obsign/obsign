@@ -319,6 +319,131 @@ fn payload_types_are_not_confusable() {
 /// then `Payload::ConfigReload` (tag 8) were added that way after the fact,
 /// without any of the earlier hashes below moving.
 #[test]
+fn a_payload_from_a_newer_gateway_is_readable_and_named() {
+    // What this buys: an auditor building the verifier from source — the
+    // channel this product tells them to use — against a log written by a
+    // gateway that has since gained a payload type used to get
+    // "unreadable record at line 3" and nothing else. That reads as
+    // corruption and names no remedy.
+    //
+    // What it deliberately does NOT buy: leniency. See the test below.
+    let key = signing_key();
+    let mut chain = ChainWriter::new(CHAIN_ID);
+    let mut records = vec![chain.append(1_000, "deleg-1", None, "sess-1", tool_call("t"))];
+    records.push(chain.append(
+        1_001,
+        "label-1",
+        Some("deleg-1".into()),
+        "sess-1",
+        Payload::PrincipalLabel(PrincipalLabel {
+            issuer: "https://idp".into(),
+            subject: "28076b7a-ef7d".into(),
+            label: "guillaume".into(),
+            claim: "/preferred_username".into(),
+        }),
+    ));
+    let cp = chain.seal(9_000, KEY_ID).unwrap().sign(&key);
+    let entry = pubkey_entry(&key);
+    let ev = Evidence {
+        format: FORMAT.to_string(),
+        chain_id: CHAIN_ID.to_string(),
+        records: wrap(records),
+        checkpoints: vec![cp],
+        keys: vec![entry.clone()],
+        anchors: Vec::new(),
+        deployment: None,
+    };
+    let keys = vec![entry];
+    assert!(
+        evidence::verify(&ev, &keys).is_valid(),
+        "the pack must be valid to the build that wrote it"
+    );
+
+    // The older reader: same bytes, one `kind` it has never heard of.
+    let mut raw = serde_json::to_value(&ev).unwrap();
+    raw["records"][1]["payload"]["kind"] = serde_json::json!("quantum_attestation");
+    let aged: Evidence =
+        serde_json::from_value(raw.clone()).expect("a pack with a future payload must still parse");
+
+    let payload = &aged.records[1].record.payload;
+    assert!(!payload.is_understood());
+    assert_eq!(payload.kind_str(), "quantum_attestation");
+
+    // Verbatim on the way out: a verifier that rewrote what it could not
+    // understand would be destroying the evidence it was asked to check.
+    assert_eq!(
+        serde_json::to_value(&aged).unwrap()["records"][1]["payload"],
+        raw["records"][1]["payload"],
+        "an unknown payload must serialize back to exactly what it was"
+    );
+
+    let report = evidence::verify(&aged, &keys);
+    assert_eq!(report.records_unknown, 1);
+    assert!(
+        codes(&report).contains(&"unknown_payload_type"),
+        "the type must be named so the operator knows what to rebuild: {:?}",
+        codes(&report)
+    );
+    assert!(
+        !report.is_valid(),
+        "a verifier that cannot read a record must never call the pack intact"
+    );
+}
+
+#[test]
+fn renaming_a_payload_kind_cannot_hide_tampering() {
+    // The attack an earlier cut of this feature allowed. `kind` is plaintext
+    // chosen by whoever wrote the record, so if an unreadable payload
+    // suppressed the checks that depend on its hash — link, origin signature,
+    // checkpoint root — then renaming the kind of a record you just rewrote
+    // would erase the evidence. The verifier would print
+    // "Nothing here is evidence of tampering" over a flipped verdict.
+    //
+    // The rule that closes it: being unable to read a record never removes a
+    // finding. This build cannot tell an honest new payload from a forged one
+    // dressed as it — the discriminator would be the origin signature, which
+    // is precisely what it cannot check — so it accuses in both cases and
+    // says what to rebuild.
+    let (ev, keys) = sample();
+    assert!(evidence::verify(&ev, &keys).is_valid());
+
+    // Flip a Deny into an Allow — the record an investigation exists to find.
+    let mut tampered = serde_json::to_value(&ev).unwrap();
+    tampered["records"][3]["payload"]["outcome"] = serde_json::json!("allow");
+    let caught: Evidence = serde_json::from_value(tampered.clone()).unwrap();
+    let honest_report = evidence::verify(&caught, &keys);
+    assert!(
+        codes(&honest_report).contains(&"broken_link"),
+        "baseline: the edit must be caught: {:?}",
+        codes(&honest_report)
+    );
+
+    // Now the same edit, plus the disguise.
+    tampered["records"][3]["payload"]["kind"] = serde_json::json!("decision_v2");
+    let disguised: Evidence = serde_json::from_value(tampered).unwrap();
+    let report = evidence::verify(&disguised, &keys);
+
+    assert!(
+        !report.is_valid(),
+        "a disguised forgery must not come out valid"
+    );
+    // The disguise must not cost the report a single finding it would
+    // otherwise have made.
+    for kept in ["broken_link", "root_mismatch"] {
+        assert!(
+            codes(&report).contains(&kept),
+            "renaming the kind suppressed {kept}: {:?}",
+            codes(&report)
+        );
+    }
+    assert!(
+        codes(&report).contains(&"unknown_payload_type"),
+        "and the unreadable payload is reported on top, not instead: {:?}",
+        codes(&report)
+    );
+}
+
+#[test]
 fn record_format_is_frozen() {
     use obsign_audit_core::{Hash, GENESIS};
 
@@ -450,6 +575,24 @@ fn record_format_is_frozen() {
                 }),
             },
             "385417e7302da20cb5e9b2ae3f80f7faee4c4f8982f4b543cf77bbcc7e7c8e62",
+        ),
+        (
+            "principal_label",
+            Record {
+                seq: 7,
+                ts_ms: 1_700_000_000_007,
+                prev_hash: Hash([0xBC; 32]),
+                id: "label-1".into(),
+                parent_id: Some("deleg-1".into()),
+                session_id: "s1".into(),
+                payload: Payload::PrincipalLabel(PrincipalLabel {
+                    issuer: "https://idp".into(),
+                    subject: "28076b7a-ef7d-42e0-9e1f-ab67b92db89c".into(),
+                    label: "guillaume".into(),
+                    claim: "/preferred_username".into(),
+                }),
+            },
+            "d9925816d015ee46efbf6bbc92bb25ee43ed25f53bf1608b43e150a2aa34c740",
         ),
     ];
 
@@ -1121,4 +1264,31 @@ mod session_certs {
         assert!(!r.is_valid(), "an uncertified session key proves nothing");
         assert!(codes(&r).contains(&"origin_unverified"));
     }
+}
+
+#[test]
+fn an_unknown_payloads_hash_does_not_depend_on_key_order() {
+    // The workspace enables serde_json's `preserve_order` (cedar-policy pulls
+    // it in through serde_with), so a `Map` iterates in insertion order and
+    // the same logical payload read from two files with different key order
+    // would hash differently. Two honest verifiers must never disagree about
+    // a record's hash — and the README's invariant is explicit that JSON is
+    // "the transport and reading format, never the computation one".
+    let one = r#"{"seq":0,"ts_ms":1,"prev_hash":"0000000000000000000000000000000000000000000000000000000000000000","id":"r","parent_id":null,"session_id":"s","payload":{"kind":"future","alpha":"1","beta":{"y":[1,2],"x":true}}}"#;
+    let two = r#"{"seq":0,"ts_ms":1,"prev_hash":"0000000000000000000000000000000000000000000000000000000000000000","id":"r","parent_id":null,"session_id":"s","payload":{"beta":{"x":true,"y":[1,2]},"alpha":"1","kind":"future"}}"#;
+
+    let a: Record = serde_json::from_str(one).unwrap();
+    let b: Record = serde_json::from_str(two).unwrap();
+    assert!(!a.payload.is_understood());
+    assert_eq!(
+        a.hash(),
+        b.hash(),
+        "key order changed the hash of an unknown payload"
+    );
+
+    // And the encoding stays injective where it matters: a different value
+    // must still hash differently.
+    let three = two.replace(r#""alpha":"1""#, r#""alpha":"2""#);
+    let c: Record = serde_json::from_str(&three).unwrap();
+    assert_ne!(a.hash(), c.hash(), "a changed value must change the hash");
 }

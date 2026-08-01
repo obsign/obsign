@@ -34,8 +34,7 @@ pub struct Record {
     pub payload: Payload,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Payload {
     /// A human delegates authority to an agent, for a bounded time.
     Delegation(Delegation),
@@ -52,6 +51,31 @@ pub enum Payload {
     /// channel exactly as it does on `tools/call`, so it is recorded — and
     /// arbitrated — the same way.
     McpAccess(McpAccess),
+    /// A human-readable name for a subject the log names elsewhere.
+    ///
+    /// Real OIDC subjects are opaque — Keycloak issues UUIDs — so a pack
+    /// naming only `sub` is unreadable to the auditor it is written for,
+    /// who by construction cannot query the issuer's directory. Recording
+    /// the label *beside* the subject rather than instead of it keeps both
+    /// properties: `sub` stays the stable identifier a rename cannot move,
+    /// the label stays the string a human can act on.
+    PrincipalLabel(PrincipalLabel),
+    /// A payload type this build does not know, kept verbatim.
+    ///
+    /// The alternative — refusing the whole log — was the behaviour, and it
+    /// is wrong for the reader this product is written for: an auditor
+    /// building the verifier from source, months after the log was written,
+    /// against a gateway that has since gained a payload type. Refusing gave
+    /// them "unreadable record at line 3", which reads as corruption and
+    /// says nothing about the remedy.
+    ///
+    /// Keeping the record readable is *not* the same as accepting it. A
+    /// payload this build cannot re-encode is a payload whose hash it cannot
+    /// recompute, so it cannot attest to that record at all — the verifier
+    /// reports `unknown_payload_type` as an **error** and the pack does not
+    /// come out valid. What changes is the diagnosis: an operator learns
+    /// which type, on which record, and that the fix is a newer verifier.
+    Unknown(UnknownPayload),
     /// The policy decision applied to that call.
     Decision(Decision),
     /// What actually happened.
@@ -64,6 +88,156 @@ pub enum Payload {
     /// record's origin signature resolves to a key the identity key vouched
     /// for.
     SessionCert(SessionCert),
+}
+
+/// Canonical encoding of an arbitrary JSON value, for payloads with no
+/// schema.
+///
+/// Type-tagged so a string and a number can never encode alike, and object
+/// keys are sorted so insertion order cannot move the result. Deliberately
+/// not `serde_json::to_string`: that is JSON as a computation format, and it
+/// inherits whatever key order the input file happened to carry.
+fn encode_json(e: &mut Encoder, v: &serde_json::Value) {
+    use serde_json::Value;
+    match v {
+        Value::Null => {
+            e.u8(0);
+        }
+        Value::Bool(b) => {
+            e.u8(1).u8(*b as u8);
+        }
+        // Numbers keep their textual form: JSON has no integer/float
+        // distinction we can rely on, and re-deriving one here would be the
+        // "two serializers, two hashes" problem the encoder exists to avoid.
+        Value::Number(n) => {
+            e.u8(2).str(&n.to_string());
+        }
+        Value::String(s) => {
+            e.u8(3).str(s);
+        }
+        Value::Array(items) => {
+            e.u8(4).u64(items.len() as u64);
+            for item in items {
+                encode_json(e, item);
+            }
+        }
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            e.u8(5).u64(keys.len() as u64);
+            for k in keys {
+                e.str(k);
+                encode_json(e, &map[k]);
+            }
+        }
+    }
+}
+
+/// A payload kept verbatim because this build has no schema for it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnknownPayload {
+    /// The `kind` discriminant as it appeared, so a report can name it.
+    pub kind: String,
+    /// The payload object exactly as read, `kind` included. Kept whole so
+    /// re-serializing a pack is byte-faithful: a verifier that rewrote a
+    /// record it did not understand would be destroying the evidence it was
+    /// asked to check.
+    pub raw: serde_json::Map<String, serde_json::Value>,
+}
+
+// Hand-written so an unknown `kind` yields `Unknown` instead of failing the
+// whole record, and so `Unknown` serializes back to what it came from. The
+// macro keeps the variant list to one line each: a mirror enum would be the
+// same list twice, and the day the two drifted, a payload would silently
+// change shape on disk.
+macro_rules! payload_kinds {
+    ($( $kind:literal => $variant:ident($ty:ty) ),* $(,)?) => {
+        impl Payload {
+            /// The `kind` discriminant as it appears in JSON.
+            pub fn kind_str(&self) -> &str {
+                match self {
+                    $( Payload::$variant(_) => $kind, )*
+                    Payload::Unknown(u) => &u.kind,
+                }
+            }
+
+            /// False when this build has no schema for the payload, and so
+            /// cannot recompute the record's hash or attest to it.
+            pub fn is_understood(&self) -> bool {
+                !matches!(self, Payload::Unknown(_))
+            }
+        }
+
+        impl Serialize for Payload {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                use serde::ser::Error as _;
+                // Verbatim: a verifier that rewrote a record it did not
+                // understand would be destroying the evidence it was asked
+                // to check.
+                if let Payload::Unknown(u) = self {
+                    return u.raw.serialize(s);
+                }
+                let mut obj = match self {
+                    $( Payload::$variant(v) => serde_json::to_value(v).map_err(S::Error::custom)?, )*
+                    Payload::Unknown(_) => unreachable!("handled above"),
+                };
+                obj.as_object_mut()
+                    .ok_or_else(|| S::Error::custom("payload did not serialize to an object"))?
+                    .insert("kind".into(), serde_json::Value::String(self.kind_str().into()));
+                obj.serialize(s)
+            }
+        }
+
+        impl<'de> Deserialize<'de> for Payload {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                use serde::de::Error as _;
+                let mut map = serde_json::Map::deserialize(d)?;
+                // Removed, not cloned-around: `kind` belongs to the envelope
+                // and the inner structs are `deny_unknown_fields`, so it has
+                // to go before they see the object either way. Taking it out
+                // once lets the map be *moved* into whichever arm wins.
+                let kind = match map.remove("kind") {
+                    Some(serde_json::Value::String(k)) => k,
+                    Some(_) => return Err(D::Error::custom("`kind` must be a string")),
+                    None => return Err(D::Error::missing_field("kind")),
+                };
+
+                match kind.as_str() {
+                    $(
+                        $kind => serde_json::from_value::<$ty>(serde_json::Value::Object(map))
+                            .map(Payload::$variant)
+                            .map_err(D::Error::custom),
+                    )*
+                    // Only an unrecognised discriminant becomes `Unknown`. A
+                    // payload whose kind we *do* know but whose fields are
+                    // malformed stays an error above: that is corruption, not
+                    // a version gap, and treating it as "unknown type" would
+                    // let a tampered record pass as a newer one.
+                    _ => {
+                        // Put `kind` back: `raw` is what gets written out
+                        // again, and a payload that lost its discriminant
+                        // would not round-trip.
+                        map.insert("kind".into(), serde_json::Value::String(kind.clone()));
+                        Ok(Payload::Unknown(UnknownPayload { kind, raw: map }))
+                    }
+                }
+            }
+        }
+    };
+}
+
+payload_kinds! {
+    "delegation" => Delegation(Delegation),
+    "actor" => Actor(Actor),
+    "agent_session" => AgentSession(AgentSession),
+    "llm_turn" => LlmTurn(LlmTurn),
+    "tool_call" => ToolCall(ToolCall),
+    "mcp_access" => McpAccess(McpAccess),
+    "principal_label" => PrincipalLabel(PrincipalLabel),
+    "decision" => Decision(Decision),
+    "effect" => Effect(Effect),
+    "config_reload" => ConfigReload(ConfigReload),
+    "session_cert" => SessionCert(SessionCert),
 }
 
 impl Payload {
@@ -101,6 +275,19 @@ impl Payload {
             // traverse the gateway with no record at all — a read channel
             // invisible to the proof.
             Payload::McpAccess(_) => 10,
+            // Added later, same rule: a display name for an opaque subject.
+            // A field on `Delegation` would have been the obvious place and
+            // is exactly what the rule forbids — it would rewrite the hash of
+            // every delegation ever sealed.
+            Payload::PrincipalLabel(_) => 11,
+            // Zero, never allocated to a real payload — tags start at 1 — so
+            // this encoding cannot collide with any type, present or future.
+            // It is deliberately *not* the producer's encoding: nothing here
+            // knows the schema, so the hash it yields is this build's opinion
+            // of an opaque blob, never a re-derivation of the original. The
+            // verifier must therefore refuse to attest to such a record
+            // rather than compare hashes — see `is_understood`.
+            Payload::Unknown(_) => 0,
         }
     }
 
@@ -174,6 +361,26 @@ impl Payload {
                     .str(&a.method)
                     .str(&a.target)
                     .hash(&a.params_hash);
+            }
+            Payload::PrincipalLabel(p) => {
+                e.str(&p.issuer).str(&p.subject).str(&p.label).str(&p.claim);
+            }
+            Payload::Unknown(u) => {
+                // Through the canonical encoder, with object keys sorted at
+                // every level — not `to_string()`. The workspace enables
+                // serde_json's `preserve_order` (cedar-policy pulls it in via
+                // serde_with), so a `Map` iterates in *insertion* order and
+                // the JSON text of one logical payload depends on the key
+                // order of the file it was read from. Hashing that text would
+                // make two honest verifiers disagree about the same record,
+                // and would put JSON where the README says it must never be:
+                // "no JSON for hashes ... JSON stays the transport and reading
+                // format, never the computation one".
+                //
+                // This hash is still not the producer's — nothing here knows
+                // the schema. It only has to be total and stable.
+                e.str(&u.kind);
+                encode_json(e, &serde_json::Value::Object(u.raw.clone()));
             }
         }
     }
@@ -281,9 +488,9 @@ pub struct AgentSession {
 pub struct LlmTurn {
     pub provider: String,
     pub model: String,
-    /// We store the hash, not the content: prompts almost always contain
-    /// personal data or business secrets. Cleartext, when retained at all, is
-    /// encrypted on the customer side.
+    /// The hash, not the content: prompts almost always carry personal data
+    /// or business secrets. Nothing here retains the cleartext — same rule,
+    /// and same absence of a retention path, as `ToolCall::args_sealed`.
     pub prompt_hash: Hash,
     pub response_hash: Hash,
     pub input_tokens: Option<u64>,
@@ -299,10 +506,46 @@ pub struct ToolCall {
     pub server: String,
     pub tool: String,
     pub args_hash: Hash,
-    /// Reference to the encrypted arguments, when the customer enabled
-    /// content retention. The key stays with them: we can prove *what*
-    /// without ever being able to read it ourselves.
+    /// Reserved for retained content. **Nothing in this repository writes
+    /// it**: the gateway hashes the arguments and drops the values, so this
+    /// is `None` in every log written today. It sits in the format — and in
+    /// the record hash, see the encoding below — so that turning retention
+    /// on later does not change how existing records hash.
+    ///
+    /// The constraint on any implementation is already settled: the content
+    /// must be encrypted to a key the customer holds, and the gateway must
+    /// not hold its private half. A gateway that can read back the arguments
+    /// it stored is a gateway worth compromising for the arguments.
     pub args_sealed: Option<SealedRef>,
+}
+
+/// A display name for a subject, recorded beside it rather than instead of it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PrincipalLabel {
+    /// Issuer of the subject below, byte-for-byte as the `Delegation`
+    /// recorded it.
+    ///
+    /// Half of the join key, and not optional: an OIDC subject is only
+    /// unique *within* an issuer. The gateway hot-reloads identity bundles,
+    /// so one chain can hold delegations from two providers, and a `sub` as
+    /// ordinary as `1000` collides across realms. A label joined on the
+    /// subject alone would then name the wrong human — the one failure this
+    /// payload exists to prevent.
+    pub issuer: String,
+    /// The subject this names, byte-for-byte as the `Delegation` recorded it.
+    /// The other half of the join key: a reader that does not understand this
+    /// payload loses the label and keeps a log that still says who acted.
+    pub subject: String,
+    /// What a human reads — `guillaume`, `service-account-n8n-agent`.
+    pub label: String,
+    /// The claim it came from (`/preferred_username`, `/email`, ...).
+    ///
+    /// Recorded because a label's authority is exactly the authority of the
+    /// claim behind it: an `email` an IdP verified and a `name` a user typed
+    /// deserve different trust, and an auditor cannot weigh them without
+    /// knowing which is which.
+    pub claim: String,
 }
 
 /// An MCP capability access outside tool calls.

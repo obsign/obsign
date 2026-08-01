@@ -19,8 +19,16 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-/// The wrapped server, as named in records and policy requests.
-const SERVER: &str = "mcp://encapsule";
+/// The Cedar resource for server-initiated channels (sampling, elicitation,
+/// notify), which are granted per server rather than per target.
+///
+/// A constant, deliberately. One gateway fronts one server, so the entity a
+/// policy matches on is always "the server this gateway wraps" — and making
+/// it an operator-supplied string would let `--server-id`, which nobody
+/// signs, decide a verdict: change the flag, and a `forbid` keyed on the old
+/// value stops applying. What varies per deployment reaches policies through
+/// `context.server`, the same unsigned-declaration channel as `context.env`.
+const WRAPPED_SERVER: &str = "mcp://wrapped";
 
 /// Immutable context shared by both directions of the proxy.
 pub(crate) struct Ctx {
@@ -29,6 +37,10 @@ pub(crate) struct Ctx {
     pub(crate) env: String,
     pub(crate) agent_id: String,
     pub(crate) bundle_version: String,
+    /// The wrapped server, as named in records and policy requests
+    /// (`--server-id`). An investigation asks "which server was this call
+    /// forwarded to"; only the operator knows, so only the operator can say.
+    pub(crate) server_id: String,
 }
 
 pub(crate) enum Forward {
@@ -139,7 +151,7 @@ fn request(
         principal: deleg.subject.clone(),
         groups: deleg.groups.clone(),
         scopes: deleg.scopes.clone(),
-        server: SERVER.to_string(),
+        server: ctx.server_id.clone(),
         tool,
         env: ctx.env.clone(),
         session_id: session_id.to_string(),
@@ -149,6 +161,21 @@ fn request(
         principal_kind: deleg.kind.as_str().to_string(),
         args,
     }
+}
+
+/// The record for an act whose target *is* the wrapped server rather than an
+/// object it holds: a server-initiated channel, or an unsolicited message.
+///
+/// Stated once because "the target is the server itself" is a single
+/// decision, and MCP keeps adding server-initiated methods — the next one
+/// should inherit that decision instead of re-copying it.
+fn self_access(ctx: &Ctx, method: String, params: &[u8]) -> Payload {
+    Payload::McpAccess(McpAccess {
+        server: ctx.server_id.clone(),
+        method,
+        target: ctx.server_id.clone(),
+        params_hash: content_hash(params),
+    })
 }
 
 pub(crate) fn spawn_server(cmd: &[String]) -> Result<Child> {
@@ -221,12 +248,7 @@ pub(crate) fn handle_from_agent(
             s.write(
                 call_id.clone(),
                 Some(parent),
-                Payload::McpAccess(McpAccess {
-                    server: SERVER.to_string(),
-                    method: "(unsolicited response)".to_string(),
-                    target: SERVER.to_string(),
-                    params_hash: content_hash(raw.as_bytes()),
-                }),
+                self_access(ctx, "(unsolicited response)".to_string(), raw.as_bytes()),
             )?;
             s.write(
                 decision_id.clone(),
@@ -450,19 +472,19 @@ pub(crate) fn handle_from_agent(
     // is still an attempt, and often the one the CISO cares about.
     let payload = match &act {
         Act::Tool { tool } => Payload::ToolCall(ToolCall {
-            server: SERVER.to_string(),
+            server: ctx.server_id.clone(),
             tool: tool.clone(),
             args_hash: arguments_hash,
             args_sealed: None,
         }),
         Act::Capability { method, target, .. } => Payload::McpAccess(McpAccess {
-            server: SERVER.to_string(),
+            server: ctx.server_id.clone(),
             method: method.clone(),
             target: target.clone(),
             params_hash: content_hash(params.to_string().as_bytes()),
         }),
         Act::OutOfScope { method } => Payload::McpAccess(McpAccess {
-            server: SERVER.to_string(),
+            server: ctx.server_id.clone(),
             method: method.clone(),
             // No target: the gateway does not know how to read one out of a
             // method it does not know. The params hash still pins what was
@@ -861,7 +883,13 @@ fn handle_server_initiated(
         },
         Some(cap) => ctx.engine.evaluate_capability(
             cap,
-            &request(&deleg, ctx, session_id, SERVER.to_string(), Value::Null),
+            &request(
+                &deleg,
+                ctx,
+                session_id,
+                WRAPPED_SERVER.to_string(),
+                Value::Null,
+            ),
         ),
     };
 
@@ -874,12 +902,7 @@ fn handle_server_initiated(
         .write(
             call_id.clone(),
             Some(parent),
-            Payload::McpAccess(McpAccess {
-                server: SERVER.to_string(),
-                method: method.clone(),
-                target: SERVER.to_string(),
-                params_hash: content_hash(params.to_string().as_bytes()),
-            }),
+            self_access(ctx, method.clone(), params.to_string().as_bytes()),
         )
         .and_then(|_| {
             s.write(
@@ -991,7 +1014,13 @@ fn arbitrate_notification(
     } else {
         ctx.engine.evaluate_capability(
             Capability::Notify,
-            &request(&deleg, ctx, session_id, SERVER.to_string(), Value::Null),
+            &request(
+                &deleg,
+                ctx,
+                session_id,
+                WRAPPED_SERVER.to_string(),
+                Value::Null,
+            ),
         )
     };
 
@@ -1004,12 +1033,11 @@ fn arbitrate_notification(
         .write(
             call_id.clone(),
             Some(parent),
-            Payload::McpAccess(McpAccess {
-                server: SERVER.to_string(),
-                method: "notifications/message".to_string(),
-                target: SERVER.to_string(),
-                params_hash: content_hash(params.to_string().as_bytes()),
-            }),
+            self_access(
+                ctx,
+                "notifications/message".to_string(),
+                params.to_string().as_bytes(),
+            ),
         )
         .and_then(|_| {
             s.write(
@@ -1084,6 +1112,7 @@ mod tests {
             env: "prod".into(),
             agent_id: "agent-test".into(),
             bundle_version: "policies@test".into(),
+            server_id: "mcp://test".into(),
         }
     }
 
@@ -1160,6 +1189,91 @@ mod tests {
         let ids: std::collections::HashSet<&str> =
             recs.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids.len(), recs.len(), "record identifiers must stay unique");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn records_name_the_server_the_operator_declared() {
+        // The regression this closes: `server` was a compile-time constant,
+        // so every record ever written by every deployment named the same
+        // fictional server. An investigation asking "which server did this
+        // call reach" got an answer that was identical everywhere, and
+        // therefore no answer at all.
+        let (dir, state) = open_state("server-id");
+        let mut ctx = ctx();
+        ctx.server_id = "mcp://crm.internal".into();
+
+        let call = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                           "params": { "name": "search_docs", "arguments": {} } });
+        handle_from_agent(call, &state, &ctx, None).unwrap();
+
+        // An out-of-scope method names it too: refusals are the records an
+        // investigation reads first.
+        let odd = json!({ "jsonrpc": "2.0", "id": 2, "method": "vendor/whatever" });
+        handle_from_agent(odd, &state, &ctx, None).unwrap();
+
+        let recs = state.lock().unwrap().wal.read_all().unwrap();
+        let named: Vec<&str> = recs
+            .iter()
+            .filter_map(|r| match &r.payload {
+                Payload::ToolCall(c) => Some(c.server.as_str()),
+                Payload::McpAccess(a) => Some(a.server.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(!named.is_empty(), "the acts must have been recorded");
+        assert!(
+            named.iter().all(|s| *s == "mcp://crm.internal"),
+            "every act must name the configured server, got: {named:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_operator_flag_can_rekey_a_capability_verdict() {
+        // The regression this closes: `--server-id` briefly fed the Cedar
+        // *resource* for server-initiated channels, so `Server::"…"` named
+        // whatever the operator typed. A rule keyed on the server then
+        // stopped matching the moment the flag changed — and a `forbid`
+        // keyed that way stopped forbidding — with no bundle re-signed.
+        // Authorization moves only when the signed bundle moves.
+        let (dir, state) = open_state("cap-entity");
+        let mut ctx = ctx_with(
+            "@id(\"allow_wrapped_sampling\")\n\
+             permit (principal, action == Action::\"sampling\",\n\
+                     resource == Server::\"mcp://wrapped\");\n",
+        );
+        ctx.server_id = "mcp://whatever-the-operator-typed".into();
+
+        let req = json!({
+            "jsonrpc": "2.0", "id": 100, "method": "sampling/createMessage",
+            "params": { "messages": [], "maxTokens": 8 }
+        });
+        assert!(
+            matches!(
+                handle_from_server(req, &state, &ctx, "sess"),
+                Downstream::Forward(_)
+            ),
+            "the verdict must follow the signed bundle, not --server-id"
+        );
+
+        let recs = state.lock().unwrap().wal.read_all().unwrap();
+        assert!(
+            recs.iter().any(|r| matches!(
+                &r.payload,
+                Payload::Decision(d) if d.outcome == Outcome::Allow
+                    && d.policy_id.as_deref() == Some("allow_wrapped_sampling")
+            )),
+            "the rule keyed on the wrapped server must be the one that decided"
+        );
+        // The record still names the server this deployment fronts: the flag
+        // is descriptive, and that is the whole of its job.
+        assert!(recs.iter().any(|r| matches!(
+            &r.payload,
+            Payload::McpAccess(a) if a.server == "mcp://whatever-the-operator-typed"
+        )));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

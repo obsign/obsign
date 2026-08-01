@@ -30,6 +30,22 @@ pub enum Error {
     #[error("inconsistent chain on replay: {0}")]
     BrokenChain(String),
 
+    /// A record on disk whose payload type this build has no schema for.
+    ///
+    /// Raised only on the resuming path, and for the same reason as
+    /// `ForeignRecord` below: the gateway would chain its next record on a
+    /// hash it cannot compute correctly, and every honest record written
+    /// afterwards would carry a `prev_hash` that a build which *does* know
+    /// the type recomputes differently — reporting `broken_link` forever on
+    /// a log nobody touched. Reading a log to verify it stays tolerant; only
+    /// *extending* one demands that we understand its head.
+    #[error(
+        "record seq {seq} carries payload type \"{kind}\" this build has no \
+         schema for: refusing to extend a chain whose head cannot be hashed. \
+         Run the gateway build that wrote this log."
+    )]
+    UnreadablePayload { seq: u64, kind: String },
+
     /// A record on disk that no trusted origin key signed.
     ///
     /// Raised only on the resuming path: adopting such a record as the new
@@ -154,6 +170,17 @@ impl Wal {
         // Persist the new entry once, here, before any record is written.
         if is_new {
             sync_dir(dir)?;
+        }
+
+        // Refuse to *extend* a chain whose tail this build cannot hash. The
+        // whole tail is checked, not just the last record: `resume` only
+        // needs the head, but a later ledger pass will have to hash every
+        // one of them.
+        if let Some(bad) = records.iter().find(|r| !r.record.payload.is_understood()) {
+            return Err(Error::UnreadablePayload {
+                seq: bad.record.seq,
+                kind: bad.record.payload.kind_str().to_string(),
+            });
         }
 
         let writer = match records.last() {
@@ -294,6 +321,38 @@ mod tests {
         let d = std::env::temp_dir().join(format!("wal-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
+    }
+
+    #[test]
+    fn a_chain_whose_tail_this_build_cannot_read_is_not_extended() {
+        // Reading a log to verify it is tolerant of payload types added
+        // later; *extending* one is not. The gateway would chain its next
+        // record on a hash it cannot compute correctly, and every honest
+        // record written afterwards would carry a prev_hash that a build
+        // knowing the type recomputes differently — `broken_link` forever on
+        // a log nobody touched. Cheaper to refuse and be upgraded.
+        let dir = tmpdir("unreadable-tail");
+        std::fs::create_dir_all(&dir).unwrap();
+        let line = format!(
+            r#"{{"seq":0,"ts_ms":1,"prev_hash":"{}","id":"r0","parent_id":null,"session_id":"s","payload":{{"kind":"written_by_a_newer_gateway","x":1}}}}"#,
+            "0".repeat(64)
+        );
+        std::fs::write(dir.join("c1.jsonl"), line + "\n").unwrap();
+
+        match Wal::open(&dir, "c1") {
+            Err(Error::UnreadablePayload { seq, kind }) => {
+                assert_eq!(seq, 0);
+                assert_eq!(kind, "written_by_a_newer_gateway");
+            }
+            Err(e) => panic!("expected UnreadablePayload, got {e}"),
+            Ok(_) => panic!("a chain with an unreadable tail must not be extended"),
+        }
+
+        // But reading it for verification still works — that is the whole
+        // point of the tolerant parse.
+        let records = read(&dir, "c1").expect("reading must stay tolerant");
+        assert_eq!(records.len(), 1);
+        assert!(!records[0].record.payload.is_understood());
     }
 
     #[test]

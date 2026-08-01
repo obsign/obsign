@@ -193,6 +193,15 @@ pub fn seal_pass(
     now_ms: i64,
     min_new: usize,
 ) -> Result<Option<SignedCheckpoint>, Error> {
+    // Refuse before anything is signed: a checkpoint chains to the next, so
+    // a root computed over a hash this build invented cannot be taken back.
+    if let Some(bad) = records.iter().find(|r| !r.record.payload.is_understood()) {
+        return Err(Error::UnreadablePayload {
+            seq: bad.record.seq,
+            kind: bad.record.payload.kind_str().to_string(),
+        });
+    }
+
     let unsealed: &[SignedRecord] = match store.last() {
         None => records,
         Some(last) => {

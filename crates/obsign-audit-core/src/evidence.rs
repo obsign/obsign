@@ -98,6 +98,11 @@ pub struct Report {
     /// Records whose origin signature verified against a trusted origin key.
     #[serde(default)]
     pub records_origin_ok: usize,
+    /// Records carrying a payload type this build has no schema for. Reported
+    /// rather than skipped: a verifier that quietly ignored what it could not
+    /// read would answer "intact" about a log it had only partly seen.
+    #[serde(default)]
+    pub records_unknown: usize,
     pub first_seq: Option<u64>,
     pub last_seq: Option<u64>,
     /// True when no trusted keys were supplied and verification fell back to
@@ -237,7 +242,25 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     }
 
     let mut prev: Option<(u64, Hash)> = None;
+    let mut records_unknown = 0usize;
     for (i, rec) in ev.records.iter().enumerate() {
+        if !rec.payload.is_understood() {
+            records_unknown += 1;
+            findings.push(Finding::error(
+                "unknown_payload_type",
+                format!(
+                    "seq={}: payload type \"{}\" is unknown to this build, so \
+                     its hash cannot be recomputed. Every check that consumes \
+                     that hash — the chain link, the origin signature, the \
+                     checkpoint root — will therefore fail on this record. If \
+                     this verifier is older than the log, rebuild it from a \
+                     revision that knows this type before concluding anything \
+                     from those failures.",
+                    rec.seq,
+                    rec.payload.kind_str()
+                ),
+            ));
+        }
         let h = rec.hash();
 
         match prev {
@@ -631,6 +654,7 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
         anchors_total: ev.anchors.len(),
         anchors_ok,
         records_origin_ok,
+        records_unknown,
         first_seq: records_by_seq.keys().next().copied(),
         last_seq: records_by_seq.keys().next_back().copied(),
         self_referential: trusted.is_empty(),

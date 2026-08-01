@@ -383,6 +383,50 @@ fn evidence(gw: &Gateway, sid: &str) -> Evidence {
 // ===========================================================================
 
 #[test]
+fn http_records_name_the_server_the_operator_declared() {
+    // The HTTP transport builds one `Ctx` per session out of the long-lived
+    // `Gateway`, so `--server-id` reaches a record only if that hop copies
+    // it. Asserted through the real binary and the real WAL: wiring the
+    // session's server id to any other field of `Gateway` — `agent_id`, say
+    // — compiles cleanly and passes every other test in this file.
+    let gw = start(
+        "server-id",
+        false,
+        &["--server-id", "mcp://http.under.test"],
+    );
+
+    let (sid, r) = initialize(&gw, &[]);
+    assert_eq!(r.status, 200);
+    post(
+        &gw,
+        &[("Mcp-Session-Id", &sid)],
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+               "params":{"name":"ticket_update","arguments":{"ticket":"T-1"}}}),
+    );
+    // DELETE closes the log: when it returns, the chain is complete.
+    assert_eq!(
+        http(&gw, "DELETE", &[("Mcp-Session-Id", &sid)], "").status,
+        200
+    );
+
+    let records = obsign_wal::read(&gw.dir.join("wal"), &format!("http-{sid}"))
+        .expect("reading the session's WAL");
+    let named: Vec<&str> = records
+        .iter()
+        .filter_map(|r| match &r.payload {
+            Payload::ToolCall(c) => Some(c.server.as_str()),
+            Payload::McpAccess(a) => Some(a.server.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(!named.is_empty(), "the call must have been recorded");
+    assert!(
+        named.iter().all(|s| *s == "mcp://http.under.test"),
+        "every act must name the declared server, got: {named:?}"
+    );
+}
+
+#[test]
 fn session_lifecycle_enforces_and_seals() {
     let gw = start("lifecycle", false, &[]);
 

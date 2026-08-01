@@ -84,8 +84,12 @@ pub enum Error {
     UnknownBundleFormat(String),
 
     #[error("a obsign-identity/1 bundle carries machine markers its signature \
-             does not cover: recompile it as obsign-identity/2")]
+             does not cover: recompile it as obsign-identity/3")]
     UnsignedMachineMarkers,
+
+    #[error("this bundle carries display-label paths its signature does not \
+             cover: recompile it as obsign-identity/3")]
+    UnsignedLabelPaths,
 
     #[error("identity bundle signed with key \"{0}\", absent from the trusted keys")]
     UnknownBundleKey(String),

@@ -8,6 +8,12 @@
 //! * minimal dependencies, readable end to end;
 //! * script-friendly exit codes (0 proven, 1 invalid, 2 execution error,
 //!   3 consistent but unproven — self-referential verification).
+//!
+//! A log carrying a payload type this build cannot read exits 1, not 3.
+//! Nothing an unauthenticated field can trigger may soften the verdict: the
+//! `kind` string is chosen by whoever wrote the record, so a softer exit
+//! keyed on it would be a forger's switch. The report says what happened and
+//! what to rebuild; the exit code stays on the accusing side.
 
 use anyhow::{Context, Result};
 use obsign_audit_core::checkpoint::PublicKeyEntry;
@@ -292,6 +298,26 @@ fn print_report(r: &evidence::Report) {
         }
     } else {
         println!("VERDICT: TAMPERING DETECTED — this pack is not enforceable.");
+        if r.records_unknown > 0 {
+            // Said after the verdict, never instead of it. This build cannot
+            // tell an honest log written by a newer gateway from a record
+            // rewritten to look like one — the discriminator would be the
+            // origin signature, which is exactly what it cannot check. So it
+            // accuses, and names the one thing that would settle it.
+            println!(
+                "         {} record(s) carry a payload type this build cannot read, and",
+                r.records_unknown
+            );
+            println!(
+                "         the failures above may follow from that alone. Rebuild this"
+            );
+            println!(
+                "         verifier from a revision that knows those types and re-run"
+            );
+            println!(
+                "         before treating this as evidence of tampering."
+            );
+        }
     }
 }
 

@@ -106,6 +106,9 @@ fn mint_full(exp_offset: i64, scopes: &str, act: Option<&str>, service: bool) ->
         "scope": scopes,
         "realm_access": { "roles": ["support-n2"] },
         "resource_access": { "obsign-proxy": { "roles": ["ticket-writer"] } },
+        // The display claim every mainstream IdP sends beside the opaque
+        // subject — the shape a real token has.
+        "preferred_username": "marie.dupont",
     });
     if let Some(a) = act {
         claims["act"] = json!({ "sub": a });
@@ -745,6 +748,57 @@ fn proven_identity_is_recorded_with_its_real_issuer() {
     // allowed, the destructive one stays refused.
     assert!(f.stderr.contains("[server] EXECUTING ticket_update"));
     assert!(!f.stderr.contains("[server] EXECUTING delete_production_db"));
+}
+
+#[test]
+fn a_pack_carries_both_the_stable_subject_and_a_readable_name() {
+    // What this closes: with a real IdP, `sub` is opaque — Keycloak issues
+    // UUIDs — so a pack naming only the subject is unreadable to the auditor
+    // it exists for, who by construction cannot query the issuer's directory.
+    // Recording the label instead would have traded one problem for another,
+    // since a display name is renameable and an audit trail needs an
+    // identifier that is not. Both, or the pack answers only half the
+    // question "who did this".
+    let f = run("label", CEDAR, oidc("support:ticket_update"), TRAFFIC);
+    assert!(f.started, "the gateway should have started:\n{}", f.stderr);
+
+    let deleg = f
+        .evidence
+        .records
+        .iter()
+        .find_map(|r| match &r.payload {
+            Payload::Delegation(d) => Some(d.clone()),
+            _ => None,
+        })
+        .expect("a delegation record");
+    let label = f
+        .evidence
+        .records
+        .iter()
+        .find_map(|r| match &r.payload {
+            Payload::PrincipalLabel(p) => Some(p.clone()),
+            _ => None,
+        })
+        .expect("a principal label record");
+
+    // The label joins to the delegation on the full OIDC identity — issuer
+    // *and* subject. A subject is only unique within its issuer, and the
+    // gateway hot-reloads identity bundles, so a join on the subject alone
+    // would eventually name the wrong human.
+    assert_eq!(label.subject, deleg.principal_sub);
+    assert_eq!(label.issuer, deleg.principal_issuer);
+    assert_eq!(label.label, "marie.dupont");
+    // And it says which claim it trusted, because an `email` the IdP verified
+    // and a `name` the user typed do not carry the same weight.
+    assert_eq!(label.claim, "/preferred_username");
+
+    // Sealed and signed like any other record — a label an attacker could
+    // append after the fact would be a way to rename history.
+    let keys = f.evidence.keys.clone();
+    assert!(
+        evidence::verify(&f.evidence, &keys).is_valid(),
+        "the pack must stay verifiable with the label in it"
+    );
 }
 
 #[test]

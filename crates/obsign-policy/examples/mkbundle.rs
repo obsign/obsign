@@ -99,31 +99,35 @@ fn main() {
         format: FORMAT_V2.to_string(),
         version: "policies@a3f19c2".to_string(),
         cedar: CEDAR.to_string(),
+        // Every tool declares the one server the demo gateway wraps, and the
+        // demo passes the same string as `--server-id`. A catalogue naming
+        // servers the gateway does not front would make its own evidence
+        // pack contradict its own bundle — the first thing anyone reads.
         tools: vec![
             ToolDef {
                 name: "delete_production_db".into(),
-                server: "mcp://db-ops.internal".into(),
+                server: "mcp://mock.demo".into(),
                 destructive: true,
                 required_scope: Some("db:admin".into()),
                 policy_args: Vec::new(),
             },
             ToolDef {
                 name: "ticket_update".into(),
-                server: "mcp://crm.internal".into(),
+                server: "mcp://mock.demo".into(),
                 destructive: false,
                 required_scope: Some("support:ticket_update".into()),
                 policy_args: Vec::new(),
             },
             ToolDef {
                 name: "search_docs".into(),
-                server: "mcp://docs.internal".into(),
+                server: "mcp://mock.demo".into(),
                 destructive: false,
                 required_scope: None,
                 policy_args: Vec::new(),
             },
             ToolDef {
                 name: "export_customer_data".into(),
-                server: "mcp://crm.internal".into(),
+                server: "mcp://mock.demo".into(),
                 destructive: false,
                 required_scope: Some("data:export".into()),
                 policy_args: Vec::new(),
@@ -133,7 +137,7 @@ fn main() {
             // policy may read — the message text is never extracted.
             ToolDef {
                 name: "send_message".into(),
-                server: "mcp://chat.internal".into(),
+                server: "mcp://mock.demo".into(),
                 destructive: false,
                 required_scope: None,
                 policy_args: vec![ArgSpec {

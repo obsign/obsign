@@ -82,6 +82,8 @@ pub struct Gateway {
     pub identity: Identity,
     pub env: String,
     pub agent_id: String,
+    /// Names the wrapped server in every record (`--server-id`).
+    pub server_id: String,
     pub wal_dir: PathBuf,
     pub chain_id: String,
     pub server_cmd: Vec<String>,
@@ -642,6 +644,7 @@ fn open_session(
             env: gw.env.clone(),
             agent_id: gw.agent_id.clone(),
             bundle_version: gw.bundle_version.clone(),
+            server_id: gw.server_id.clone(),
         });
         {
             let mut a = ctx.auth.lock().unwrap();

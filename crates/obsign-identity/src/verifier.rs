@@ -24,6 +24,10 @@ pub struct Delegation {
     /// principal). Always at least one element.
     pub actor_chain: Vec<String>,
     pub kind: PrincipalKind,
+    /// Display name for `subject`, with the claim it was read from. `None`
+    /// when the token carries none: a subject with no readable name is
+    /// recorded as it is, never invented.
+    pub label: Option<(String, String)>,
 }
 
 impl Delegation {
@@ -148,6 +152,8 @@ impl Verifier {
         let (actor_chain, kind) =
             actor_chain(&claims, &subject, client_id.as_deref(), &self.claims.machine);
 
+        let label = self.claims.label(&claims);
+
         Ok(Delegation {
             subject,
             issuer,
@@ -157,6 +163,7 @@ impl Verifier {
             issued_at_ms: claims.get("iat").and_then(Value::as_i64).map(|i| i * 1000),
             actor_chain,
             kind,
+            label,
         })
     }
 }

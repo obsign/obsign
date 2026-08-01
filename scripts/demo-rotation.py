@@ -38,6 +38,7 @@ proxy = subprocess.Popen(
      "--identity-bundle", D / "identity-bundle.json",
      "--token-file", D / "token.jwt",
      "--wal", D / "wal", "--chain-id", "rot", "--env", "prod",
+     "--server-id", "mcp://mock.demo",
      "--", SRV],
     stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, text=True)
 
