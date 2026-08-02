@@ -57,6 +57,20 @@ pub enum Error {
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// A record whose payload type this build has no schema for.
+    ///
+    /// Sealing it would bake a hash this build invented into a signed
+    /// checkpoint — and a checkpoint chains to the next, so it cannot be
+    /// redone. Every verifier that *does* know the type would then recompute
+    /// a different leaf and report `root_mismatch` on an honest log, forever.
+    /// The ledger refuses instead, and the operator upgrades it.
+    #[error(
+        "record seq {seq} carries payload type \"{kind}\" this build has no \
+         schema for: refusing to seal a hash it cannot compute. Upgrade the \
+         ledger to a build that knows this type."
+    )]
+    UnreadablePayload { seq: u64, kind: String },
+
     /// The WAL no longer reaches the last sealed record. Records that were
     /// sealed have disappeared: that is not a state to seal over, it is an
     /// incident to surface.

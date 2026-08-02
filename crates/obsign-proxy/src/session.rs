@@ -207,6 +207,28 @@ pub fn record_delegation(
         }),
     )?;
 
+    // A readable name for the subject, when the token carries one. Written
+    // only when it differs from the subject: with a homemade issuer the two
+    // are often the same string, and a record repeating it would be noise in
+    // the one place noise is expensive.
+    //
+    // Same rule as the actor chain below — an additional payload type, never
+    // a field on `Delegation`.
+    if let Some((label, claim)) = &deleg.label {
+        if label != &deleg.subject {
+            s.write(
+                format!("label-{generation}"),
+                Some(deleg_id.clone()),
+                Payload::PrincipalLabel(PrincipalLabel {
+                    issuer: deleg.issuer.clone(),
+                    subject: deleg.subject.clone(),
+                    label: label.clone(),
+                    claim: claim.clone(),
+                }),
+            )?;
+        }
+    }
+
     // The actor chain is a separate record, inserted between the delegation
     // and the agent session. An additional type rather than a field added to
     // `Delegation`: changing the encoding of an existing payload would
@@ -279,6 +301,9 @@ mod tests {
             issued_at_ms: None,
             actor_chain: vec!["u:test".into()],
             kind: PrincipalKind::Machine,
+            // Set, and different from the subject, so the label record is
+            // written and this test covers its origin signature too.
+            label: Some(("Test User".into(), "/name".into())),
         };
         record_delegation(&mut s, 1, &deleg, "agent", "policies@test").unwrap();
 

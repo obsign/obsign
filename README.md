@@ -44,6 +44,7 @@ printf '%s\n' \
      --identity-bundle /tmp/demo/identity-bundle.json \
      --token-file /tmp/demo/token.jwt \
      --wal /tmp/demo/wal --chain-id demo --env prod \
+     --server-id mcp://mock.demo \
      -- ./target/debug/mock-mcp-server
 ```
 
@@ -118,6 +119,7 @@ cargo run -p obsign-proxy -- \
     --trusted-keys /tmp/demo/trusted-keys.json \
     --identity-bundle /tmp/demo/identity-bundle.json \
     --wal /tmp/demo/wal --chain-id demo --env prod \
+    --server-id mcp://mock.demo \
     -- ./target/debug/mock-mcp-server
 
 TOKEN=$(cat /tmp/demo/token.jwt)
@@ -256,7 +258,7 @@ no `principal in Group::"dba"` rule ever matches — with no visible error.
 
 The same goes for what marks a token as a machine's. The defaults recognise
 the three shapes the target IdPs emit; an IdP with its own convention is
-described, not special-cased (format `obsign-identity/2`):
+described, not special-cased (signed from format `obsign-identity/2` on):
 
 ```json
 "claims": {
@@ -569,9 +571,14 @@ hashes for the same data. Here every field is length-prefixed and concatenation
 is injective. JSON stays the transport and reading format, never the
 computation one.
 
-**Hashes, not contents.** Prompts and tool arguments contain personal data. We
-store the hash; the content, when retained, is encrypted with a key held by the
-customer (`SealedRef`). We can prove *what* without being able to read it.
+**Hashes, not contents.** Prompts and tool arguments contain personal data.
+Only their hash is recorded: no component here retains the values, so a log or
+an evidence pack has nothing to leak. The corollary is stated rather than
+hidden — a pack proves *that* a tool was called and *under which rule*, not
+what was passed to it; recovering the arguments means holding them already,
+and the hash then proves they are the ones that went through. The format
+reserves `SealedRef` for optional retention, encrypted to a key the customer
+holds; nothing ships that today.
 
 **Merkle with promotion, not duplication.** With an odd number of elements the
 last one is promoted as-is. Duplication (CVE-2012-2459) lets you build two
@@ -672,21 +679,32 @@ free integer; we never renumber.
 The rule has already been exercised several times: `Payload::Actor` (tag 7)
 was added after the fact for the actor chain, rather than adding a field to
 `Delegation`, then `Payload::ConfigReload` (tag 8), `Payload::SessionCert`
-(tag 9) and `Payload::McpAccess` (tag 10) the same way. The `record_format_is_frozen` test carries reference
-hashes for the existing payloads — none of them moved either time. The day
+(tag 9), `Payload::McpAccess` (tag 10) and `Payload::PrincipalLabel`
+(tag 11) the same way — the last of those recording a readable name *beside*
+an opaque OIDC subject rather than replacing it, which a field on
+`Delegation` could not have done without moving every sealed delegation's
+hash. The `record_format_is_frozen` test carries reference hashes for the
+existing payloads — none of them moved any of those times. The day
 that test fails, the question is not "how do I update the constants" but
 "which sealed logs have just been invalidated".
 
 Signed *bundles* evolve differently: their format string is part of the
 signed bytes, so a revision is a new string, and every revision an artifact
 was published under keeps verifying with the signing bytes of its day.
-Exercised twice: `obsign-identity/2` extended the signed bytes with the
-machine markers, and `obsign-policy/2` with the argument declarations. Both
-follow the same two rules: a `/1` bundle keeps its hash and signature, and a
-`/1` file carrying fields only `/2` signs is refused rather than trusted —
-otherwise those fields would be unsigned authority. The control plane emits
-`/2` only when a tool actually declares arguments, so a fleet that never
-uses the feature never forces a gateway upgrade.
+Exercised three times: `obsign-identity/2` extended the signed bytes with the
+machine markers, `obsign-policy/2` with the argument declarations, and
+`obsign-identity/3` with the display-label claim paths. All follow the same
+two rules: an older bundle keeps its hash and signature, and an older file
+carrying fields only a newer format signs is refused rather than trusted
+(`UnsignedMachineMarkers`, `UnsignedLabelPaths`) — otherwise those fields
+would be unsigned authority.
+
+They differ on one point that decides the upgrade order. `obsign-policy/2` is
+emitted only when a tool actually declares arguments, so a fleet that never
+uses the feature never forces a gateway upgrade. `obsign-identity/3` is
+emitted **unconditionally**, so upgrading the control plane alone takes a
+fleet down: gateways first, control plane second
+([deploy-docker.md](docs/deploy-docker.md)).
 
 ## Known debt
 

@@ -46,6 +46,19 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use obsign_wal::Wal;
 
+/// What the records name the wrapped server when the operator did not.
+/// Deliberately useless to an investigator rather than plausibly wrong: a
+/// fixed vendor string in the `server` field reads like an answer.
+const DEFAULT_SERVER_ID: &str = "mcp://unspecified";
+
+impl Cli {
+    /// The wrapped server as records will name it. Absence is honest, not
+    /// fatal — it is recorded as such, and said once at startup.
+    fn server_id(&self) -> &str {
+        self.server_id.as_deref().unwrap_or(DEFAULT_SERVER_ID)
+    }
+}
+
 #[derive(Parser)]
 #[command(
     name = "obsign-proxy",
@@ -176,6 +189,19 @@ struct Cli {
     #[arg(long, default_value = "unknown-agent")]
     agent_id: String,
 
+    /// Identifier of the wrapped MCP server, as it will appear in every
+    /// record — `mcp://crm.internal`, not a hostname the log then has to be
+    /// joined against.
+    ///
+    /// Descriptive, not authorizing: it also reaches policies as
+    /// `context.server`, like `--env` reaches them as `context.env`, but no
+    /// Cedar *resource* is keyed on it. Nothing an operator types decides a
+    /// verdict a signed bundle did not already decide.
+    ///
+    /// Left unset, records name `mcp://unspecified` and say so at startup.
+    #[arg(long)]
+    server_id: Option<String>,
+
     /// Session identifier (end-to-end correlation), stdio transport only:
     /// over HTTP the gateway assigns one per session (Mcp-Session-Id).
     #[arg(long)]
@@ -222,12 +248,46 @@ fn main() -> Result<()> {
     let engine = Arc::new(Engine::load(bundle).context("loading the policies")?);
     let bundle_version = engine.version().to_string();
 
+    // A blank --server-id is refused rather than recorded. It is what a
+    // config template whose variable did not expand produces, and it is
+    // worse than the default it displaces: an empty `server` field reads as
+    // a product defect, and it is sealed into every record for good.
+    if let Some(id) = &cli.server_id {
+        if id.trim().is_empty() {
+            bail!("--server-id is blank: give the wrapped server a name, or omit the flag");
+        }
+    }
+
     eprintln!(
-        "[obsign] policy {} — {} tool(s) in catalogue — env {}",
+        "[obsign] policy {} — {} tool(s) in catalogue — env {} — server {}",
         bundle_version,
         engine.known_tools().count(),
-        cli.env
+        cli.env,
+        cli.server_id()
     );
+    match &cli.server_id {
+        // Said once, at startup, rather than left for the auditor to
+        // discover in a year-old pack: every record this gateway writes
+        // will name a server nobody can identify.
+        None => eprintln!(
+            "[obsign] warning: --server-id not set, records will not name the \
+             wrapped server"
+        ),
+        // The signed catalogue already declares which server each tool
+        // lives on. Naming one it never mentions is a typo far more often
+        // than it is a fleet whose bundle covers other gateways — and a
+        // typo caught here costs nothing, while the same typo caught later
+        // is sealed into a year of records.
+        Some(id) => {
+            let mut declared = engine.known_tools().map(|t| t.server.as_str()).peekable();
+            if declared.peek().is_some() && !declared.any(|s| s == id) {
+                eprintln!(
+                    "[obsign] warning: --server-id {id} names no server the \
+                     catalogue declares — typo?"
+                );
+            }
+        }
+    }
 
     // --- Signing keys -------------------------------------------------
     // Resolved once, at startup, in front of the operator: a gateway that
@@ -374,6 +434,7 @@ fn run_http(
             identity,
             env: cli.env.clone(),
             agent_id: cli.agent_id.clone(),
+            server_id: cli.server_id().to_string(),
             wal_dir: cli.wal.clone(),
             chain_id: cli.chain_id.clone(),
             server_cmd: cli.server_cmd.clone(),
@@ -501,6 +562,7 @@ fn run_stdio(
         env: cli.env.clone(),
         agent_id: cli.agent_id.clone(),
         bundle_version,
+        server_id: cli.server_id().to_string(),
     });
 
     // --- Wrapped MCP server ----------------------------------------------

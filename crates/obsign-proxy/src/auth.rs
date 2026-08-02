@@ -65,6 +65,10 @@ impl Auth {
                 // therefore block in declared mode, which is the intended
                 // behaviour.
                 kind: PrincipalKind::Machine,
+                // No claim to read one from, and the declared subject is
+                // already the readable string — a label here would only
+                // repeat it.
+                label: None,
             },
             generation: 1,
             reloads: Vec::new(),

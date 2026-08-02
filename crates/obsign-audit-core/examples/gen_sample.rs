@@ -101,11 +101,10 @@ fn main() {
             server: "mcp://db-ops.internal".into(),
             tool: "delete_production_db".into(),
             args_hash: content_hash(br#"{"database":"customers","confirm":true}"#),
-            // Content retained encrypted, key held by the customer.
-            args_sealed: Some(SealedRef {
-                key_id: "acme-kms-args".into(),
-                blob_ref: "s3://acme-audit/args/9f4c21/call-1.enc".into(),
-            }),
+            // The hash, and nothing else. No component retains arguments, so
+            // a sample carrying a `SealedRef` would advertise a capability
+            // the gateway cannot produce — see `ToolCall::args_sealed`.
+            args_sealed: None,
         }),
     ));
 

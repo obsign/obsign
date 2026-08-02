@@ -172,6 +172,10 @@ struct ChainRow {
     id: String,
     records: usize,
     last_seq: Option<u64>,
+    /// Timestamp of the last record, and the column an investigation reads
+    /// first. `None` when the chain is empty or unreadable — those sort last,
+    /// where "nothing happened here" belongs.
+    last_ms: Option<i64>,
     sealed_to: Option<u64>,
     checkpoints: usize,
     anchors: usize,
@@ -187,6 +191,7 @@ fn chain_row(console: &Console, id: &str) -> ChainRow {
                 id: id.to_string(),
                 records: 0,
                 last_seq: None,
+                last_ms: None,
                 sealed_to: None,
                 checkpoints: 0,
                 anchors: 0,
@@ -196,6 +201,7 @@ fn chain_row(console: &Console, id: &str) -> ChainRow {
         }
     };
     let last_seq = records.last().map(|r| r.seq);
+    let last_ms = records.last().map(|r| r.ts_ms);
 
     let store = match &console.store_dir {
         Some(dir) if dir.is_dir() => match Store::open(dir, id) {
@@ -205,6 +211,7 @@ fn chain_row(console: &Console, id: &str) -> ChainRow {
                     id: id.to_string(),
                     records: records.len(),
                     last_seq,
+                    last_ms,
                     sealed_to: None,
                     checkpoints: 0,
                     anchors: 0,
@@ -221,6 +228,7 @@ fn chain_row(console: &Console, id: &str) -> ChainRow {
             id: id.to_string(),
             records: records.len(),
             last_seq,
+            last_ms,
             sealed_to: None,
             checkpoints: 0,
             anchors: 0,
@@ -249,6 +257,7 @@ fn chain_row(console: &Console, id: &str) -> ChainRow {
                 id: id.to_string(),
                 records: report.records_total,
                 last_seq,
+                last_ms,
                 sealed_to,
                 checkpoints,
                 anchors,
@@ -278,17 +287,24 @@ fn overview(console: &Console) -> Option<String> {
         }
         Ok(chains) => {
             body.push_str(
-                "<table><tr><th>chain</th><th>records</th><th>last seq</th>\
-                 <th>sealed to</th><th>checkpoints</th><th>anchors</th>\
-                 <th>status</th></tr>",
+                "<table><tr><th>chain</th><th>last activity</th><th>records</th>\
+                 <th>last seq</th><th>sealed to</th><th>checkpoints</th>\
+                 <th>anchors</th><th>status</th></tr>",
             );
-            for id in chains {
-                let row = chain_row(console, &id);
+            // Most recent first. `list_chains` sorts by id — right for the
+            // export's stable manifest order, wrong here: a session id is
+            // random hex, so alphabetical order is chronologically
+            // meaningless, and an investigator reads the top row as "what
+            // happened last". Chains with no readable record sort last.
+            let mut rows: Vec<ChainRow> = chains.iter().map(|id| chain_row(console, id)).collect();
+            rows.sort_by(|a, b| b.last_ms.cmp(&a.last_ms).then_with(|| a.id.cmp(&b.id)));
+            for row in rows {
                 let _ = write!(
                     body,
                     "<tr><td><a href=\"/chain/{id}\">{id}</a></td><td>{}</td>\
-                     <td>{}</td><td>{}</td><td>{}</td><td>{}</td>\
+                     <td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td>\
                      <td class=\"{}\">{}</td></tr>",
+                    row.last_ms.map(fmt_utc).unwrap_or_else(|| "—".to_string()),
                     row.records,
                     opt(row.last_seq),
                     opt(row.sealed_to),
@@ -477,7 +493,11 @@ fn chain_page(console: &Console, id: &str) -> Option<String> {
             rec.seq,
             fmt_utc(rec.ts_ms),
             esc(&rec.id),
-            kind(rec),
+            // Escaped like every other cell. This used to be one of ten
+            // compile-time literals, which is why it was not; an unknown
+            // payload's kind is chosen by whoever wrote the record, so the
+            // closed set that made raw interpolation safe is gone.
+            esc(kind(rec)),
             summary(rec),
         );
     }
@@ -486,19 +506,13 @@ fn chain_page(console: &Console, id: &str) -> Option<String> {
     Some(page(&format!("Chain {id}"), &body))
 }
 
-fn kind(rec: &Record) -> &'static str {
-    match rec.payload {
-        Payload::Delegation(_) => "delegation",
-        Payload::Actor(_) => "actor",
-        Payload::AgentSession(_) => "agent_session",
-        Payload::LlmTurn(_) => "llm_turn",
-        Payload::ToolCall(_) => "tool_call",
-        Payload::McpAccess(_) => "mcp_access",
-        Payload::Decision(_) => "decision",
-        Payload::Effect(_) => "effect",
-        Payload::ConfigReload(_) => "config_reload",
-        Payload::SessionCert(_) => "session_cert",
-    }
+/// The payload's own name for itself.
+///
+/// Delegates rather than repeating the list: an unknown type is named by what
+/// it says it is, so an operator reading the table can tell at a glance that
+/// the console is older than the log it is showing.
+fn kind(rec: &Record) -> &str {
+    rec.payload.kind_str()
 }
 
 fn summary(rec: &Record) -> String {
@@ -508,6 +522,21 @@ fn summary(rec: &Record) -> String {
             esc(&d.principal_sub),
             esc(&d.principal_issuer),
             fmt_utc(d.expires_at_ms)
+        ),
+        // Both halves, in the order an investigation needs them: the name
+        // first because it is what a human recognises, the subject after
+        // because it is what survives a rename.
+        Payload::Unknown(u) => format!(
+            "<span class=\"bad\">payload type unknown to this console</span> \
+             — {} field(s) kept verbatim",
+            u.raw.len().saturating_sub(1)
+        ),
+        Payload::PrincipalLabel(p) => format!(
+            "{} = {} <span class=\"mut\">iss={} (from {})</span>",
+            esc(&p.label),
+            esc(&p.subject),
+            esc(&p.issuer),
+            esc(&p.claim)
         ),
         Payload::Actor(a) => format!(
             "{} [{}]",

@@ -25,6 +25,16 @@ pub struct ClaimMap {
     pub groups: Vec<String>,
     /// Used to recognise a service token (`sub` == `client_id`).
     pub client_id: Vec<String>,
+    /// Claims a human-readable name may be read from, tried in order; the
+    /// first that answers wins. Never replaces `subject` — the label is
+    /// recorded *beside* it, because a display name can be renamed and an
+    /// audit trail needs the identifier that cannot.
+    ///
+    /// Defaulted so an `obsign-identity/1` or `/2` bundle deserializes
+    /// unchanged; neither signature covers this field, so [`crate::bundle`]
+    /// refuses either format carrying anything but the defaults.
+    #[serde(default = "default_labels")]
+    pub labels: Vec<String>,
     /// What marks a token as a machine's. `#[serde(default)]` so a
     /// `obsign-identity/1` bundle deserializes unchanged — but for that
     /// format the signature does not cover this field, so [`crate::bundle`]
@@ -48,9 +58,23 @@ impl Default for ClaimMap {
                 "/resource_access/*/roles".into(),
             ],
             client_id: vec!["/client_id".into(), "/azp".into()],
+            labels: default_labels(),
             machine: MachineMarkers::default(),
         }
     }
+}
+
+/// Display claims every mainstream IdP populates, most trustworthy first.
+///
+/// `preferred_username` first because it is what an operator types and what a
+/// Keycloak service account carries; `email` before `name` because an IdP
+/// usually verifies the former and rarely the latter.
+pub fn default_labels() -> Vec<String> {
+    vec![
+        "/preferred_username".into(),
+        "/email".into(),
+        "/name".into(),
+    ]
 }
 
 /// Resolves a JSON-pointer-like path, with `*` meaning "every child".
@@ -105,6 +129,28 @@ impl ClaimMap {
             .first()
             .and_then(|v| v.as_str())
             .map(String::from)
+    }
+
+    /// A display name for this token, with the claim it came from.
+    ///
+    /// First path that answers wins, and an empty string does not count as an
+    /// answer: an IdP that sends `"email": ""` should fall through to the
+    /// next claim rather than label the principal with nothing.
+    ///
+    /// Returns the claim path alongside the value because a label's authority
+    /// is the authority of the claim behind it, and only the reader can weigh
+    /// that.
+    pub fn label(&self, claims: &Value) -> Option<(String, String)> {
+        for path in &self.labels {
+            if let Some(v) = resolve(claims, path)
+                .first()
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+            {
+                return Some((v.to_string(), path.clone()));
+            }
+        }
+        None
     }
 
     /// First path that answers. Scopes do not accumulate across

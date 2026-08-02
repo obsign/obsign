@@ -107,6 +107,10 @@ pub fn mint_at(seed: u8, exp: i64, scopes: &str, act_sub: Option<&str>) -> Strin
         "iat": now - 10,
         "scope": scopes,
         "groups": ["support-n2"],
+        // Every mainstream IdP sends a display claim next to the opaque
+        // subject. Present here so the tests exercise the shape a real token
+        // has, rather than one where `sub` happens to be readable.
+        "preferred_username": "marie.dupont",
     });
     if let Some(actor) = act_sub {
         claims["act"] = json!({ "sub": actor });

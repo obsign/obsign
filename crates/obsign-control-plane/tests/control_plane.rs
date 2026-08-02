@@ -892,6 +892,48 @@ fn http_get(addr: SocketAddr, request: &str) -> String {
 }
 
 #[test]
+fn the_console_lists_chains_newest_first() {
+    // A session id is random hex, so the id order `list_chains` returns says
+    // nothing about time — yet an investigator reads the top row as "what
+    // happened last". Here `alpha` sorts first by id but `zulu` holds the
+    // more recent record, so the two orders disagree and only one is right.
+    let wal_dir = tmp("con-order-wal");
+    fill_chain(&wal_dir, "alpha", 3, 0); // last record at ts 2
+    fill_chain(&wal_dir, "zulu", 5, 0); //  last record at ts 4
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let console = Console {
+        wal_dir: wal_dir.clone(),
+        store_dir: None,
+        dist_dir: None,
+    };
+    std::thread::spawn(move || console.serve_on(listener));
+
+    let overview = http_get(
+        addr,
+        "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    );
+    assert!(overview.starts_with("HTTP/1.1 200"));
+
+    let zulu = overview.find("/chain/zulu").expect("zulu must be listed");
+    let alpha = overview.find("/chain/alpha").expect("alpha must be listed");
+    assert!(
+        zulu < alpha,
+        "the chain with the more recent record must come first, \
+         not the one that sorts first by id"
+    );
+
+    // And the time is on the page, so the order can be checked by eye rather
+    // than trusted: without it the overview shows no date at all.
+    assert!(overview.contains("last activity"), "the column must exist");
+    assert!(
+        overview.contains("1970-01-01 00:00:00Z"),
+        "the last record's timestamp must be rendered"
+    );
+}
+
+#[test]
 fn console_is_read_only_and_shows_the_log() {
     let wal_dir = tmp("con-wal");
     let store_dir = tmp("con-store");
@@ -1140,4 +1182,45 @@ fn the_deployment_bundle_is_published_as_an_immutable_artifact() {
         .artifacts
         .iter()
         .any(|a| a.name == "deployment-bundle.json"));
+}
+
+#[test]
+fn a_hostile_payload_kind_cannot_inject_html() {
+    // The `kind` column used to be one of ten compile-time literals, which is
+    // why it was interpolated raw. An unknown payload's kind is whatever the
+    // record says it is — and the console is the page an operator opens to
+    // look at a log they already suspect.
+    let wal_dir = tmp("con-xss-wal");
+    std::fs::create_dir_all(&wal_dir).unwrap();
+    let hostile = "<script>alert(1)</script>";
+    let line = format!(
+        r#"{{"seq":0,"ts_ms":1,"prev_hash":"{}","id":"r0","parent_id":null,"session_id":"s","payload":{{"kind":"{}"}}}}"#,
+        "0".repeat(64),
+        hostile
+    );
+    std::fs::write(wal_dir.join("hostile.jsonl"), line + "\n").unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let console = Console {
+        wal_dir: wal_dir.clone(),
+        store_dir: None,
+        dist_dir: None,
+    };
+    std::thread::spawn(move || console.serve_on(listener));
+
+    let page = http_get(
+        addr,
+        "GET /chain/hostile HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    );
+    assert!(page.starts_with("HTTP/1.1 200"), "the page must still render");
+    assert!(
+        !page.contains(hostile),
+        "the raw kind reached the HTML unescaped"
+    );
+    assert!(
+        page.contains("&lt;script&gt;"),
+        "the kind must be shown, escaped: it is what tells the operator \
+         which type the console could not read"
+    );
 }

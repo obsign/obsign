@@ -50,6 +50,7 @@ docker run -d \
   --http 0.0.0.0:8080 \
   --wal /var/lib/obsign/wal \
   --env prod \
+  --server-id mcp://crm.internal \
   -- /usr/local/bin/my-mcp-server
 ```
 
@@ -101,6 +102,22 @@ The control plane emits bundle format `/2` the moment one tool in
 says. The cutover order is therefore fixed: upgrade every gateway image
 first, publish the first bundle that declares arguments second. A fleet that
 never declares arguments keeps receiving `/1` and needs nothing.
+
+## Rolling out display labels (`obsign-identity/3`)
+
+Same rule, one bundle over, with one difference that makes it sharper: the
+control plane emits `obsign-identity/3` **unconditionally**, not only when
+something new is configured. A gateway that only knows `/1` and `/2` refuses
+it at startup (`unknown identity bundle format`), so upgrading the control
+plane alone takes the fleet down.
+
+**Upgrade every gateway image first, then the control plane.** The reverse
+order is an outage, not a degradation.
+
+Bundles already published stay valid: `/1` and `/2` remain verifiable, their
+signed bytes are unchanged, and either format still refuses to carry a claim
+path its own signature never covered (`UnsignedLabelPaths`) — an unsigned
+label path would choose the name an investigation reads.
 
 ## HSM (PKCS#11) and TPM
 

@@ -36,6 +36,7 @@ services:
         "--http", "0.0.0.0:8080",
         "--wal", "/wal",
         "--env", "prod",
+        "--server-id", "mcp://mock.demo",
         "--",
         "mock-mcp-server",
       ]

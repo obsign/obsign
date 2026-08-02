@@ -7,12 +7,15 @@ use crate::claims::ClaimMap;
 use crate::jwks::{Jwk, JwkSet};
 use crate::Error;
 
-/// Current format: machine markers are part of the signed bytes.
-pub const FORMAT: &str = "obsign-identity/2";
+/// Current format: the display-label paths join the signed bytes.
+pub const FORMAT: &str = "obsign-identity/3";
 /// First format. Still verifiable — a bundle published before the revision
 /// keeps its hash and its signature — but its signature does not cover
 /// machine markers, so only the default markers are accepted with it.
 pub const FORMAT_V1: &str = "obsign-identity/1";
+/// Machine markers signed, label paths not yet. Same rule as v1 for what its
+/// signature does not cover.
+pub const FORMAT_V2: &str = "obsign-identity/2";
 
 /// Identity configuration, signed and distributed by the control plane.
 ///
@@ -91,6 +94,15 @@ impl IdentityBundle {
             }
         }
 
+        // v3 extends again, with the claims a display label may be read
+        // from. Signed for the same reason the subject path is: whoever
+        // chooses the claim chooses the name an investigation will read, and
+        // pointing it at an attacker-controlled claim would let a log say
+        // "guillaume" about someone else.
+        if self.format != FORMAT_V1 && self.format != FORMAT_V2 {
+            e.str_seq(&self.claims.labels);
+        }
+
         digest(domain::IDENTITY_BUNDLE, e.finish())
             .as_bytes()
             .to_vec()
@@ -126,16 +138,29 @@ impl SignedIdentityBundle {
         let bytes: [u8; 64] = raw.try_into().map_err(|_| Error::BadBundleSignature)?;
         key.verify(&self.bundle.signing_bytes(), &Signature::from_bytes(&bytes))
             .map_err(|_| Error::BadBundleSignature)?;
+        // Each older format is accepted, and refuses exactly what its own
+        // signature does not cover. Re-signing at the current format is one
+        // `obsign-control compile` away, and is the only way to use a field
+        // an older signature never saw.
         match self.bundle.format.as_str() {
             FORMAT => {}
             FORMAT_V1 => {
                 // A v1 signature does not cover the markers. Accepting a v1
                 // file that carries non-default ones would let unsigned JSON
                 // decide who counts as human — exactly the threat the signed
-                // bundle exists to close. Re-signing as v2 is one
-                // `obsign-control compile` away.
+                // bundle exists to close.
                 if self.bundle.claims.machine != crate::claims::MachineMarkers::default() {
                     return Err(Error::UnsignedMachineMarkers);
+                }
+                if self.bundle.claims.labels != crate::claims::default_labels() {
+                    return Err(Error::UnsignedLabelPaths);
+                }
+            }
+            FORMAT_V2 => {
+                // v2 signs the markers but not the label paths. Same rule:
+                // an unsigned label path chooses the name a log will carry.
+                if self.bundle.claims.labels != crate::claims::default_labels() {
+                    return Err(Error::UnsignedLabelPaths);
                 }
             }
             other => return Err(Error::UnknownBundleFormat(other.to_string())),
@@ -192,6 +217,36 @@ mod tests {
         assert!(matches!(
             signed.verify(&k.verifying_key()),
             Err(Error::UnsignedMachineMarkers)
+        ));
+    }
+
+    #[test]
+    fn an_older_format_with_custom_label_paths_is_refused() {
+        // Neither v1 nor v2 signs the label paths. A valid signature over
+        // older bytes plus an attacker-chosen label path must not pass: the
+        // path decides which claim becomes the name an investigation reads,
+        // so pointing it at a claim the token's holder controls would let a
+        // log say "guillaume" about someone else.
+        let k = key();
+        for fmt in [FORMAT_V1, FORMAT_V2] {
+            let mut b = bundle(fmt);
+            b.claims.labels = vec!["/attacker_controlled".into()];
+            let signed = b.sign("k1", &k);
+            assert!(
+                matches!(signed.verify(&k.verifying_key()), Err(Error::UnsignedLabelPaths)),
+                "{fmt} must refuse label paths its signature does not cover"
+            );
+        }
+    }
+
+    #[test]
+    fn v3_label_paths_are_covered_by_the_signature() {
+        let k = key();
+        let mut signed = bundle(FORMAT).sign("k1", &k);
+        signed.bundle.claims.labels.push("/x".into());
+        assert!(matches!(
+            signed.verify(&k.verifying_key()),
+            Err(Error::BadBundleSignature)
         ));
     }
 
