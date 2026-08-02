@@ -53,9 +53,18 @@ group membership or by scopes, never by `principal.<something>`.
 | `tool_call` | `tools/call` | `Tool::"<name>"` |
 | `resource_read` | `resources/read`, `resources/subscribe`, `resources/unsubscribe`, and `completion/complete` on a resource template | `Resource::"<uri>"` |
 | `prompt_get` | `prompts/get`, and `completion/complete` on a prompt | `Prompt::"<name>"` |
-| `sampling` | server-initiated `sampling/createMessage` | `Server::"<server>"` |
-| `elicitation` | server-initiated `elicitation/create` | `Server::"<server>"` |
-| `notify` | server-initiated `notifications/message` | `Server::"<server>"` |
+| `sampling` | server-initiated `sampling/createMessage` | `Server::"mcp://wrapped"` |
+| `elicitation` | server-initiated `elicitation/create` | `Server::"mcp://wrapped"` |
+| `notify` | server-initiated `notifications/message` | `Server::"mcp://wrapped"` |
+
+`Server::"mcp://wrapped"` is a fixed literal, not the deployment's server
+name: these channels are granted per server, and the request names no stable
+object to key on. The operator's `--server-id` reaches rules as
+`context.server` and lands in every record, but **no resource is keyed on
+it** — nothing an operator types on a command line decides a verdict the
+signed bundle did not already decide. Match on `context.server` if you want
+a rule that only applies to one deployment; do not expect a
+`Server::"mcp://crm.internal"` entity to exist.
 
 **Resource attributes.** Only `Tool` carries attributes, and only because
 the catalogue describes it: `resource.destructive` (bool),
@@ -68,8 +77,8 @@ runtime, so there is nothing signed to attach. Decide on the identifier via
 
 | Attribute | Type | Meaning |
 |---|---|---|
-| `context.env` | string | environment declared to the gateway (`prod`, `staging`, …) |
-| `context.server` | string | the wrapped MCP server |
+| `context.env` | string | environment declared to the gateway (`--env`: `prod`, `staging`, …) |
+| `context.server` | string | the wrapped server as the operator named it (`--server-id`); descriptive, never a resource key |
 | `context.session` | string | session identifier, also the audit chain id |
 | `context.scopes` | set of strings | scopes granted by the delegation |
 | `context.target` | string | resource URI or prompt name (capability actions) |
