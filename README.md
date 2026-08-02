@@ -449,7 +449,10 @@ as a cryptographic one.
 
 Everything the gateway trusts arrives as a signed file. `obsign-control` is
 where those files come from — and the reason a rule change is a dated,
-reviewed pull request rather than a click in a UI:
+reviewed pull request rather than a click in a UI. Authoring the rules
+themselves — the model Cedar sees, the catalogue, argument rules, rollout
+and the backup that keeps old versions readable:
+[docs/policies-cedar.md](docs/policies-cedar.md).
 
 ```bash
 # the source tree is a git checkout:
