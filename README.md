@@ -454,7 +454,9 @@ where those files come from — and the reason a rule change is a dated,
 reviewed pull request rather than a click in a UI. Authoring the rules
 themselves — the model Cedar sees, the catalogue, argument rules, rollout
 and the backup that keeps old versions readable:
-[docs/policies-cedar.md](docs/policies-cedar.md).
+[docs/policies-cedar.md](docs/policies-cedar.md). Every field of every file
+in that source tree, with its type, default and accepted values:
+[docs/policy-source-reference.md](docs/policy-source-reference.md).
 
 ```bash
 # the source tree is a git checkout:

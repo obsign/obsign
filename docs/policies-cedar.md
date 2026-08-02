@@ -36,6 +36,12 @@ are a convention, not a requirement — but since files are concatenated in
 lexicographic order, they keep the order readable and stable. Only `*.cedar`
 files are read as rules, so the generated schema sits beside them harmlessly.
 
+**Every field of every one of those files** — type, whether it is required,
+its default, the values an enum accepts, and the compile error a mistake
+produces — is documented in
+[policy-source-reference.md](policy-source-reference.md). This page stays the
+narrative: how to think about the rules and how to operate them.
+
 ## The model your rules see
 
 A rule is `permit`/`forbid` over a **principal**, an **action**, a
