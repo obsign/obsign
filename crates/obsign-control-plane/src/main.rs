@@ -92,6 +92,28 @@ enum Command {
         key_id: String,
     },
 
+    /// Write the Cedar schema of the model these rules see
+    ///
+    /// A derived artifact: it comes from `tools.json` and from the engine's
+    /// own model, needs no signing key, and belongs in the repository next to
+    /// the rules. Committing it is what lets an editor type-check a rule
+    /// while it is being written, with the same checks `compile` runs.
+    Schema {
+        /// Policy source tree
+        #[arg(long)]
+        source: PathBuf,
+
+        /// Where to write it. Defaults to `<source>/policies/obsign.cedarschema`,
+        /// beside the rules, where editors find it without configuration.
+        #[arg(long)]
+        out: Option<PathBuf>,
+
+        /// Write nothing; exit non-zero if the file on disk is out of date.
+        /// For CI: a stale schema silently weakens every editor that reads it.
+        #[arg(long)]
+        check: bool,
+    },
+
     /// Serve the read-only console
     Console {
         /// WAL directory to display
@@ -131,6 +153,7 @@ fn main() -> Result<()> {
             key,
             key_id,
         } => do_export(&wal, &store, &out, &key, &key_id),
+        Command::Schema { source, out, check } => do_schema(&source, out.as_deref(), check),
         Command::Console {
             wal,
             store,
@@ -169,6 +192,9 @@ fn load_and_compile(args: &CompileArgs) -> Result<(obsign_control_plane::Compile
     };
 
     let compiled = compile(&tree, &source_ref, &ops).context("compiling")?;
+    for w in &compiled.warnings {
+        eprintln!("[control] warning: {w}");
+    }
     eprintln!(
         "[control] compiled {} — {} rule file(s), {} tool(s), identity {}",
         compiled.policy.bundle.version,
@@ -222,6 +248,44 @@ fn do_publish(args: &CompileArgs, dist: &std::path::Path) -> Result<()> {
         published.version,
         published.release_dir.display()
     );
+    Ok(())
+}
+
+fn do_schema(source: &std::path::Path, out: Option<&std::path::Path>, check: bool) -> Result<()> {
+    let tree = SourceTree::load(source).context("loading the source tree")?;
+    let path = match out {
+        Some(p) => p.to_path_buf(),
+        None => obsign_control_plane::default_schema_path(source),
+    };
+
+    match obsign_control_plane::sync_schema(&tree, &path, check).context("deriving the schema")? {
+        obsign_control_plane::SchemaSync::UpToDate => {
+            eprintln!("[control] {} is up to date", path.display());
+        }
+        obsign_control_plane::SchemaSync::Stale => {
+            // Echo the arguments the operator actually passed. Printing the
+            // default invocation when they gave `--out` would send them to
+            // regenerate a different file and leave this one stale.
+            let mut fix = format!("obsign-control schema --source {}", source.display());
+            if out.is_some() {
+                fix.push_str(&format!(" --out {}", path.display()));
+            }
+            bail!(
+                "{} is out of date with tools.json — regenerate it:\n\x20   {fix}",
+                path.display()
+            );
+        }
+        obsign_control_plane::SchemaSync::Written => {
+            let declared: usize = tree.tools.iter().map(|t| t.policy_args.len()).sum();
+            eprintln!(
+                "[control] cedar schema : {} — {} tool(s), {} declared argument(s)",
+                path.display(),
+                tree.tools.len(),
+                declared
+            );
+            eprintln!("[control] commit it: your editor type-checks rules against it");
+        }
+    }
     Ok(())
 }
 

@@ -1,5 +1,14 @@
 # Argument-aware tool policy — design
 
+> **Superseded in part (2026-08-02).** The compile-time `Engine::smoke_check`
+> this document describes (§3.5, §4) no longer exists. A Cedar *schema* is now
+> generated from the catalogue and every rule is type-checked against it
+> (`Engine::validate`), which catches a typo'd `context.args.<name>` outright
+> — whatever guards the rule carries, rather than only when a synthetic
+> zero-valued evaluation happened to reach it. The §3.3 argument on fail-open
+> is unaffected and still holds. See `docs/policies-cedar.md` for the current
+> authoring rules.
+
 Status: **steps 1–3 implemented** (2026-07-31): `ArgSpec` in the
 catalogue, `obsign-policy/2` signing, extraction + `context.args` totality
 in the engine (step 1, 21 tests in `policy/tests/args.rs`); gateway wiring

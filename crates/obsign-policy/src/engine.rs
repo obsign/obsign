@@ -1,7 +1,7 @@
 use obsign_audit_core::record::Outcome;
 use cedar_policy::{
     Authorizer, Context, Decision, Entities, Entity, EntityId, EntityTypeName, EntityUid,
-    PolicyId, PolicySet, Request, RestrictedExpression,
+    PolicyId, PolicySet, Request, RestrictedExpression, Schema, ValidationMode, Validator,
 };
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -16,6 +16,23 @@ use crate::Error;
 const MAX_DECLARED_ARGS: usize = 16;
 const MAX_STRING_BYTES: usize = 4096;
 const MAX_SET_ELEMENTS: usize = 64;
+
+/// The Cedar resource for server-initiated channels (`sampling`,
+/// `elicitation`, `notify`), which are granted per server rather than per
+/// target.
+///
+/// A constant, deliberately. One gateway fronts one server, so the entity a
+/// policy matches on is always "the server this gateway wraps" — and making
+/// it an operator-supplied string would let `--server-id`, which nobody
+/// signs, decide a verdict: change the flag, and a `forbid` keyed on the old
+/// value stops applying. What varies per deployment reaches policies through
+/// `context.server`, the same unsigned-declaration channel as `context.env`.
+///
+/// It lives in this crate rather than in the gateway because it is a fact of
+/// the *model*: the generated schema enumerates it, so a rule keyed on a
+/// deployment's own name (`Server::"mcp://crm.internal"`) is an editor error
+/// and a compile error, instead of a rule that silently never matches.
+pub const WRAPPED_SERVER: &str = "mcp://wrapped";
 
 /// An authorization request for a tool call.
 #[derive(Debug, Clone)]
@@ -128,6 +145,20 @@ impl Capability {
             // Server-initiated channels are granted per server, not per
             // target: the request names no stable object to key on.
             Capability::Sampling | Capability::Elicitation | Capability::Notify => "Server",
+        }
+    }
+
+    /// True when the resource is the wrapped server itself rather than a
+    /// target the request names.
+    ///
+    /// The exhaustive match is the point: a new capability cannot be added
+    /// without deciding which side of this line it falls on, and the answer
+    /// decides whether its resource id comes from the signed model or from
+    /// the request.
+    pub fn keyed_on_server(&self) -> bool {
+        match self {
+            Capability::ResourceRead | Capability::PromptGet => false,
+            Capability::Sampling | Capability::Elicitation | Capability::Notify => true,
         }
     }
 }
@@ -263,13 +294,12 @@ impl Engine {
             // availability on a read-only tool. But once a tool's verdict
             // depends on arguments, an evaluation error becomes
             // input-*dependent* and attacker-triggerable — a well-typed value
-            // that overflows an i64 arithmetic expression, or fails an
-            // `ip()`/`decimal()` constructor — and must not reach the open
-            // path. Extraction already denies malformed input before Cedar
-            // (§3.3); this extends the same rule one layer, to the errors a
-            // crafted-but-well-typed value can raise *inside* Cedar. Tools
-            // that declare no arguments keep the customer's fail mode: their
-            // eval errors cannot be steered by a request.
+            // that overflows an i64 arithmetic expression, say — and must not
+            // reach the open path. Extraction already denies malformed input
+            // before Cedar (§3.3); this extends the same rule one layer, to
+            // the errors a crafted-but-well-typed value can raise *inside*
+            // Cedar. Tools that declare no arguments keep the customer's
+            // fail mode: their eval errors cannot be steered by a request.
             Err(e) if !def.policy_args.is_empty() => Verdict {
                 outcome: Outcome::Deny,
                 policy_id: None,
@@ -393,7 +423,24 @@ impl Engine {
     fn authorize_capability(&self, cap: Capability, req: &ToolRequest) -> Result<Verdict, Error> {
         let principal = uid("User", &req.principal)?;
         let action = uid("Action", cap.action())?;
-        let resource = uid(cap.entity_type(), &req.tool)?;
+        // Server-initiated channels are keyed on the fixed literal, never on
+        // text the caller supplied. The generated schema declares `Server` as
+        // an enumerated type holding exactly this one id, and an entity
+        // outside that set would make a rule written against the literal —
+        // the only form the docs describe — silently never match: the
+        // `permit` stops permitting, with no evaluation error and nothing in
+        // the log to tell it apart from a clean default deny.
+        //
+        // The gateway already passes the literal at both of its call sites,
+        // so nothing changes for it; what changes is that the invariant no
+        // longer depends on two call sites remembering. Whatever the caller
+        // named still reaches policies as `context.target` below.
+        let resource_id = if cap.keyed_on_server() {
+            WRAPPED_SERVER
+        } else {
+            req.tool.as_str()
+        };
+        let resource = uid(cap.entity_type(), resource_id)?;
 
         let (principal_entity, group_entities) = self.principal_entities(req, &principal)?;
 
@@ -544,45 +591,71 @@ impl Engine {
         })
     }
 
-    /// Compile-time companion to `load`: evaluates every catalogued tool
-    /// once, with every declared arg at its default or its kind's zero
-    /// value, against the real policies. An evaluation error here is
-    /// almost always a typo'd `context.args.<name>` — Cedar's message
-    /// names the offending rule — and it must fail in CI, not surface
-    /// months later as a fail-mode event on a live gateway.
+    /// Compile-time companion to `load`: type-checks every rule against the
+    /// model the gateway actually exposes.
     ///
-    /// Not exhaustive, and deliberately not part of `load`: a rule guarded
-    /// by conditions the synthetic context does not satisfy stays
-    /// unexercised, and at runtime a broken rule falls under the fail mode
-    /// the customer chose — refusing to start the gateway would override
-    /// that choice.
-    pub fn smoke_check(&self) -> Result<(), Error> {
-        // Sorted: two runs over the same bundle must report the same tool
-        // first, or compile errors would flap.
-        let mut defs: Vec<&ToolDef> = self.tools.values().collect();
-        defs.sort_by(|a, b| a.name.cmp(&b.name));
+    /// `load` only checks that the rules *parse*. Cedar is happy to compile
+    /// `principal.permissions` or `context.enviroment`: it discovers at
+    /// evaluation time that the attribute is not there, raises an error, and
+    /// the call falls to the fail mode — a fail-open tool would then be let
+    /// through by a rule that was meant to stop it. Running the validator
+    /// against a schema derived from this very bundle's catalogue moves that
+    /// discovery to `obsign-control compile`, where it is a diff and a
+    /// pull-request comment.
+    ///
+    /// Strict mode on purpose, for two reasons. Permissive exists to let
+    /// through expressions whose type it cannot prove, which is the class
+    /// this is meant to catch; and it is an experimental Cedar feature, while
+    /// strict is what every Cedar editor validates with by default.
+    ///
+    /// But not every strict finding means the rule is wrong, and only the
+    /// ones that do are worth refusing to sign over — see
+    /// [`breaks_the_rule`]. The rest come back as warnings, to be printed
+    /// rather than to block a release.
+    pub fn validate(&self) -> Result<Vec<String>, Error> {
+        let tools: Vec<ToolDef> = self.tools.values().cloned().collect();
+        let source = crate::schema::schema_source(&tools)?;
+        let schema = Schema::from_str(&source).map_err(|e| {
+            // Not the customer's fault: the generator produced something
+            // Cedar will not read. Say so, rather than blaming the rules.
+            Error::Cedar(format!(
+                "the generated schema is not valid Cedar ({e}) — this is an \
+                 Obsign bug, please report it with your tools.json"
+            ))
+        })?;
 
-        for def in defs {
-            // The synthetic principal exercises rules, it does not grant:
-            // the verdict is discarded, only evaluation errors count.
-            let req = ToolRequest::new("smoke-check", &def.name);
-            let args = def
-                .policy_args
-                .iter()
-                .map(|spec| {
-                    let v = spec.default.clone().unwrap_or_else(|| zero_value(spec.kind));
-                    // Defaults were validated at load; zero values coerce
-                    // by construction.
-                    coerce(spec.kind, &v)
-                        .map(|e| (spec.name.clone(), e))
-                        .map_err(Error::Bundle)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            self.authorize(&req, def, Some(args)).map_err(|e| {
-                Error::Bundle(format!("tool \"{}\": smoke evaluation: {e}", def.name))
-            })?;
+        let result = Validator::new(schema).validate(&self.policies, ValidationMode::Strict);
+
+        // Sorted and deduped throughout: two runs over the same bundle must
+        // report the same thing in the same order, or compile output would
+        // flap between machines. Cedar's own messages already name the
+        // offending rule — the `@id` the audit log will cite — so they are
+        // passed through as is.
+        let (broken, tolerated): (Vec<_>, Vec<_>) = result
+            .validation_errors()
+            .partition(|e| breaks_the_rule(e));
+
+        if !broken.is_empty() {
+            let mut msgs: Vec<String> = broken.iter().map(|e| e.to_string()).collect();
+            msgs.sort();
+            msgs.dedup();
+            return Err(Error::Cedar(format!(
+                "{} — a rule the type checker refuses is a rule that does \
+                 nothing at runtime: it raises on every call it guards and \
+                 falls to the fail mode, so deleting or fixing it changes no \
+                 enforcement you have today",
+                msgs.join(" ; ")
+            )));
         }
-        Ok(())
+
+        let mut warnings: Vec<String> = tolerated
+            .iter()
+            .map(|e| format!("{e} (accepted: Cedar's strict form, not a type error)"))
+            .chain(result.validation_warnings().map(|w| w.to_string()))
+            .collect();
+        warnings.sort();
+        warnings.dedup();
+        Ok(warnings)
     }
 
     /// `key` is the tool name for a tool call, the Cedar action name
@@ -604,6 +677,51 @@ impl Engine {
             },
         }
     }
+}
+
+/// Whether a strict-validation finding means the rule is *broken*, as
+/// opposed to merely written in a form strict mode declines to analyse.
+///
+/// The distinction is the whole reason the type check can be unconditional.
+/// Almost every finding says the rule cannot do what it says: it reads an
+/// attribute the model never carries, names an entity type or action that
+/// does not exist, or pins an id outside an enumerated type. Every one of
+/// those raises at evaluation and falls to the fail mode, which on a
+/// fail-open tool is a `forbid` that never forbids. Refusing to sign them is
+/// the point of this whole exercise.
+///
+/// Two findings are different in kind. Strict mode also constrains the
+/// *shape* of an expression so that policies stay amenable to automated
+/// analysis, and a rule can fail that constraint while evaluating perfectly:
+///
+/// * `NonLitExtConstructor` — `ip(context.args.src)`. The constructor must
+///   take a literal. But this is precisely the argument rule the argument
+///   feature was designed for; `docs/design/argument-policy-v1.md` treats
+///   `ip()` over an argument as supported, and the runtime handles its
+///   failures deliberately (an eval error over arguments denies rather than
+///   fail-opens). Refusing it would delete a working capability as a side
+///   effect of adding a type checker, and the obvious substitute
+///   (`like "10.*"`) is not CIDR-equivalent — it cannot express a /12 or a
+///   /24 boundary;
+/// * `EmptySetForbidden` — a literal `[]`, whose element type strict mode
+///   cannot infer. It evaluates fine.
+///
+/// Both are reported as warnings instead, so nothing is silent. The cost is
+/// that a Cedar editor, which validates strictly, will underline these two
+/// where `compile` accepts them. That disagreement runs in the safe
+/// direction — the editor is stricter than the signer, never the reverse —
+/// and it is documented in `docs/policies-cedar.md`.
+///
+/// Deliberately a closed list rather than the inverse: `ValidationError` is
+/// `#[non_exhaustive]`, so a variant added by a future Cedar release lands
+/// on the refusing side by default. A new way to be broken must not become
+/// a warning because nobody updated this function.
+fn breaks_the_rule(e: &cedar_policy::ValidationError) -> bool {
+    !matches!(
+        e,
+        cedar_policy::ValidationError::NonLitExtConstructor(_)
+            | cedar_policy::ValidationError::EmptySetForbidden(_)
+    )
 }
 
 /// Catalogue-time validation of `policy_args`. Runs at `Engine::load`,
@@ -686,17 +804,6 @@ fn extract_args(
     Ok(out)
 }
 
-/// The neutral value of a kind, for the smoke evaluation: the point is to
-/// force every argument rule to *evaluate*, not to make it pass.
-fn zero_value(kind: ArgKind) -> serde_json::Value {
-    match kind {
-        ArgKind::String => serde_json::Value::String(String::new()),
-        ArgKind::Long => serde_json::Value::from(0i64),
-        ArgKind::Bool => serde_json::Value::Bool(false),
-        ArgKind::StringSet => serde_json::Value::Array(Vec::new()),
-    }
-}
-
 /// One JSON value becomes one typed Cedar value, or a reason for refusing.
 fn coerce(kind: ArgKind, v: &serde_json::Value) -> Result<RestrictedExpression, String> {
     use serde_json::Value;
@@ -758,4 +865,55 @@ fn uid(kind: &str, id: &str) -> Result<EntityUid, Error> {
         EntityTypeName::from_str(kind).map_err(|e| Error::Cedar(e.to_string()))?;
     let entity_id = EntityId::from_str(id).map_err(|e| Error::Cedar(e.to_string()))?;
     Ok(EntityUid::from_type_name_and_id(type_name, entity_id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The drift guard the schema module's `COMMON_CONTEXT` relies on.
+    ///
+    /// It lives here rather than in `tests/` because `context_pairs` is
+    /// private, and comparing against a third hand-written list — which is
+    /// what an integration test would have to do — pins nothing: it agrees
+    /// with whatever it was written against.
+    ///
+    /// Both directions matter, and they fail differently:
+    ///
+    /// * declared in the schema, not built by the engine — a rule reading it
+    ///   type-checks, then raises on every call it guards and falls to the
+    ///   fail mode. On a fail-open tool that is a `forbid` which never
+    ///   forbids, recorded as `AllowFailOpen`. Exactly the failure the
+    ///   schema exists to eliminate, reintroduced by the schema;
+    /// * built by the engine, absent from the schema — `compile` refuses a
+    ///   rule that would have worked, blaming the author.
+    #[test]
+    fn the_schema_and_the_engine_agree_on_the_context() {
+        let engine = Engine {
+            policies: PolicySet::new(),
+            tools: HashMap::new(),
+            version: String::new(),
+            fail_mode: crate::bundle::FailMode::default(),
+            authorizer: Authorizer::new(),
+        };
+        let mut built: Vec<String> = engine
+            .context_pairs(&ToolRequest::new("alice", "t"))
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        built.sort();
+
+        let mut declared: Vec<String> = crate::schema::COMMON_CONTEXT
+            .iter()
+            .map(|(name, _)| name.to_string())
+            .collect();
+        declared.sort();
+
+        assert_eq!(
+            built, declared,
+            "context_pairs and schema::COMMON_CONTEXT have drifted — \
+             `args` and `target` are added by the callers, everything else \
+             must appear in both"
+        );
+    }
 }

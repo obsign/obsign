@@ -13,7 +13,9 @@ use obsign_control_plane::export::SignedExportManifest;
 use obsign_control_plane::release::SignedManifest;
 use obsign_control_plane::source::{git_head, short_ref};
 use obsign_control_plane::worktree::{blob_oid, worktree_divergence};
-use obsign_control_plane::{compile, export_all, publish, Console, Error, OpsKey, SourceTree};
+use obsign_control_plane::{
+    compile, export_all, publish, Console, Error, OpsKey, SchemaSync, SourceTree,
+};
 use obsign_ledger::{seal_pass, FileSealer, Store};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -152,9 +154,9 @@ fn argument_declarations_bump_the_bundle_format() {
 
 #[test]
 fn a_typoed_argument_rule_is_rejected_at_compile_time() {
-    // The smoke evaluation: a rule reading an argument nobody declares
-    // must fail in CI, naming the rule — not months later as a fail-mode
-    // event on a live gateway.
+    // A rule reading an argument nobody declares must fail in CI, naming the
+    // rule — not months later as a fail-mode event on a live gateway. The
+    // schema type check catches it whatever guards the rule carries.
     let dir = tmp("arg-typo");
     write_source_tree(&dir);
     std::fs::write(
@@ -188,7 +190,7 @@ fn a_typoed_argument_rule_is_rejected_at_compile_time() {
     match err {
         Error::Source(msg) => {
             assert!(msg.contains("support_channel_only"), "must name the rule: {msg}");
-            assert!(msg.contains("send_message"), "must name the tool: {msg}");
+            assert!(msg.contains("chanel"), "must name the misspelling: {msg}");
         }
         other => panic!("expected Source, got {other}"),
     }
@@ -210,16 +212,15 @@ fn a_typoed_argument_rule_is_rejected_at_compile_time() {
 }
 
 #[test]
-fn a_v1_tree_erroring_under_the_synthetic_context_still_compiles() {
-    // The smoke evaluation runs ONLY when a tool declares arguments. A
-    // pre-existing v1 catalogue with no policy_args must keep compiling even
-    // if a rule would error under the synthetic zero-value context (e.g. a
-    // rule the customer deliberately runs fail-open, recorded as a
-    // degradation at runtime). Blocking its publish would override the
-    // customer's fail-mode choice — exactly what smoke_check must not do.
-    let dir = tmp("v1-synthetic-error");
+fn a_rule_whose_verdict_depends_on_values_still_compiles() {
+    // The line the type check draws. It refuses a rule that can never work —
+    // one reading an attribute the model does not carry — and says nothing
+    // about a rule that is well-typed and whose *values* decide. Those raise
+    // for some inputs and not others, which is the customer's fail-mode
+    // question, not the signer's: refusing to publish them would override the
+    // choice `fail-mode.json` exists to express.
+    let dir = tmp("value-dependent-rule");
     write_source_tree(&dir);
-    // No policy_args anywhere → stays v1, smoke_check does not run.
     std::fs::write(
         dir.join("tools.json"),
         serde_json::json!([
@@ -234,9 +235,62 @@ fn a_v1_tree_erroring_under_the_synthetic_context_still_compiles() {
         serde_json::json!({"default": "open"}).to_string(),
     )
     .unwrap();
-    // A rule that references an attribute absent from the synthetic context
-    // (principal has no attributes) — an evaluation error under smoke_check,
-    // tolerated at runtime via the fail mode.
+    // A rule that is well-typed but raises at evaluation: the second addition
+    // overflows i64. Every operand really is a Long, so the type checker has
+    // nothing to object to; only the values decide.
+    //
+    // Under `"default": "open"` — set above deliberately — a customer may
+    // legitimately want exactly this and take the degradation, which the log
+    // records as `AllowFailOpen` rather than a clean allow.
+    std::fs::write(
+        dir.join("policies/00-base.cedar"),
+        r##"
+        @id("depth_budget")
+        forbid (principal, action == Action::"tool_call", resource)
+        when { context.delegation_depth + 9223372036854775807 + 1 > 10 };
+
+        @id("allow_all")
+        permit (principal, action == Action::"tool_call", resource);
+        "##,
+    )
+    .unwrap();
+
+    let compiled = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap();
+    assert_eq!(compiled.policy.bundle.format, obsign_policy::FORMAT);
+
+    // The premise, so "still compiles" is not satisfied by any rule at all:
+    // this one really does raise, and the gateway really does reach its fail
+    // mode over it rather than deciding.
+    let engine = obsign_policy::Engine::load(&compiled.policy.bundle).unwrap();
+    let v = engine.evaluate(&obsign_policy::ToolRequest::new("u:marie", "ticket_update"));
+    assert_eq!(v.outcome, obsign_audit_core::record::Outcome::AllowFailOpen);
+    assert!(
+        v.reason.as_deref().unwrap().contains("fail-open"),
+        "{:?}",
+        v.reason
+    );
+}
+
+#[test]
+fn a_rule_that_can_never_evaluate_is_refused_whatever_the_fail_mode() {
+    // The counterpart to the test above, and the line between the two
+    // checks. `principal.department` is not a rule whose verdict depends on
+    // the input: the attribute does not exist in the model, so the rule
+    // raises on *every* call it guards and decides nothing, ever. Under
+    // `"default": "open"` that means a `forbid` which never forbids — the
+    // failure is silent, and the log records `AllowFailOpen` for a rule the
+    // author believes is enforcing.
+    //
+    // The fail mode is the customer's answer to "the engine could not
+    // decide"; it was never meant to be the answer to "this rule is
+    // meaningless". So the type check refuses to sign it, fail-open or not.
+    let dir = tmp("impossible-rule");
+    write_source_tree(&dir);
+    std::fs::write(
+        dir.join("fail-mode.json"),
+        serde_json::json!({"default": "open"}).to_string(),
+    )
+    .unwrap();
     std::fs::write(
         dir.join("policies/00-base.cedar"),
         r##"
@@ -250,8 +304,14 @@ fn a_v1_tree_erroring_under_the_synthetic_context_still_compiles() {
     )
     .unwrap();
 
-    let compiled = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap();
-    assert_eq!(compiled.policy.bundle.format, obsign_policy::FORMAT);
+    let err = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap_err();
+    match err {
+        Error::Source(msg) => {
+            assert!(msg.contains("dept_gate"), "must name the rule: {msg}");
+            assert!(msg.contains("department"), "must name the attribute: {msg}");
+        }
+        other => panic!("expected Source, got {other}"),
+    }
 }
 
 #[test]
@@ -444,6 +504,191 @@ fn write_git_index(root: &Path, paths: &[&str], cache_tree_valid: bool, version:
 
     b.extend_from_slice(&[0u8; 20]); // trailing checksum: not verified
     std::fs::write(root.join(".git/index"), b).unwrap();
+}
+
+#[test]
+fn regenerating_the_committed_schema_does_not_make_the_tree_dirty() {
+    // The schema is derived: `read_cedar` takes only `*.cedar`, so its bytes
+    // never reach the signed bundle. Refusing to stamp a sha because it is
+    // uncommitted would break the documented sequence — regenerate after a
+    // catalogue change, then compile — over a file compilation does not read.
+    let dir = tmp("schema-not-dirty");
+    write_source_tree(&dir);
+    let schema = obsign_control_plane::default_schema_path(&dir);
+    obsign_control_plane::sync_schema(&SourceTree::load(&dir).unwrap(), &schema, false).unwrap();
+
+    let mut tracked = TRACKED.to_vec();
+    let rel = format!("policies/{}", obsign_policy::SCHEMA_FILE);
+    tracked.push(&rel);
+    write_git_checkout(&dir, &tracked);
+    assert_eq!(worktree_divergence(&dir).unwrap(), Vec::<String>::new());
+
+    // A catalogue change regenerates it with different bytes: still clean.
+    replace_catalogue(&dir);
+    obsign_control_plane::sync_schema(&SourceTree::load(&dir).unwrap(), &schema, false).unwrap();
+    let d = worktree_divergence(&dir).unwrap();
+    assert!(
+        !d.iter().any(|m| m.contains(obsign_policy::SCHEMA_FILE)),
+        "the derived schema must never be reported: {d:?}"
+    );
+    // The real inputs it was regenerated from are reported, as they must be.
+    assert!(d.iter().any(|m| m.contains("tools.json")), "{d:?}");
+
+    // The exemption is for that one derived name, not for `policies/` at
+    // large: an edited rule is still a dirty tree.
+    std::fs::write(
+        dir.join("policies/00-base.cedar"),
+        CEDAR_OK.replace("prod", "staging"),
+    )
+    .unwrap();
+    let d = worktree_divergence(&dir).unwrap();
+    assert!(
+        d.iter().any(|m| m.contains("00-base.cedar")),
+        "an edited rule must still be caught: {d:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The generated schema
+// ---------------------------------------------------------------------------
+
+/// Swaps the catalogue for one declaring an argument, and drops the
+/// fail-mode override that named a tool this new catalogue does not carry.
+fn replace_catalogue(root: &Path) {
+    std::fs::write(
+        root.join("tools.json"),
+        serde_json::json!([
+            {"name": "send_message", "server": "mcp://chat",
+             "policy_args": [{"name": "channel", "kind": "string"}]}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("fail-mode.json"),
+        serde_json::json!({"default": "closed"}).to_string(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn the_schema_is_written_then_reports_staleness_and_freshness() {
+    let dir = tmp("schema-sync");
+    write_source_tree(&dir);
+    let path = obsign_control_plane::default_schema_path(&dir);
+    assert_eq!(path, dir.join("policies").join("obsign.cedarschema"));
+
+    let tree = SourceTree::load(&dir).unwrap();
+    assert_eq!(
+        obsign_control_plane::sync_schema(&tree, &path, false).unwrap(),
+        SchemaSync::Written
+    );
+    assert!(path.is_file());
+    assert_eq!(
+        obsign_control_plane::sync_schema(&tree, &path, true).unwrap(),
+        SchemaSync::UpToDate
+    );
+
+    // A catalogue change without a regeneration is exactly what leaves an
+    // editor confidently wrong, so `--check` has to see it.
+    replace_catalogue(&dir);
+    let tree = SourceTree::load(&dir).unwrap();
+    assert_eq!(
+        obsign_control_plane::sync_schema(&tree, &path, true).unwrap(),
+        SchemaSync::Stale
+    );
+    // check writes nothing: CI must fail with a diff, not a mutated tree.
+    // Matched on the declaration, not the bare name — "channel" also occurs
+    // in the header prose.
+    let declaration = "\"channel\": String";
+    assert!(!std::fs::read_to_string(&path).unwrap().contains(declaration));
+
+    assert_eq!(
+        obsign_control_plane::sync_schema(&tree, &path, false).unwrap(),
+        SchemaSync::Written
+    );
+    assert!(std::fs::read_to_string(&path).unwrap().contains(declaration));
+}
+
+#[test]
+fn an_absent_schema_is_stale_rather_than_an_error() {
+    let dir = tmp("schema-absent");
+    write_source_tree(&dir);
+    let tree = SourceTree::load(&dir).unwrap();
+    assert_eq!(
+        obsign_control_plane::sync_schema(&tree, &dir.join("policies/nothing-here"), true).unwrap(),
+        SchemaSync::Stale
+    );
+}
+
+#[test]
+fn no_schema_is_written_for_a_catalogue_compile_would_refuse() {
+    // An editor validating against a schema the control plane rejects is
+    // worse than no editor support: it green-lights rules that cannot ship.
+    let dir = tmp("schema-bad-catalogue");
+    write_source_tree(&dir);
+    std::fs::write(
+        dir.join("tools.json"),
+        serde_json::json!([
+            {"name": "send_message", "server": "mcp://chat",
+             // `at` is not a JSON pointer — refused by Engine::load, which
+             // SourceTree::load does not run.
+             "policy_args": [{"name": "channel", "kind": "string", "at": "channel"}]}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("fail-mode.json"),
+        serde_json::json!({"default": "closed"}).to_string(),
+    )
+    .unwrap();
+
+    let path = obsign_control_plane::default_schema_path(&dir);
+    let tree = SourceTree::load(&dir).unwrap();
+    let err = obsign_control_plane::sync_schema(&tree, &path, false).unwrap_err();
+    assert!(
+        matches!(&err, Error::Source(m) if m.contains("JSON pointer")),
+        "{err}"
+    );
+    assert!(!path.exists(), "nothing may reach disk");
+
+    // And the same tree is refused by compile, which is the point: the two
+    // agree about what a usable catalogue is.
+    assert!(compile(&tree, "v1", &ops()).is_err());
+}
+
+#[test]
+fn a_tool_name_carrying_a_newline_still_yields_a_parseable_schema() {
+    // Tool names are copied from what a remote MCP server advertises, and
+    // `read_tools` only checks non-empty and unique. A newline used to end
+    // the generated comment early and leave its tail as a bare token inside
+    // a record type, so compile died blaming Obsign for the operator's
+    // catalogue.
+    let dir = tmp("schema-odd-name");
+    write_source_tree(&dir);
+    std::fs::write(
+        dir.join("tools.json"),
+        serde_json::json!([
+            {"name": "send\nmessage // x", "server": "mcp://chat",
+             "policy_args": [{"name": "channel", "kind": "string"}]},
+            {"name": "a, //b", "server": "mcp://chat",
+             "policy_args": [{"name": "topic", "kind": "string"}]}
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("fail-mode.json"),
+        serde_json::json!({"default": "closed"}).to_string(),
+    )
+    .unwrap();
+
+    let tree = SourceTree::load(&dir).unwrap();
+    let path = obsign_control_plane::default_schema_path(&dir);
+    obsign_control_plane::sync_schema(&tree, &path, false).expect("the schema must still generate");
+    // Compilation runs the schema through Cedar's parser and validator.
+    compile(&tree, "v1", &ops()).expect("the tree must still compile");
 }
 
 #[test]

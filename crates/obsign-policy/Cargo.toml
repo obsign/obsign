@@ -7,7 +7,11 @@ description = "Signed policy bundles and Cedar evaluation of tool calls."
 
 [dependencies]
 obsign-audit-core = { path = "../obsign-audit-core" }
-cedar-policy = "4"
+# 4.3 is the floor, not decoration: the generated schema declares
+# `entity Server enum [...]`, and enumerated entity types landed in 4.3.
+# Against 4.0–4.2 this crate builds fine and then fails to parse its own
+# generated schema on every compile.
+cedar-policy = "4.3"
 serde = { workspace = true }
 serde_json = { workspace = true }
 ed25519-dalek = { workspace = true }

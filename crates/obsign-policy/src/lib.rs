@@ -11,11 +11,13 @@
 
 pub mod bundle;
 pub mod engine;
+pub mod schema;
 
 pub use bundle::{
     ArgKind, ArgSpec, Bundle, FailBehaviour, FailMode, SignedBundle, ToolDef, FORMAT, FORMAT_V2,
 };
-pub use engine::{Capability, Engine, ToolRequest, Verdict};
+pub use engine::{Capability, Engine, ToolRequest, Verdict, WRAPPED_SERVER};
+pub use schema::{schema_source, SCHEMA_FILE};
 
 use thiserror::Error as ThisError;
 

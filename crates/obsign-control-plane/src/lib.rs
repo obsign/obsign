@@ -30,6 +30,7 @@ pub mod compile;
 pub mod console;
 pub mod export;
 pub mod release;
+pub mod schema;
 pub mod source;
 pub mod worktree;
 
@@ -37,6 +38,7 @@ pub use compile::{compile, Compiled};
 pub use console::Console;
 pub use export::{export_all, ExportManifest, SignedExportManifest};
 pub use release::{publish, Manifest, Published, SignedManifest};
+pub use schema::{default_schema_path, sync_schema, SchemaSync};
 pub use source::SourceTree;
 pub use worktree::worktree_divergence;
 

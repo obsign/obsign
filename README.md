@@ -481,6 +481,15 @@ JWKS keys. The JWKS is a file in git, reviewed like a rule — it decides who
 can mint identities, and fetching it from the IdP is the job of whatever
 refreshes the repository, never of a gateway-side network call.
 
+Rules are also **type-checked against the model the gateway exposes**,
+derived from your own catalogue: `principal.department` or
+`context.enviroment` is a compile error, not an evaluation error discovered
+in production — where it would fall to the fail mode and, on a fail-open
+tool, turn a `forbid` into a rule that never forbids. `obsign-control
+schema` writes that model out as a Cedar schema you commit, so the [Cedar VS
+Code extension](docs/policies-cedar.md#your-editor) runs the same check while
+you type.
+
 Publication holds two invariants:
 
 - **a version is immutable** — `releases/<sha>/` is written once; publishing
@@ -781,7 +790,8 @@ Six families, each with a distinct role:
   crafted shape / float / oversize input refused at extraction even on a
   fail-open tool, an argument-driven evaluation error denied instead of
   failing open, a v1 bundle with injected declarations fails signature
-  verification, and the smoke evaluation names the rule with the typo.
+  verification, and a rule reading an argument the catalogue does not declare
+  is refused at compile time, naming the rule.
 - `obsign-ledger/tests/ledger.rs` — the rewritten-WAL attack (internally consistent
   chain, diverging from sealed history) is refused before any new seal;
   truncated logs, edited or spirited-away checkpoints and rebound key ids are

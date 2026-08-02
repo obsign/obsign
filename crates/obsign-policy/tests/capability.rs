@@ -163,3 +163,78 @@ fn capability_evaluation_failures_follow_the_fail_mode_under_their_action_key() 
     );
     assert_eq!(v.outcome, Outcome::AllowFailOpen);
 }
+
+#[test]
+fn server_initiated_channels_are_keyed_on_the_literal_whatever_the_caller_says() {
+    // `Server` is an enumerated entity type in the generated schema: it holds
+    // exactly one id. Minting `Server::<caller text>` would put a runtime
+    // entity outside that set, and a rule written against the literal — the
+    // only form the docs describe — would then silently never match: the
+    // `permit` stops permitting, with no evaluation error and nothing in the
+    // log to tell it apart from a clean default deny.
+    let e = engine(&format!(
+        r#"@id("allow_sampling")
+           permit (principal, action == Action::"sampling",
+                   resource == Server::"{}");"#,
+        obsign_policy::WRAPPED_SERVER
+    ));
+
+    // The gateway's own call: the literal, which must be permitted.
+    let v = e.evaluate_capability(
+        Capability::Sampling,
+        &ToolRequest::new("u:marie", obsign_policy::WRAPPED_SERVER),
+    );
+    assert_eq!(v.outcome, Outcome::Allow);
+    assert_eq!(v.policy_id.as_deref(), Some("allow_sampling"));
+
+    // A caller naming the deployment instead — an embedder passing
+    // `--server-id`, or a future server-initiated path. The rule must still
+    // decide, because the resource is the model's literal either way.
+    let v = e.evaluate_capability(
+        Capability::Sampling,
+        &ToolRequest::new("u:marie", "mcp://crm.internal"),
+    );
+    assert_eq!(
+        v.policy_id.as_deref(),
+        Some("allow_sampling"),
+        "the resource must be the literal, not the caller's string"
+    );
+
+    // What the caller named is not lost: it reaches rules as context.target,
+    // which is where a per-deployment distinction belongs.
+    let e = engine(
+        r#"@id("not_the_crm")
+           forbid (principal, action == Action::"sampling", resource)
+           when { context.target == "mcp://crm.internal" };
+           @id("allow_sampling")
+           permit (principal, action == Action::"sampling", resource);"#,
+    );
+    let v = e.evaluate_capability(
+        Capability::Sampling,
+        &ToolRequest::new("u:marie", "mcp://crm.internal"),
+    );
+    assert_eq!(v.outcome, Outcome::Deny);
+    assert_eq!(v.policy_id.as_deref(), Some("not_the_crm"));
+}
+
+#[test]
+fn target_keyed_capabilities_still_key_on_the_request() {
+    // The other side of `keyed_on_server`: resource reads and prompt fetches
+    // must keep naming what the request asked for, or every exact-match rule
+    // in the docs would stop working.
+    let e = engine(
+        r#"@id("one_doc")
+           permit (principal, action == Action::"resource_read",
+                   resource == Resource::"docs://runbook");"#,
+    );
+    let v = e.evaluate_capability(
+        Capability::ResourceRead,
+        &ToolRequest::new("u:marie", "docs://runbook"),
+    );
+    assert_eq!(v.outcome, Outcome::Allow);
+    let v = e.evaluate_capability(
+        Capability::ResourceRead,
+        &ToolRequest::new("u:marie", "docs://other"),
+    );
+    assert_eq!(v.outcome, Outcome::Deny);
+}

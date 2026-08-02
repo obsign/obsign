@@ -20,23 +20,34 @@ pub struct Compiled {
     pub policy: SignedBundle,
     pub identity: Option<SignedIdentityBundle>,
     pub deployment: Option<SignedDeploymentBundle>,
+    /// Cedar validator warnings — a rule that can never fire, an identifier
+    /// built from confusable characters. Worth showing the author, not worth
+    /// refusing to sign over: none of them makes a decision wrong, and a
+    /// warning that blocks a release is a warning people learn to route
+    /// around.
+    pub warnings: Vec<String>,
+}
+
+/// The bundle format a catalogue requires.
+///
+/// v2 only when some tool declares argument policy: a fleet that never uses
+/// the feature keeps emitting v1, which pre-upgrade gateways still load —
+/// the cutover is self-serve, per repository. Shared with `schema`, which
+/// must load a catalogue exactly the way `compile` will.
+pub(crate) fn format_for(tools: &[obsign_policy::ToolDef]) -> &'static str {
+    if tools.iter().any(|t| !t.policy_args.is_empty()) {
+        obsign_policy::FORMAT_V2
+    } else {
+        obsign_policy::FORMAT
+    }
 }
 
 /// Compiles and signs. Loading the result through the same code paths the
 /// gateway uses (`Engine::load`, `KeyStore::from_set`) is the point: what
 /// passes here cannot fail there, because it *is* there.
 pub fn compile(tree: &SourceTree, source_ref: &str, ops: &OpsKey) -> Result<Compiled, Error> {
-    // v2 only when some tool declares argument policy: a fleet that never
-    // uses the feature keeps emitting v1, which pre-upgrade gateways still
-    // load — the cutover is self-serve, per repository.
-    let uses_args = tree.tools.iter().any(|t| !t.policy_args.is_empty());
-    let format = if uses_args {
-        obsign_policy::FORMAT_V2
-    } else {
-        obsign_policy::FORMAT
-    };
     let bundle = Bundle {
-        format: format.to_string(),
+        format: format_for(&tree.tools).to_string(),
         version: format!("policies@{source_ref}"),
         cedar: tree.cedar.clone(),
         tools: tree.tools.clone(),
@@ -47,25 +58,27 @@ pub fn compile(tree: &SourceTree, source_ref: &str, ops: &OpsKey) -> Result<Comp
     // to compile time.
     let engine = obsign_policy::Engine::load(&bundle)
         .map_err(|e| Error::Source(format!("policies: {e}")))?;
-    // One synthetic evaluation per tool: a typo'd `context.args.<name>`
-    // fails here, naming the rule, instead of surfacing months later as a
-    // fail-mode event on a live gateway.
+    // Type-check every rule against the model the gateway exposes, derived
+    // from this bundle's own catalogue. `load` only proves the rules parse;
+    // this proves they can *evaluate* — a rule reading `principal.roles` or
+    // `context.enviroment` raises an evaluation error at runtime and falls to
+    // the fail mode, which on a fail-open tool means the rule meant to stop a
+    // call quietly stops stopping it.
     //
-    // Gated on the argument feature: the synthetic context evaluates real
-    // policies under zero values, so a rule that only errors under those
-    // synthetic inputs (e.g. `ip(context.args.src)` seen as `ip("")`, or an
-    // arithmetic overflow) would be a false positive. Existing v1 trees
-    // that never used arguments compiled without this check and must keep
-    // doing so — blocking their publish would override the fail-mode choice
-    // this same check's own contract says it must not touch. The check
-    // exists to catch typos in *argument* rules, so it runs exactly when a
-    // tool declares arguments.
-    if uses_args {
-        engine
-            .smoke_check()
-            .map_err(|e| Error::Source(format!("policies: {e}")))?;
-    }
-
+    // This replaced a per-tool "smoke evaluation" that ran the real policies
+    // against synthetic zero-valued arguments. That check existed to catch a
+    // typo'd `context.args.<name>`, which the type checker now catches
+    // outright — whatever guards the rule carries, rather than only when a
+    // zero-valued context happened to reach it. What the smoke evaluation
+    // alone still caught was an expression that raises *at zero* (an i64
+    // overflow, say); it missed the same defect at realistic values, and for
+    // a tool that declares arguments an evaluation error already denies
+    // rather than fail-opens, so that class was loud and immediate at
+    // runtime, not silent. Not worth a second compile-time pass that had to
+    // be taught to ignore every rule the type checker deliberately accepts.
+    let warnings = engine
+        .validate()
+        .map_err(|e| Error::Source(format!("policies: {e}")))?;
     let vk = ops.signing_key().verifying_key();
 
     // Sign, then re-verify with the public half before anything is written.
@@ -116,5 +129,6 @@ pub fn compile(tree: &SourceTree, source_ref: &str, ops: &OpsKey) -> Result<Comp
         policy: policy_signed,
         identity: identity_signed,
         deployment: deployment_signed,
+        warnings,
     })
 }

@@ -154,6 +154,14 @@ fn main() {
         },
     };
 
+    // The same checks `obsign-control compile` runs. A demo shipping a rule
+    // the control plane would refuse teaches the wrong thing, and this file
+    // is where people copy their first policy from.
+    obsign_policy::Engine::load(&bundle)
+        .expect("the demo policy should load")
+        .validate()
+        .expect("the demo policy should type-check against the model");
+
     let signed = bundle.sign(key_id, &key);
     let keys = vec![PublicKeyEntry {
         key_id: key_id.to_string(),

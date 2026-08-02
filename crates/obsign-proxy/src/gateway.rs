@@ -13,22 +13,11 @@ use obsign_audit_core::record::{
     Decision as DecisionRec, Effect, EffectStatus, McpAccess, Outcome, Payload, ToolCall,
 };
 use crate::auth::Auth;
-use obsign_policy::{Capability, Engine, ToolRequest};
+use obsign_policy::{Capability, Engine, ToolRequest, WRAPPED_SERVER};
 use serde_json::{json, Value};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-
-/// The Cedar resource for server-initiated channels (sampling, elicitation,
-/// notify), which are granted per server rather than per target.
-///
-/// A constant, deliberately. One gateway fronts one server, so the entity a
-/// policy matches on is always "the server this gateway wraps" — and making
-/// it an operator-supplied string would let `--server-id`, which nobody
-/// signs, decide a verdict: change the flag, and a `forbid` keyed on the old
-/// value stops applying. What varies per deployment reaches policies through
-/// `context.server`, the same unsigned-declaration channel as `context.env`.
-const WRAPPED_SERVER: &str = "mcp://wrapped";
 
 /// Immutable context shared by both directions of the proxy.
 pub(crate) struct Ctx {

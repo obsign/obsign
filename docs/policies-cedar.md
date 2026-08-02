@@ -19,7 +19,8 @@ Two properties shape the whole workflow, and both are deliberate:
 my-policies/                   ← a git repository
 ├── policies/
 │   ├── 00-base.cedar          ← concatenated in lexicographic file order
-│   └── 10-finance.cedar
+│   ├── 10-finance.cedar
+│   └── obsign.cedarschema     ← generated; what your editor type-checks against
 ├── tools.json                 ← the signed catalogue
 ├── fail-mode.json             ← what to do when the engine cannot decide
 ├── identity/                  ← optional: who may mint identities
@@ -32,12 +33,26 @@ my-policies/                   ← a git repository
 
 Only `policies/` and `tools.json` are mandatory. Numeric filename prefixes
 are a convention, not a requirement — but since files are concatenated in
-lexicographic order, they keep the order readable and stable.
+lexicographic order, they keep the order readable and stable. Only `*.cedar`
+files are read as rules, so the generated schema sits beside them harmlessly.
 
 ## The model your rules see
 
 A rule is `permit`/`forbid` over a **principal**, an **action**, a
 **resource**, guarded by a `when` clause over the **context**.
+
+Everything in this section also exists in machine-readable form, as a Cedar
+schema derived from your own `tools.json`:
+
+```bash
+obsign-control schema --source ./my-policies    # → policies/obsign.cedarschema
+```
+
+Commit it. `obsign-control compile` type-checks every rule against it and
+**refuses to sign a rule that reads something the gateway does not expose** —
+and pointing your editor at the same file gives you that check as you type.
+See [Your editor](#your-editor) below. Regenerate it whenever `tools.json`
+changes; `--check` fails instead of writing, which is what you want in CI.
 
 **Principals.** `User::"<subject>"`, with `Group::"<name>"` as parents — so
 `principal in Group::"dba"` works, including nested groups. The subject and
@@ -185,6 +200,12 @@ when { context.args.channel != "#support" };
 | `at` | JSON pointer into the call's `arguments`; defaults to `/<name>` |
 | `default` | injected when the call omits the argument |
 
+`context.args` is one namespace for the whole catalogue — every tool call is
+the same Cedar action — so two tools cannot give one name two types.
+Declaring `amount` as `long` on one tool and `string` on another is a
+compile error naming both; rename one of them, and use `at` if the wire name
+must stay as it is.
+
 An argument declared **without** a default is required: a call that omits it
 is refused before Cedar runs. That is the safe direction — a rule that reads
 a missing field would otherwise fail-closed anyway, but with a much worse
@@ -207,9 +228,64 @@ nothing, letting a deletion through is indefensible.
 A degradation is never silent: a call allowed under a fail-open rule is
 recorded as `AllowFailOpen`, never as a clean `Allow`.
 
+## Your editor
+
+Cedar is a language with an editor already. AWS publishes the [Cedar
+extension for VS Code][vscode-cedar] (`cedar-policy.vscode-cedar`), built on
+the same Cedar 4.x engine Obsign links against: syntax highlighting,
+formatting, an outline of your rules, go-to-definition on entity types and
+action names — and, once it can see a schema, **essentially the validation
+`obsign-control compile` runs**, live, as you type. (Essentially, not
+exactly: the extension is strict about two expression forms that `compile`
+accepts with a warning — see [Testing before you
+deploy](#testing-before-you-deploy). It errs toward refusing, never toward
+accepting, so a rule it likes is always one that can be signed.)
+
+That last part is the reason the schema is a committed file. Generate it,
+then point the extension at it — in `.vscode/settings.json`, inside the
+policy repository:
+
+```json
+{
+  "cedar.schemaFile": "policies/obsign.cedarschema",
+  "cedar.autodetectSchemaFile": true
+}
+```
+
+Commit that too. A colleague who clones the repository gets a working setup
+with nothing to configure, which is the whole point.
+
+What you get, concretely: `context.enviroment` and `principal.department`
+are underlined in red rather than discovered as a fail-mode event in
+production; `context.args.` completes with the arguments your catalogue
+actually declares, and their types; `Server::"mcp://crm.internal"` is
+refused, because the only entity of that type is the fixed literal.
+
+Two things to know:
+
+* **The editor is not the authority.** It reads the schema on disk, which is
+  a generated file: if it is stale, the extension is confidently wrong.
+  `obsign-control schema --source . --check` in CI is the guard, and the
+  signing path — `compile` — regenerates the model from `tools.json` itself
+  and never trusts the file.
+* **Air-gapped sites: take the `.vsix`.** The Marketplace is not reachable
+  from a segregated network. Download the extension package once, carry it
+  in with everything else, and install it with
+  `code --install-extension cedar-*.vsix`. It makes no network calls of its
+  own; validation is local.
+
+Neither the extension nor the schema is required to author policies —
+`compile` catches the same mistakes, and it is the one that decides. The
+editor just moves the discovery from minutes to seconds.
+
+[vscode-cedar]: https://marketplace.visualstudio.com/items?itemName=cedar-policy.vscode-cedar
+
 ## Compile, publish, deploy
 
 ```bash
+# Regenerate the schema after any change to tools.json, and commit it.
+obsign-control schema --source ./my-policies
+
 # Compile only — signed artifacts in ./out, nothing published.
 obsign-control compile --source ./my-policies --key ./ops-key.hex --out ./out
 
@@ -217,10 +293,22 @@ obsign-control compile --source ./my-policies --key ./ops-key.hex --out ./out
 obsign-control publish --source ./my-policies --key ./ops-key.hex --dist /srv/obsign/dist
 ```
 
+`schema` needs no signing key: it derives the model from `tools.json` and
+writes a file, nothing more. In CI, run it with `--check` — it writes
+nothing and exits non-zero if the committed schema no longer matches the
+catalogue, which is the only way a stale schema can quietly mislead an
+editor.
+
 The version label defaults to the short sha of `HEAD`, and **compile refuses
 to stamp that sha onto a dirty working tree** — a `policies@<sha>` citation
 in an audit record must mean the bytes that commit contains. Use `--label`
 for a tree that is not in git.
+
+`policies/obsign.cedarschema` is exempt from that refusal, and only it: the
+schema is derived, its bytes never enter the signed bundle, and `compile`
+rebuilds the model from `tools.json` rather than reading the file. So the
+two commands above work back to back — regenerate, then compile — without a
+commit in between. An edited `.cedar` rule is still a dirty tree.
 
 The distribution directory:
 
@@ -264,7 +352,45 @@ fleet that never declares arguments keeps receiving `/1` and needs nothing.
 
 Compile first — most mistakes are compile errors by design: a rule without
 `@id`, a duplicate tool, a fail-mode override naming a tool that does not
-exist, an unusable JWKS.
+exist, an unusable JWKS, and every rule that reads an attribute the model
+does not carry.
+
+That last class used to be invisible until production. A rule saying
+`when { principal.department == "eng" }` parses, compiles, ships — and then
+raises an evaluation error on every call it guards, which falls to the fail
+mode. Under `"default": "open"` that is a `forbid` which never forbids, and
+the log records `AllowFailOpen` for a rule its author believes is enforcing.
+The type check refuses to sign it, whatever the fail mode: the fail mode is
+your answer to *"the engine could not decide"*, not to *"this rule is
+meaningless"*.
+
+The refusal always means the rule does nothing today: it raises on every
+call it guards, so removing or fixing it changes no enforcement you
+currently have. That matters when you hit this mid-incident — the repository
+is not stuck, the rule was already inert.
+
+The check is Cedar's own strict validation, with **two findings deliberately
+downgraded to warnings**, because strict mode also constrains the *shape* of
+an expression so policies stay amenable to automated analysis — and a rule
+can fail that while evaluating perfectly:
+
+```cedar
+// Accepted, and it works. Strict Cedar wants a literal in `ip()`.
+@id("private_ranges_only")
+forbid (principal, action == Action::"tool_call", resource == Tool::"connect")
+when { !ip(context.args.src).isInRange(ip("10.0.0.0/8")) };
+```
+
+The same goes for an empty set literal `[]`. Both compile, both are printed
+as `[control] warning: …`, and neither is silent. The alternative would have
+been to delete a working capability — `like "10.*"` is not CIDR-equivalent,
+it cannot express a /12 or a /24 boundary.
+
+One consequence for the editor: the Cedar extension validates strictly and
+will underline these two forms where `obsign-control compile` accepts them.
+The disagreement only ever runs that way — the editor is stricter than the
+signer, never the reverse — so a rule your editor accepts is always one that
+can be signed.
 
 Then exercise the real binaries against a scratch WAL, which is what the
 demo in the README does. Drive the calls you care about, and read the
@@ -350,7 +476,11 @@ together.
 | Symptom | Cause | What to do |
 |---|---|---|
 | `tool "x" absent from signed catalogue` | the tool is not in `tools.json` | add it and republish — the refusal is the feature |
-| `evaluation failed, fail-closed: … does not have the attribute …` | a rule reads something the model does not expose (e.g. `principal.permissions`) | use `context.scopes` or a group; see the model table above |
+| compile: `attribute … not found` / `attribute … on entity type … not found` | a rule reads something the model does not expose (e.g. `principal.permissions`) | use `context.scopes` or a group; see the model table above |
+| `warning: … extension constructors may not be called with non-literal expressions (accepted: …)` | `ip(context.args.x)` — compiles and works; your editor will still flag it | nothing to do; it is a Cedar strict-form note, not a type error |
+| compile: `… is not declared as a valid eid` | a rule keyed on `Server::"<your server>"` | the resource key is the fixed literal; scope on `context.server` instead |
+| `obsign.cedarschema is out of date with tools.json` | the catalogue changed, the schema did not | `obsign-control schema --source .` and commit |
+| `evaluation failed, fail-closed: …` | a rule that type-checks but raises on some inputs (i64 overflow) | narrow the expression; a tool with declared arguments denies rather than fail-opens |
 | compile: rule without `@id` | an anonymous rule | name it — the id is the audit reason |
 | compile refuses the sha | uncommitted changes | commit, or pass `--label` |
 | gateway refuses to start on a `/2` bundle | gateway older than the bundle format | upgrade gateways first, then publish |
