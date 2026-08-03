@@ -920,7 +920,19 @@ mod deployment {
             key_id: key_id.into(),
             algo: "ed25519".into(),
             public_key: hex::encode(key.verifying_key().to_bytes()),
-            role: KeyRole::Seal, // ops key wears the default role; resolved by id
+            role: KeyRole::Ops, // signs the bundle; resolved by id, never a signer
+        }
+    }
+
+    /// The ops key as trusted-key files written before `KeyRole::Ops` existed
+    /// declare it: the default `seal` role, for want of anything better to
+    /// say. Those files must keep meaning what they meant.
+    fn ops_entry_legacy(key_id: &str, key: &SigningKey) -> PublicKeyEntry {
+        PublicKeyEntry {
+            key_id: key_id.into(),
+            algo: "ed25519".into(),
+            public_key: hex::encode(key.verifying_key().to_bytes()),
+            role: KeyRole::Seal,
         }
     }
 
@@ -980,6 +992,72 @@ mod deployment {
         let r = evidence::verify_with(&ev, &trust(&seal, &ops), &REQUIRE);
         assert!(r.is_valid(), "findings: {:?}", r.findings);
         assert_eq!(r.records_origin_ok, 3);
+    }
+
+    #[test]
+    fn a_legacy_seal_role_ops_key_still_anchors_the_chain() {
+        // Trusted-key files in the field predate `KeyRole::Ops` and declare
+        // the ops key `seal`. Resolution is by key id, so they keep working.
+        let gw = SigningKey::from_bytes(&[21u8; 32]);
+        let seal = signing_key();
+        let ops = SigningKey::from_bytes(&[22u8; 32]);
+        let ev = pack_with_bundle(&gw, &seal, &ops, "gw-1");
+
+        let legacy = vec![pubkey_entry(&seal), ops_entry_legacy("ops-1", &ops)];
+        let r = evidence::verify_with(&ev, &legacy, &REQUIRE);
+        assert!(r.is_valid(), "findings: {:?}", r.findings);
+        assert_eq!(r.records_origin_ok, 3);
+    }
+
+    #[test]
+    fn an_ops_key_cannot_seal() {
+        // The separation this role exists for: whoever publishes the rules
+        // must not be able to mint a checkpoint certifying the history those
+        // rules produced. The ops key is trusted — for signing bundles — and
+        // a checkpoint bearing its id is still refused.
+        let gw = SigningKey::from_bytes(&[21u8; 32]);
+        let seal = signing_key();
+        let ops = SigningKey::from_bytes(&[22u8; 32]);
+        let mut ev = pack_with_bundle(&gw, &seal, &ops, "gw-1");
+
+        // Re-seal the chain with the ops key, under the ops key id.
+        let mut chain = ChainWriter::new(CHAIN_ID);
+        for i in 0..3 {
+            chain.append(1_000 + i, format!("r{i}"), None, "s", tool_call("t"));
+        }
+        ev.checkpoints = vec![chain.seal(9_000, "ops-1").unwrap().sign(&ops)];
+
+        let r = evidence::verify_with(&ev, &trust(&seal, &ops), &REQUIRE);
+        assert!(!r.is_valid());
+        assert!(
+            codes(&r).contains(&"key_role_mismatch"),
+            "codes: {:?}",
+            codes(&r)
+        );
+    }
+
+    #[test]
+    fn an_ops_key_cannot_write_records() {
+        // The mirror of the above: enrolling gateways must not let you speak
+        // as one.
+        let gw = SigningKey::from_bytes(&[21u8; 32]);
+        let seal = signing_key();
+        let ops = SigningKey::from_bytes(&[22u8; 32]);
+        let mut ev = pack_with_bundle(&gw, &seal, &ops, "gw-1");
+
+        // Re-sign every record with the ops key, claiming the ops key id.
+        for sr in &mut ev.records {
+            let msg = origin_signing_bytes(CHAIN_ID, &sr.record.hash());
+            *sr = SignedRecord::signed(sr.record.clone(), "ops-1", ops.sign(&msg).to_bytes());
+        }
+
+        let r = evidence::verify_with(&ev, &trust(&seal, &ops), &REQUIRE);
+        assert!(!r.is_valid());
+        assert!(
+            codes(&r).contains(&"key_role_mismatch"),
+            "codes: {:?}",
+            codes(&r)
+        );
     }
 
     #[test]

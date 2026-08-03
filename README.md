@@ -544,8 +544,21 @@ commercial layer's job, not a reason to weaken the core.
 ```bash
 cargo run -p obsign-audit-core --example gen_sample -- /tmp/sample
 cargo run -p obsign -- verify /tmp/sample/evidence.json \
-    --trusted-keys /tmp/sample/trusted-keys.json
+    --trusted-keys /tmp/sample/trusted-keys.json    # exit 0
 ```
+
+The sample carries the three roles a real deployment has: the gateway signs
+each record as it writes it, the ledger seals over them, and an ops-signed
+deployment bundle — embedded in the pack — enrols the gateway. So
+`trusted-keys.json` holds **two** keys, seal and ops, and neither is an origin
+key: those ride the bundle, which is what keeps the out-of-band set at two
+entries however many gateways the deployment grows to.
+
+The report ends on one warning, `identity_not_attested`, and that is the
+product working: the sample enrols no TPM, so nothing proves *which software*
+ran under the gateway key, and the verifier says so instead of staying quiet.
+It is also why this run would exit 1 under `--strict` — see
+[the attestation design note](docs/design/attestation-v3.md).
 
 Tamper with the result and re-run:
 
@@ -554,6 +567,11 @@ sed -i '' 's/"outcome": "deny"/"outcome": "allow"/' /tmp/sample/evidence.json
 cargo run -p obsign -- verify /tmp/sample/evidence.json \
     --trusted-keys /tmp/sample/trusted-keys.json    # exit 1
 ```
+
+Three errors, not one: the hash chain breaks, the gateway's signature over
+that record no longer verifies, and the sealed Merkle root no longer matches
+what the records recompute. Editing one field of a sealed log means forging
+three independent things held by three different keys.
 
 Exit codes: `0` proven, `1` tampered, `2` execution error, `3` consistent but
 unproven — the pack was only checked against the keys it carries itself

@@ -439,6 +439,19 @@ Losing it does **not** invalidate anything already signed: verification uses
 the public half, which lives in `trusted-keys.json` and inside every pack.
 What you lose is the ability to sign *new* bundles.
 
+Its public entry carries `"role": "ops"`, which admits it to neither the
+sealing nor the origin set: it signs bundles and releases, and nothing the
+auditor verifies directly. Earlier builds emitted it with the default `seal`
+role, for want of anything better to say — which meant the key that publishes
+the rules could also mint checkpoints certifying the history those rules
+produced. Nothing ever signed a checkpoint with it, so **no existing pack
+loses a proof**, and files already in the field keep working: the bundle's ops
+key is resolved by `key_id`, whatever role it carries. Regenerate the file
+(`obsign-control compile`) at your next publish to pick up the tighter role.
+One caveat: a `trusted-keys.json` containing `"role": "ops"` is refused
+wholesale by an `obsign` binary older than that role, so upgrade the auditor's
+verifier before shipping a regenerated file.
+
 Recovery is a rotation, not a restore: generate a new key under a **new key
 id** (re-binding an old id is refused), republish, and distribute the updated
 `trusted-keys.json` to the fleet. Budget for this being a fleet-wide config

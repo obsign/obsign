@@ -431,7 +431,7 @@ republishing.
 | `key_id` | string | **yes** | — | Must match the id the gateway signs with, byte for byte. Gateways derive it as `origin-<first 16 hex chars of the public key>`, so do not invent one. |
 | `algo` | string | **yes** | — | `ed25519` — the only accepted value today. |
 | `public_key` | string | **yes** | — | The raw 32-byte public key, hex, no `0x`. |
-| `role` | enum | **in practice yes** | `seal` | `origin` \| `seal`. **Must be `origin` here**, and the default is `seal`, so omitting it is refused. |
+| `role` | enum | **in practice yes** | `seal` | `origin` \| `seal` \| `ops`. **Must be `origin` here**, and the default is `seal`, so omitting it is refused. |
 
 > **This file rejects unknown fields.** A misspelled key is a hard parse
 > error, not a silent omission — the one place in the tree where that
@@ -439,9 +439,11 @@ republishing.
 
 Why `role` is not optional in practice: origin keys authenticate the *writer*
 (the gateway signs each record as it writes it), sealing keys certify the
-*log* (the ledger signs checkpoints over it). A sealing key certifying its own
-writer is exactly the cohabitation the two roles prevent, so the deployment
-bundle carries origin keys only.
+*log* (the ledger signs checkpoints over it), and ops keys sign the deployment
+bundle that names the origin keys. A sealing key certifying its own writer, or
+the ops key that enrolled a gateway also speaking as one, is exactly the
+cohabitation the roles prevent — so the deployment bundle carries origin keys
+only, and `obsign verify` resolves every key within its role.
 
 ### Where the values come from
 

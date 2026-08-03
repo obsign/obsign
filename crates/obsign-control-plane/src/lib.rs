@@ -156,12 +156,21 @@ impl OpsKey {
         &self.key
     }
 
+    /// The ops key as the auditor must trust it: role `ops`, which admits it
+    /// to neither the sealing nor the origin set.
+    ///
+    /// It used to carry the default `seal` role, for want of anything better
+    /// to say — which handed whoever published the rules the power to mint
+    /// checkpoints the auditor would accept, collapsing "who decides policy"
+    /// and "who certifies history" into one authority. Nothing ever signed a
+    /// checkpoint with it (the ledger seals, from its own key or an HSM), so
+    /// no pack loses a proof by this becoming explicit.
     pub fn public_entry(&self) -> PublicKeyEntry {
         PublicKeyEntry {
             key_id: self.key_id.clone(),
             algo: "ed25519".to_string(),
             public_key: hex::encode(self.key.verifying_key().to_bytes()),
-            role: obsign_audit_core::checkpoint::KeyRole::Seal,
+            role: obsign_audit_core::checkpoint::KeyRole::Ops,
         }
     }
 }

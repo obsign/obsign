@@ -191,15 +191,23 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     // One map per role. A key is only ever resolved within its role: a
     // sealing key that "validates" a record signature, or an origin key that
     // "validates" a checkpoint, would collapse writer and certifier into one
-    // authority — the exact confusion the two roles exist to prevent.
+    // authority — the exact confusion the roles exist to prevent.
+    //
+    // Ops keys get a map of their own and feed neither pass. They are
+    // resolved by `key_id` off `key_source` when a deployment bundle names
+    // one (see `resolve_deployment_bundle` below); holding them here is what
+    // lets a checkpoint or record that claims an ops key be reported as the
+    // role confusion it is, rather than as a key nobody has ever heard of.
     let mut keys = BTreeMap::new();
     let mut origin_keys = BTreeMap::new();
+    let mut ops_keys = BTreeMap::new();
     for entry in key_source {
         match entry.to_verifying_key() {
             Ok(vk) => {
                 match entry.role {
                     KeyRole::Seal => keys.insert(entry.key_id.clone(), vk),
                     KeyRole::Origin => origin_keys.insert(entry.key_id.clone(), vk),
+                    KeyRole::Ops => ops_keys.insert(entry.key_id.clone(), vk),
                 };
             }
             Err(e) => findings.push(Finding::error(
@@ -214,9 +222,11 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     // Verified here so its keys join the origin set before the origin pass —
     // one artifact and one root (the ops key) instead of hand-listed origin
     // keys. The ops key is resolved from the trusted set by the key id the
-    // bundle names; it is not itself an origin or sealing key, so no role
-    // gate applies to it (as with the policy/identity bundles the gateway
-    // already trusts by key id).
+    // bundle names, whatever role it carries: `KeyRole::Ops` is what it
+    // should say, but trusted-key files written before that role existed
+    // declare the ops key `seal` by default, and they must keep meaning what
+    // they meant (as with the policy/identity bundles the gateway already
+    // trusts by key id).
     if let Some(sdb) = &ev.deployment {
         resolve_deployment_bundle(sdb, key_source, &mut origin_keys, opts, &mut findings);
     }
@@ -369,6 +379,15 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
                         sr.seq
                     ),
                 )),
+                None if ops_keys.contains_key(kid) => findings.push(Finding::error(
+                    "key_role_mismatch",
+                    format!(
+                        "record seq={} claims origin key \"{kid}\", which is an \
+                         ops key. An ops key writing records would let whoever \
+                         enrols the gateways also speak as one.",
+                        sr.seq
+                    ),
+                )),
                 None => origin_unverified += 1,
             },
             _ => findings.push(Finding::error(
@@ -441,6 +460,18 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
                         "checkpoint {label} signed with key \"{}\", which is an \
                          origin key. The writer certifying its own log is the \
                          cohabitation sealing exists to prevent.",
+                        cp.key_id
+                    ),
+                ));
+                cp_ok = false;
+            }
+            None if ops_keys.contains_key(&cp.key_id) => {
+                findings.push(Finding::error(
+                    "key_role_mismatch",
+                    format!(
+                        "checkpoint {label} signed with key \"{}\", which is an \
+                         ops key. Whoever publishes the rules must not also \
+                         certify the history those rules produced.",
                         cp.key_id
                     ),
                 ));

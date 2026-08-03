@@ -156,11 +156,13 @@ impl SignedCheckpoint {
 ///
 /// Origin keys authenticate the *writer* (the gateway signs each record as
 /// it writes it); sealing keys certify the *log* (the ledger signs
-/// checkpoints over it). Confusing the two would let the component that
-/// writes the log also certify it — the cohabitation the two-key
-/// architecture exists to prevent — so every verification resolves a key
-/// within its role, and a key found under the wrong role is an error, not a
-/// fallback.
+/// checkpoints over it); ops keys name *who may write* (the control plane
+/// signs the deployment bundle enrolling the origin keys). Confusing any two
+/// would let one component hold an authority the split exists to deny — the
+/// writer certifying its own log, or the operator who decides policy also
+/// certifying the history that policy produced — so every verification
+/// resolves a key within its role, and a key found under the wrong role is an
+/// error, not a fallback.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyRole {
@@ -170,6 +172,12 @@ pub enum KeyRole {
     Seal,
     /// Signs records at write time.
     Origin,
+    /// Signs deployment bundles and policy releases, and nothing the auditor
+    /// verifies directly. Resolved by `key_id` when a bundle names it, never
+    /// admitted to the sealing or origin sets: an ops key that could also
+    /// mint checkpoints would let whoever publishes the rules certify the
+    /// history those rules produced.
+    Ops,
 }
 
 impl KeyRole {
@@ -177,6 +185,7 @@ impl KeyRole {
         match self {
             KeyRole::Seal => "seal",
             KeyRole::Origin => "origin",
+            KeyRole::Ops => "ops",
         }
     }
 

@@ -6,18 +6,28 @@
 //!
 //!     cargo run -p obsign-audit-core --example gen_sample -- /tmp/demo
 //!
-//! The signing key is derived from a fixed seed: this is an example, not a
-//! production setup where the key lives in a KMS/HSM.
+//! Three keys, three roles, as in a real deployment: the gateway signs each
+//! record as it writes it (origin), the ledger signs the checkpoint over them
+//! (seal), and the control plane signs the deployment bundle that enrols the
+//! gateway (ops). The pack embeds that bundle, so the auditor verifies the
+//! whole chain — ops key -> bundle -> origin key -> records — holding nothing
+//! but the two keys in `trusted-keys.json`.
+//!
+//! Every key is derived from a fixed seed: this is an example, not a
+//! production setup where the sealing key lives in a KMS/HSM.
 
 use obsign_audit_core::checkpoint::{KeyRole, PublicKeyEntry};
+use obsign_audit_core::deployment::{DeploymentBundle, FORMAT as DEPLOYMENT_FORMAT};
 use obsign_audit_core::evidence::{Evidence, FORMAT};
+use obsign_audit_core::origin_signing_bytes;
 use obsign_audit_core::record::*;
 use obsign_audit_core::SignedRecord;
 use obsign_audit_core::{content_hash, ChainWriter};
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{Signer, SigningKey};
 use std::path::PathBuf;
 
 const KEY_ID: &str = "demo-2026-07";
+const OPS_KEY_ID: &str = "ops-2026-07";
 const CHAIN_ID: &str = "acme-prod-eu-west";
 
 // Records are appended one by one, in scenario order: demo readability wins
@@ -36,6 +46,30 @@ fn main() {
         algo: "ed25519".to_string(),
         public_key: hex::encode(key.verifying_key().to_bytes()),
         role: KeyRole::Seal,
+    };
+
+    // The gateway's own key. Its id follows the convention the gateway prints
+    // at startup — `origin-<first 16 hex chars of the public key>` — so the
+    // sample looks like something you could paste from a real deployment.
+    let gw_key = SigningKey::from_bytes(&[11u8; 32]);
+    let gw_public = hex::encode(gw_key.verifying_key().to_bytes());
+    let gw_key_id = format!("origin-{}", &gw_public[..16]);
+    let gw_pubkey = PublicKeyEntry {
+        key_id: gw_key_id.clone(),
+        algo: "ed25519".to_string(),
+        public_key: gw_public,
+        role: KeyRole::Origin,
+    };
+
+    // The control plane's key: it signs the bundle enrolling the gateway, and
+    // nothing the auditor verifies directly — hence role `ops`, which admits
+    // it to neither the sealing nor the origin set.
+    let ops_key = SigningKey::from_bytes(&[13u8; 32]);
+    let ops_pubkey = PublicKeyEntry {
+        key_id: OPS_KEY_ID.to_string(),
+        algo: "ed25519".to_string(),
+        public_key: hex::encode(ops_key.verifying_key().to_bytes()),
+        role: KeyRole::Ops,
     };
 
     // Fixed clock: a reproducible example diffs cleanly.
@@ -174,27 +208,52 @@ fn main() {
         }),
     ));
 
+    // Each record is signed as it is written, by the gateway that wrote it.
+    // This is what `--allow-unsigned-legacy-chains` exists to tolerate the
+    // absence of; a sample that skipped it would demo the exception.
+    let records: Vec<SignedRecord> = records
+        .into_iter()
+        .map(|rec| {
+            let msg = origin_signing_bytes(CHAIN_ID, &rec.hash());
+            SignedRecord::signed(rec, &gw_key_id, gw_key.sign(&msg).to_bytes())
+        })
+        .collect();
+
     // Seal the whole batch.
     let cp = chain.seal(t0 + 60_000, KEY_ID).expect("non-empty batch");
     let signed = cp.sign(&key);
 
+    // The ops-signed bundle that enrols the gateway. Embedding it is what
+    // lets the auditor start from the ops key alone instead of being handed a
+    // list of origin keys to trust on someone's word.
+    let deployment = DeploymentBundle {
+        format: DEPLOYMENT_FORMAT.to_string(),
+        version: "deployment@8f21ac4".to_string(),
+        origin_keys: vec![gw_pubkey],
+        attestations: Vec::new(),
+    }
+    .sign(OPS_KEY_ID, &ops_key);
+
     let ev = Evidence {
         format: FORMAT.to_string(),
         chain_id: CHAIN_ID.to_string(),
-        records: records.into_iter().map(SignedRecord::unsigned).collect(),
+        records,
         checkpoints: vec![signed],
-        keys: vec![pubkey.clone()],
+        keys: vec![pubkey.clone(), ops_pubkey.clone()],
         anchors: Vec::new(),
-        deployment: None,
+        deployment: Some(deployment),
     };
 
     let ev_path = out.join("evidence.json");
     let keys_path = out.join("trusted-keys.json");
 
     std::fs::write(&ev_path, serde_json::to_string_pretty(&ev).unwrap()).unwrap();
+    // Seal + ops only. The origin key is deliberately absent: it rides the
+    // bundle, and the ops key is what proves the bundle. Two keys out of
+    // band, however many gateways the deployment grows to.
     std::fs::write(
         &keys_path,
-        serde_json::to_string_pretty(&vec![pubkey]).unwrap(),
+        serde_json::to_string_pretty(&vec![pubkey, ops_pubkey]).unwrap(),
     )
     .unwrap();
 

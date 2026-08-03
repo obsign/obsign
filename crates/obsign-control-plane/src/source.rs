@@ -249,8 +249,9 @@ fn read_deployment(dir: &Path) -> Result<Option<Vec<PublicKeyEntry>>, Error> {
         if k.role != KeyRole::Origin {
             return Err(Error::Source(format!(
                 "{}: key \"{}\" has role \"{}\" — the deployment bundle carries \
-                 gateway origin keys only; a sealing key certifying its own \
-                 writer is exactly the confusion the two roles prevent",
+                 gateway origin keys only; enrolling a sealing key (which would \
+                 certify its own writer) or the ops key that signs the bundle \
+                 is exactly the confusion the roles prevent",
                 path.display(),
                 k.key_id,
                 k.role.as_str()
