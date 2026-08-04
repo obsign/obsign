@@ -13,14 +13,14 @@ use std::collections::BTreeMap;
 ///
 /// This is the sealer-side half of origin authentication: sealing a record
 /// lends it the checkpoint key's authority, so the decision "is this record
-/// the gateway's" has to be made *here*, before the signature — afterwards
+/// the gateway's" has to be made *here*, before the signature. Afterwards
 /// the forgery is indistinguishable from history.
 #[derive(Debug)]
 pub struct OriginPolicy {
     trusted: BTreeMap<String, VerifyingKey>,
-    /// A record without a verifiable signature is refused, not tolerated.
-    /// Off during rollout (pre-origin gateways still seal, with a warning
-    /// left to the caller); on once every gateway of the deployment signs.
+    /// A record without a verifiable signature is refused. Off during
+    /// rollout (pre-origin gateways still seal, with a warning left to the
+    /// caller); on once every gateway of the deployment signs.
     require: bool,
     /// The ops-signed bundle the trust came from (v1), embedded in the pack
     /// by `export`. `None` for the v0 flat-file path.
@@ -37,9 +37,9 @@ impl OriginPolicy {
         }
     }
 
-    /// Builds the trusted set from key entries; non-origin roles are
-    /// refused rather than skipped — a sealing key in an origin trust file
-    /// is a configuration error worth stopping on, not working around.
+    /// Builds the trusted set from key entries, refusing non-origin roles
+    /// outright, because a sealing key in an origin trust file is a
+    /// configuration error worth stopping on.
     ///
     /// This is the v0 flat-file path, kept for one transition. The v1 entry
     /// point is [`OriginPolicy::from_bundle`].
@@ -71,8 +71,8 @@ impl OriginPolicy {
     }
 
     /// v1: resolve the trusted origin set from an ops-signed deployment
-    /// bundle. The bundle is verified under `ops_key` — the same root that
-    /// signs policy and identity bundles — before any of its keys are
+    /// bundle. The bundle is verified under `ops_key` (the same root that
+    /// signs policy and identity bundles) before any of its keys are
     /// trusted; whoever could forge it could already forge rules. The bundle
     /// is retained so `export` can embed it in the pack, making the pack
     /// self-describing about which origin keys were trusted at seal time.
@@ -97,7 +97,7 @@ impl OriginPolicy {
         })
     }
 
-    /// The deployment bundle backing this policy, if any — embedded in the
+    /// The deployment bundle backing this policy (if any), embedded in the
     /// exported pack.
     pub fn bundle(&self) -> Option<&SignedDeploymentBundle> {
         self.bundle.as_ref()
@@ -106,7 +106,7 @@ impl OriginPolicy {
     /// The session keys this chain's certificates authorize, harvested from
     /// the whole chain (the certificate sits at seq 0, so a later pass sealing
     /// a suffix still needs to see it). Each is validated against a trusted
-    /// identity key before its session key is trusted — a v2 record then
+    /// identity key before its session key is trusted. A v2 record then
     /// resolves to a key the identity key vouched for, a v0/v1 record resolves
     /// to a bundle key directly, and the union covers both.
     fn session_keys(
@@ -163,8 +163,8 @@ impl OriginPolicy {
 /// One sealing pass: seal everything the log holds beyond sealed history.
 ///
 /// `records` comes from `obsign_wal::read`, which already validated the chain's
-/// internal consistency. What it cannot validate — and what this function
-/// exists to catch — is consistency with *sealed history*: a compromised
+/// internal consistency. What it cannot validate (and what this function
+/// exists to catch) is consistency with *sealed history*: a compromised
 /// gateway host can rewrite the WAL and recompute every hash, producing a
 /// perfectly self-consistent log that is no longer the one the checkpoints
 /// certify. The boundary record is therefore re-hashed and compared to the
@@ -172,15 +172,14 @@ impl OriginPolicy {
 ///
 /// Origin comes next: consistency proves the records agree with each other,
 /// the origin signature proves the gateway wrote them. On the first record
-/// `origin` refuses, the pass seals the authentic prefix — refusing the
-/// whole pass would let an attacker append garbage to *suppress* sealing of
-/// honest records, turning a forgery primitive into an anti-durability
-/// primitive — then returns [`Error::UnauthenticatedRecord`]. The error is
-/// the alarm: the checkpoint over the prefix is already persisted when it
-/// is raised.
+/// `origin` refuses, the pass seals the authentic prefix (refusing the whole
+/// pass would let an attacker append garbage to *suppress* sealing of honest
+/// records, turning a forgery primitive into an anti-durability primitive),
+/// then returns [`Error::UnauthenticatedRecord`]. The error is the alarm:
+/// the checkpoint over the prefix is already persisted when it is raised.
 ///
 /// `min_new` batches sealing (a checkpoint per record would bloat the store);
-/// it is a floor, not a trigger — call this from `run` or cron. An
+/// it is a floor, not a trigger, so call this from `run` or cron. An
 /// authentic prefix cut short by a refused record seals regardless of the
 /// floor: those records' path to proof must not wait on an attacker.
 ///
@@ -264,9 +263,9 @@ pub fn seal_pass(
 
 /// Assembles the evidence pack an auditor receives.
 ///
-/// Assembly, not judgement: the pack is handed to `obsign verify` (or run
-/// through `obsign_audit_core::evidence::verify` by the caller) for that. An export
-/// that filtered or repaired on the way out would be doing exactly what the
+/// Assembly is the whole job: judgement belongs to `obsign verify`, or to
+/// `obsign_audit_core::evidence::verify` run by the caller. An export that
+/// filtered or repaired on the way out would be doing exactly what the
 /// product exists to make impossible.
 ///
 /// `origin_keys` are appended to the pack's keys the way the sealing keys

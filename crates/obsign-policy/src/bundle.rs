@@ -16,7 +16,7 @@ pub const FORMAT_V2: &str = "obsign-policy/2";
 /// The bundle is produced from a git repository, not from a UI: the version
 /// carries the commit sha, so every decision recorded in the log can be
 /// replayed identically months later. It is also what an auditor wants to
-/// see — a modified rule is a dated, reviewed pull request, not a click.
+/// see, because a modified rule is a dated, reviewed pull request.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Bundle {
     pub format: String,
@@ -67,11 +67,11 @@ pub struct ArgSpec {
 
 impl ArgSpec {
     /// JSON pointer this spec reads from. When derived from the name, the
-    /// name is escaped per RFC 6901 (`~`→`~0`, `/`→`~1`) so that a name
-    /// containing those characters resolves to the literal argument key
-    /// rather than being read as a nesting path — an arg named `path/glob`
-    /// must match the key `path/glob`, not `args["path"]["glob"]`. The
-    /// order matters: `~` first, then `/`.
+    /// name is escaped per RFC 6901 (`~` becomes `~0`, `/` becomes `~1`) so
+    /// that a name containing those characters resolves to the literal
+    /// argument key instead of being read as a nesting path. An arg named
+    /// `path/glob` must match the key `path/glob` itself, never
+    /// `args["path"]["glob"]`. The order matters: `~` first, then `/`.
     pub fn pointer(&self) -> String {
         match &self.at {
             Some(p) => p.clone(),
@@ -84,9 +84,9 @@ impl ArgSpec {
 #[serde(rename_all = "snake_case")]
 pub enum ArgKind {
     String,
-    /// Integral only, `i64` range. Floats are refused, not rounded: an
-    /// amount check that rounds is an amount check with a hole. Monetary
-    /// rules declare minor units (cents).
+    /// Integral only, `i64` range. Floats are refused; an amount check
+    /// that rounds is an amount check with a hole. Monetary rules declare
+    /// minor units (cents).
     Long,
     Bool,
     /// A JSON array of strings; Cedar receives a set.

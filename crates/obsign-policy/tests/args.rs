@@ -1,11 +1,11 @@
 //! Argument-aware rules: `context.args`.
 //!
 //! The catalogue declares which arguments the policy may see; the engine
-//! exposes exactly those, typed, total. Two properties carry the design
+//! exposes exactly those, typed, total. The design rests on two properties
 //! (docs/design/argument-policy-v1.md):
 //!
-//! * a policy can refuse a call *on its arguments* — "`send_message`, but
-//!   only to `#support`" — which is where real-world refusals live;
+//! * a policy can refuse a call *on its arguments* ("`send_message`, but
+//!   only to `#support`"), which is where real-world refusals live;
 //! * malformed input is a denial, never the fail mode: an agent that
 //!   controls argument shape must not be able to steer a fail-open tool
 //!   into its open path.

@@ -2,7 +2,7 @@
 //! keys.
 //!
 //! v0 distributed origin trust through a flat file an operator hand-kept on
-//! the ledger host — the exact hole the identity and policy bundles exist to
+//! the ledger host, the exact hole the identity and policy bundles exist to
 //! close: whoever writes that file mints origin authority. This bundle moves
 //! origin-key distribution onto the same footing as every other piece of
 //! authority in the system: a reviewed file in git, compiled deterministically,
@@ -10,7 +10,7 @@
 //!
 //! What it governs, precisely: the keys a *fresh* seal will accept as having
 //! written a record, and the keys a gateway will accept when resuming a chain.
-//! It does **not** reach into sealed history — a record already sealed was
+//! It does **not** reach into sealed history. A record already sealed was
 //! origin-verified at seal time, and the checkpoint attests that. Revoking a
 //! key (removing it and republishing) bounds the future; the immutable
 //! `releases/<sha>/` lineage dates the boundary. An auditor re-verifying an
@@ -31,7 +31,7 @@ pub const FORMAT: &str = "obsign-deployment/1";
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DeploymentBundle {
     pub format: String,
-    /// `deployment@<sha>`, the source ref — like `policies@<sha>`.
+    /// `deployment@<sha>`, the source ref, like `policies@<sha>`.
     pub version: String,
     /// Active origin keys. Order in the file is irrelevant: signing sorts by
     /// `key_id`. Every entry must have role `origin`.
@@ -46,7 +46,7 @@ pub struct DeploymentBundle {
 }
 
 impl DeploymentBundle {
-    /// Bytes that are signed. Explicit canonical encoding, never the JSON —
+    /// Bytes that are signed. Explicit canonical encoding, never the JSON:
     /// the identity bundle's rule, for the identity bundle's reason.
     pub fn signing_bytes(&self) -> Vec<u8> {
         let mut e = Encoder::new();
@@ -97,9 +97,9 @@ impl DeploymentBundle {
     ///
     /// A seal-role key here is the writer-certifier confusion the two roles
     /// exist to prevent, and a duplicate `key_id` would let one entry shadow
-    /// another — both are refused rather than filtered, because a deployment
-    /// bundle that quietly dropped a key is precisely the failure this whole
-    /// design removes.
+    /// another. Both are refused outright, because a deployment bundle that
+    /// quietly dropped a key is precisely the failure this whole design
+    /// removes.
     pub fn active_origin_keys(&self) -> Result<BTreeMap<String, VerifyingKey>, Error> {
         let mut map = BTreeMap::new();
         for entry in &self.origin_keys {
@@ -128,7 +128,7 @@ impl DeploymentBundle {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SignedDeploymentBundle {
     pub bundle: DeploymentBundle,
-    /// The ops key that signed — resolved against the trusted key set, the
+    /// The ops key that signed, resolved against the trusted key set, the
     /// same root that signs policy and identity bundles.
     pub key_id: String,
     pub signature: String,

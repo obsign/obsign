@@ -12,7 +12,7 @@ use serde_json::Value;
 /// * Okta and Ping each have their own variant.
 ///
 /// Hard-coding a special case per provider is the debt not to take on. So we
-/// describe the paths in configuration, and the product stays vendor-neutral —
+/// describe the paths in configuration, and the product stays vendor-neutral,
 /// which is also what lets you tell a customer "we speak the standard" rather
 /// than "we support your IdP".
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -26,7 +26,7 @@ pub struct ClaimMap {
     /// Used to recognise a service token (`sub` == `client_id`).
     pub client_id: Vec<String>,
     /// Claims a human-readable name may be read from, tried in order; the
-    /// first that answers wins. Never replaces `subject` — the label is
+    /// first that answers wins. Never replaces `subject`. The label is
     /// recorded *beside* it, because a display name can be renamed and an
     /// audit trail needs the identifier that cannot.
     ///
@@ -36,7 +36,7 @@ pub struct ClaimMap {
     #[serde(default = "default_labels")]
     pub labels: Vec<String>,
     /// What marks a token as a machine's. `#[serde(default)]` so a
-    /// `obsign-identity/1` bundle deserializes unchanged — but for that
+    /// `obsign-identity/1` bundle deserializes unchanged, but for that
     /// format the signature does not cover this field, so [`crate::bundle`]
     /// refuses a v1 bundle carrying anything but the defaults.
     #[serde(default)]
@@ -211,21 +211,22 @@ pub struct MarkerMatch {
 
 /// Markers identifying a machine token (no human at the root of the chain).
 ///
-/// The old test — `sub` == `client_id` — is only one of the shapes a service
-/// token takes, and NOT the one the IdPs this product targets actually emit: a
-/// Keycloak or Entra `client_credentials` token has `sub` set to the service
-/// principal's own id, distinct from the client id, so that test alone let a
-/// keyless robot classify as `Human` and satisfy a "requires a human" Cedar
-/// rule. Detection is therefore the union of the markers each target IdP does
-/// emit. Every marker only ever *adds* a Machine verdict — a genuine user
-/// token matches none of them — so broadening this can never downgrade a real
-/// human to a robot, only the reverse, which is the safe direction.
+/// The old test (`sub` == `client_id`) is only one of the shapes a service
+/// token takes, and it is not the one the IdPs this product targets actually
+/// emit: a Keycloak or Entra `client_credentials` token has `sub` set to the
+/// service principal's own id, distinct from the client id, so that test
+/// alone let a keyless robot classify as `Human` and satisfy a "requires a
+/// human" Cedar rule. Detection is therefore the union of the markers each
+/// target IdP does emit. Every marker only ever *adds* a Machine verdict; a
+/// genuine user token matches none of them, so broadening this can never
+/// downgrade a real human to a robot, only the reverse, which is the safe
+/// direction.
 ///
 /// These are configuration, not code, for the same reason the claim paths
 /// are: no two providers mark their service tokens the same way, and a
 /// hard-coded list means "we support your IdP" instead of "we speak the
-/// standard". But they decide `PrincipalKind`, hence which Cedar rules apply
-/// — so they travel inside the signed identity bundle (`obsign-identity/2`),
+/// standard". But they decide `PrincipalKind`, hence which Cedar rules apply,
+/// so they travel inside the signed identity bundle (`obsign-identity/2`),
 /// never as a plain file option. A verifier that removes a marker widens what
 /// counts as human; that change must be signed like any other authorization
 /// change.
@@ -337,7 +338,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// Default markers — what every deployment gets without configuration.
+    /// Default markers (what every deployment gets without configuration).
     fn chain(c: &Value, sub: &str, cid: Option<&str>) -> (Vec<String>, PrincipalKind) {
         actor_chain(c, sub, cid, &MachineMarkers::default())
     }

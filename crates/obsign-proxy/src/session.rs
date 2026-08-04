@@ -22,7 +22,7 @@ pub struct Pending {
     /// asynchronous and come back out of order, so a counter read at that
     /// point has already moved on and two effects get the same identifier.
     /// The integrity chain is unaffected, but the attribution graph becomes
-    /// ambiguous — and that is the one an investigation relies on.
+    /// ambiguous, and that is the one an investigation relies on.
     pub effect_record_id: String,
     pub started: Instant,
 }
@@ -48,8 +48,8 @@ pub struct Session {
     /// Ids of server-initiated machinery requests (`ping`, `roots/list`)
     /// relayed to the agent without arbitration. The agent's reply to one of
     /// these passes like the request did; a "response" matching neither this
-    /// set nor `pending_to_agent` is unsolicited — an arbitrary payload
-    /// aimed at the server — and is refused. Bounded: past the cap, new
+    /// set nor `pending_to_agent` is unsolicited (an arbitrary payload
+    /// aimed at the server) and is refused. Bounded: past the cap, new
     /// machinery requests still relay but their replies will be refused,
     /// which fails toward refusal, never toward an unarbitrated channel.
     pub relayed_to_agent: HashSet<String>,
@@ -66,13 +66,13 @@ impl Session {
     ///
     /// Order matters. We make it durable **before** the caller forwards the
     /// call to the tool. If the process dies in between, we have a trace of an
-    /// act that did not happen — awkward but defensible. The other way round
+    /// act that did not happen, awkward but defensible. The other way round
     /// we would have an act with no trace, which ruins the product.
     ///
     /// The origin signature sits between the chain append and the fsync: it
     /// covers the record's final form (`seq` and `prev_hash` are set by the
     /// chain), and a record must never become durable unsigned when the
-    /// gateway has a key — the sealer would refuse it later, far from the
+    /// gateway has a key; the sealer would refuse it later, far from the
     /// cause.
     pub fn write(
         &mut self,
@@ -101,7 +101,7 @@ impl Session {
 
     /// Closing report, written to stderr on shutdown.
     ///
-    /// The gateway does not seal — it must never hold a signing key, or the
+    /// The gateway does not seal. It must never hold a signing key, or the
     /// key and the log cohabit on one host and the checkpoints certify
     /// whatever that host's attacker rewrites (see the `ledger` crate). Its
     /// job ends when every record is durable in the WAL; the message says
@@ -123,7 +123,7 @@ impl Session {
 /// parent): a reload changes what the gateway trusts, whoever the principal
 /// of the moment is. Written before the act that triggered them, so "which
 /// keys were trusted when this act happened?" reads directly: the last
-/// applied `config_reload` — or the opening `agent_session` — above the act.
+/// applied `config_reload` (or the opening `agent_session`) above the act.
 pub fn record_config_reloads(
     s: &mut Session,
     reloads: Vec<ConfigReload>,
@@ -155,7 +155,7 @@ pub fn record_session_cert(
 /// A chain-level event with no attribution parent, like a config reload: it
 /// says which origin keys the gateway trusted while writing this chain,
 /// independent of any principal. Recorded as `Applied` at session open so
-/// every pack is self-contained about its origin trust — the in-chain answer
+/// every pack is self-contained about its origin trust, the in-chain answer
 /// to "who could have written these records?".
 pub fn record_deployment_bundle(
     s: &mut Session,
@@ -181,8 +181,8 @@ pub fn record_deployment_bundle(
 ///
 /// Called at startup, then on every token renewal. Renewing emits a new
 /// delegation/agent pair: the authority the agent operates under has changed,
-/// and subsequent calls must attach to the new one, not the old. Without
-/// this, an act performed under a renewed token would appear authorized by an
+/// and subsequent calls must attach to the new one. Without this, an act
+/// performed under a renewed token would appear authorized by an
 /// already-expired delegation.
 pub fn record_delegation(
     s: &mut Session,

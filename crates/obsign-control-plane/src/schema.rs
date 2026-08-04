@@ -10,8 +10,8 @@
 //! * **never write a schema for a catalogue `compile` would refuse.** An
 //!   editor validating against a schema the control plane rejects is worse
 //!   than no editor support: it green-lights rules that can never ship. So
-//!   the catalogue goes through `Engine::load` — the same call `compile`
-//!   makes — before anything reaches disk;
+//!   the catalogue goes through `Engine::load` (the same call `compile`
+//!   makes) before anything reaches disk;
 //! * **the file is derived, never authoritative.** `compile` regenerates the
 //!   model and ignores whatever is on disk. A stale file misleads editors
 //!   and nothing else, which is what `--check` is for.
@@ -27,7 +27,7 @@ use crate::{write_atomic, Error};
 /// Where the schema goes when the operator names no output.
 ///
 /// Beside the rules it types, because that is where the Cedar VS Code
-/// extension auto-detects a schema — a colleague who clones the repository
+/// extension auto-detects a schema. A colleague who clones the repository
 /// gets a working setup with nothing to configure.
 pub fn default_schema_path(source_root: &Path) -> PathBuf {
     source_root

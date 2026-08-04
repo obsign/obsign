@@ -3,23 +3,25 @@
 Status: **implemented** (2026-07-30, branch `wal-origin-auth-design`, 212
 tests incl. a real SoftHSM token). Implements §7.1 of
 [wal-origin-auth.md](wal-origin-auth.md): the gateway's *identity* is
-separated from its *signing throughput* — the per-record key is generated in
-memory and never touches disk, the long-lived identity key never touches the
-hot path. Sections 3–7 are as built; the four §10 decisions were resolved on
-their recommended defaults:
+separated from its *signing throughput*, so the per-record key is generated
+in memory and never touches disk, and the long-lived identity key never
+touches the hot path. Sections 3–7 are as built; the four §10 decisions were
+resolved on their recommended defaults.
 
-- **(1) in-chain, tag 9:** `Payload::SessionCert` is the chain's first
-  record, sealed and unstrippable.
-- **(2) dev custody = file seed;** production = PKCS#11 (`Pkcs11IdentitySigner`),
-  verified against a real SoftHSM token.
-- **(3) shared `obsign-pkcs11` crate:** the ledger's hand-rolled bindings were
-  lifted into a new `obsign-pkcs11` crate; `Pkcs11Sealer` (sealing role) and
-  `Pkcs11IdentitySigner` (identity role) are thin wrappers over the one
-  audited `Pkcs11Signer` — with an internal sign-lock and `unsafe impl
-  Send+Sync` so the identity signer is shareable across HTTP session threads.
-- **(4) session-bounded lifetime:** `--session-lifetime-secs` (default 1h);
-  the window is carried but enforced only against anchored time (informational
-  otherwise — see §6).
+Decision (1) went in-chain under tag 9: `Payload::SessionCert` is the chain's
+first record, sealed and unstrippable. Decision (2) settled on a file seed for
+dev custody, with production on PKCS#11 (`Pkcs11IdentitySigner`), verified
+against a real SoftHSM token.
+
+Decision (3) lifted the ledger's hand-rolled bindings into a new shared
+`obsign-pkcs11` crate. Inside `obsign-pkcs11`, `Pkcs11Sealer` (sealing role)
+and `Pkcs11IdentitySigner` (identity role) are thin wrappers over the one
+audited `Pkcs11Signer`, which gained an internal sign-lock and `unsafe impl
+Send+Sync` so the identity signer is shareable across HTTP session threads.
+
+Decision (4) bounds the certificate lifetime to the session:
+`--session-lifetime-secs` (default 1h). The window is carried but enforced
+only against anchored time, and is informational otherwise (§6).
 
 Live-verified through the built binaries: a two-tier gateway writes a session
 cert at the chain top signed by a memory session key, the identity key never
@@ -35,9 +37,9 @@ v1 distributed those keys' public halves through a signed bundle. Both share
 one residual, stated plainly in v0 §3.3: **the origin key material lives on
 disk, on the host we assume the attacker can write to.** A disk attacker who
 can also *read* the seed forges signatures. The bar is "read the gateway's
-key file" — real, but not the bar we want long-term.
+key file", which is real enough but lower than we want long-term.
 
-The naive fix — "put the key in a TPM and sign every record with it" — is
+The naive fix ("put the key in a TPM and sign every record with it") is
 wrong on the hot path. Hardware signing is millisecond-class and serialized;
 the per-record budget is set by an fsync in the tens of microseconds. Three
 records per tool call through a TPM multiplies gateway latency by ~50. The
@@ -48,9 +50,9 @@ key must be in hardware; the signing must not go through hardware per record.
 **Two-tier keys. A long-lived gateway *identity key* in hardware
 (PKCS#11/TPM/Secure Enclave, file-seed in dev) signs a short *session
 certificate* over an ephemeral *session key* generated in memory at session
-open. Records are signed by the session key — same ~20 µs as today, same
-code path, different key provenance. The session key never touches disk; the
-identity key never signs on the hot path.**
+open. Records are signed by the session key, at the same ~20 µs as today, on
+the same code path, with a different key provenance. The session key never
+touches disk; the identity key never signs on the hot path.**
 
 The chain of trust becomes:
 
@@ -60,30 +62,31 @@ control-plane root ─signs→ deployment bundle ─enrolls→ identity key
 ```
 
 Nothing about the record envelope or the per-record signature *mechanism*
-changes — a record still carries `origin_sig` + `origin_key_id`, verified
+changes. A record still carries `origin_sig` + `origin_key_id`, verified
 with an Ed25519 public key. What changes is where that public key comes from:
 no longer a bundle entry directly, but a session certificate the bundle's
 identity key vouches for.
 
 ### What this buys, in threat-model terms
 
-- **No signing key material on disk, ever.** The v0/v1 residual disappears
-  rather than being mitigated: the identity key is non-exportable hardware,
-  the session key is memory-only and discarded at session close.
-- **Compromise window = one session.** A leaked session key (a memory
-  scrape) forges records only until its `not_after`, and only for its one
-  chain. Minting a *new* session certificate needs the hardware identity key,
-  which cannot leave the device.
-- **Whole-chain forgery dies at the certificate.** The certificate binds the
-  session key to a specific `chain_id` and `gateway_id`. A fabricated chain
-  cannot obtain a certificate for its chain id without the hardware key —
-  closing the post-session-append attack's big brother, not just the
-  per-record case.
+No signing key material sits on disk, ever. The v0/v1 residual disappears
+instead of being mitigated: the identity key is non-exportable hardware, the
+session key is memory-only and discarded at session close.
+
+The compromise window narrows to one session. A leaked session key (a memory
+scrape) forges records only until its `not_after`, and only for its one
+chain. Minting a *new* session certificate needs the hardware identity key,
+which cannot leave the device.
+
+Whole-chain forgery dies at the certificate, which binds the session key to a
+specific `chain_id` and `gateway_id`. A fabricated chain cannot obtain a
+certificate for its chain id without the hardware key, closing the
+post-session-append attack's big brother as well as the per-record case.
 
 ## 3. The session certificate
 
-A new **payload type**, `Payload::SessionCert` (tag 9 — the next free
-integer, the sanctioned extension mechanism that added `Actor` (7) and
+A new **payload type**, `Payload::SessionCert` (tag 9, the next free integer;
+this is the sanctioned extension mechanism that added `Actor` (7) and
 `ConfigReload` (8) without moving any existing hash). It is the first record
 of every chain, sealed like any other, so it cannot be stripped.
 
@@ -114,7 +117,7 @@ digest(SESSION_CERT,
                 || gateway_id || not_before_ms || not_after_ms)
 ```
 
-- `chain_id` binds the certificate to one chain — the same
+- `chain_id` binds the certificate to one chain, the same
   transplant-prevention argument as the per-record signature (v0 §3.1).
 - `session_pubkey` is what the record signatures resolve to: the verifier
   reads the cert, validates `identity_sig` under the identity key, then uses
@@ -139,19 +142,20 @@ pub trait IdentitySigner {
 }
 ```
 
-- **`FileIdentitySigner`** (dev): a 32-byte seed, same custody class as
-  `FileSealer` — acceptable for development and first design partners.
-- **`Pkcs11IdentitySigner`** (prod): reuses the hand-rolled PKCS#11 bindings
-  already shipped for the ledger's `Pkcs11Sealer` — same `dlopen`, same
-  `C_Sign`, same "the host can sign now but cannot exfiltrate and sign later"
-  guarantee. This is the payoff of having built the HSM path once: the
-  identity signer is another consumer of it.
+`FileIdentitySigner` (dev) is a 32-byte seed, the same custody class as
+`FileSealer`, acceptable for development and first design partners.
 
-The **session key** needs no trait — it is an in-memory `SigningKey`
-generated at session open (`getrandom`, already in the tree) and dropped at
-session close. It is the existing `OriginSigner` role, now backed by a
-freshly-generated key per session instead of a file seed. The
-`OriginSigner` trait and the whole record-signing path are unchanged.
+`Pkcs11IdentitySigner` (prod) reuses the hand-rolled PKCS#11 bindings already
+shipped for the ledger's `Pkcs11Sealer`: same `dlopen`, same `C_Sign`, same
+"the host can sign now but cannot exfiltrate and sign later" guarantee. This
+is the payoff of having built the HSM path once, and the identity signer is
+another consumer of it.
+
+The **session key** needs no trait. It is an in-memory `SigningKey` generated
+at session open (`getrandom`, already in the tree) and dropped at session
+close. It is the existing `OriginSigner` role, now backed by a
+freshly-generated key per session instead of a file seed. The `OriginSigner`
+trait and the whole record-signing path are unchanged.
 
 ## 5. The gateway at session open
 
@@ -166,8 +170,8 @@ freshly-generated key per session instead of a file seed. The
 The identity signer is presented once, at startup (the `Pkcs11Sealer`
 precedent: credentials presented once, never re-presented in a loop that
 could lock the token). Over HTTP, each session generates its own session key
-and certificate — a natural fit for the one-chain-per-session model, and the
-reason the certificate is per-session rather than per-gateway.
+and certificate, a natural fit for the one-chain-per-session model and the
+reason a certificate covers one session instead of a whole gateway.
 
 Resume (`Wal::open_authenticated`) changes: the trusted set is no longer the
 gateway's own key but the session key named by the chain's `SessionCert`,
@@ -192,8 +196,8 @@ New findings:
   not verify under a trusted identity key, or whose `chain_id`/`gateway_id`
   binding is wrong. Only tampering produces these.
 - `session_cert_unverified` (**warning**, error under `require_origin`): a
-  certificate whose `identity_key_id` resolves to no trusted key — the
-  self-referential / unenrolled case, same logic as
+  certificate whose `identity_key_id` resolves to no trusted key, the
+  self-referential / unenrolled case, on the same logic as
   `deployment_bundle_unverified`.
 - Records whose session key has no valid certificate fall to
   `origin_unverified`, exactly as an unsigned record does today.
@@ -205,17 +209,17 @@ trusted time. The pack already carries RFC 3161 anchors over checkpoints:
 
 - when an anchor covers the checkpoint sealing the `SessionCert`, the window
   is checked against the anchored time (the certificate was valid *when the
-  TSA saw it*) — enforceable against a third party;
-- without an anchor, the window is **informational**: the binding
-  (identity key → session key → chain) still holds, but "was it in date?"
-  cannot be answered offline against a clock the verifier does not trust, and
-  the report says so rather than checking against its own wall clock (which
-  an evidence pack read years later would fail spuriously).
+  TSA saw it*), which makes it enforceable against a third party;
+- without an anchor, the window is **informational**: the binding running
+  from identity key to session key to chain still holds, but "was it in
+  date?" cannot be answered offline against a clock the verifier does not
+  trust, and the report says so instead of checking against its own wall
+  clock (which an evidence pack read years later would fail spuriously).
 
 ## 7. Rotation and revocation
 
 - **Session keys** rotate every session, automatically and invisibly. There
-  is no session-key rotation *operation* — expiry is the default.
+  is no session-key rotation *operation*; expiry is the default.
 - **Identity keys** rotate through the v1 deployment bundle: enroll the new
   identity key, keep the old one during the overlap, republish; retire the
   old one in a later republish. The bundle already carries the active set and
@@ -227,14 +231,15 @@ trusted time. The pack already carries RFC 3161 anchors over checkpoints:
 
 ## 8. What v2 deliberately does not do
 
-- **Remote attestation** (§7.5): binding the identity key to a measured boot
-  and a measured gateway binary via a TPM quote. That strengthens the claim
-  from "an origin signed this" to "an origin running *this software* signed
-  this", and is the v3 horizon — pulled by a regulator's question, not
-  pushed. The v2 enrollment record is deliberately one signed field away from
-  carrying a quote.
-- **Post-quantum signatures**: still just the `algo`/`key_id` agility already
-  present (v0 §7.3). Do not build it now.
+Remote attestation (§7.5) stays out: binding the identity key to a measured
+boot and a measured gateway binary via a TPM quote. That strengthens the
+claim from "an origin signed this" to "an origin running *this software*
+signed this", and it is the v3 horizon, pulled by a regulator's question, not
+pushed. The v2 enrollment record is deliberately one signed field away from
+carrying a quote.
+
+Post-quantum signatures stay at the `algo`/`key_id` agility already present
+(v0 §7.3). Do not build it now.
 
 ## 9. Implementation plan
 
@@ -244,15 +249,15 @@ Each step green on its own, the established discipline:
    (tag 9) + its encoding, `session_cert_signing_bytes`, a
    `SessionCert::verify(identity_vk)` helper. The frozen-format reference
    vector in `tamper.rs` gains a `session_cert` case and every existing hash
-   must stay put — the tripwire that proves tag 9 touched nothing.
+   must stay put, the tripwire that proves tag 9 touched nothing.
 2. **obsign-audit-core evidence**: resolve session certs before the origin pass, the
    two findings, anchored-time window check. Tamper tests: forged cert,
    cert for the wrong chain, unenrolled identity key, a record signed by a
    session key with no cert.
 3. **identity/signer crate**: `IdentitySigner` trait, `FileIdentitySigner`,
-   and `Pkcs11IdentitySigner` behind the existing PKCS#11 module (reused, not
-   rewritten). Where these live: a new `origin-signer` home, or extend the
-   ledger's PKCS#11 module into a shared crate — see open decision 3.
+   and `Pkcs11IdentitySigner` behind the existing PKCS#11 module, which is
+   reused as-is. Where these live: a new `origin-signer` home, or extend the
+   ledger's PKCS#11 module into a shared crate (see open decision 3).
 4. **obsign-proxy**: generate the session key, certify at session open,
    write the `SessionCert` record, resume against the certified session key.
    `--identity-key` (file seed) / `--identity-hsm-*` (PKCS#11), replacing
@@ -267,16 +272,16 @@ path, envelope, bundle, and seal are untouched. Tests are the bulk, as ever.
 ## 10. Open decisions (need a call before implementation)
 
 1. **`SessionCert` in-chain (tag 9) vs. pack envelope field.** *Recommended:
-   in-chain*, as above — it is sealed (unstrippable), reads naturally at the
+   in-chain*, as above. It is sealed (unstrippable), reads naturally at the
    chain top beside the delegation/deployment records, and uses the blessed
    new-tag extension. The objection to *per-record* in-chain attestation
-   (v0's rejected option — coverage windows, log pollution) does not apply:
+   (v0's rejected option: coverage windows, log pollution) does not apply:
    this is one record per session, part of the chain's provenance story the
    delegation records already tell. The alternative (an envelope/pack field)
    is unsealed unless separately anchored, for no benefit.
 2. **Dev identity custody: file seed vs. OS keychain.** *Recommended: file
    seed*, matching `FileSealer`, because the *point* of v2 is that production
-   uses hardware (PKCS#11) — the dev seed is a stand-in exercising the
+   uses hardware (PKCS#11). The dev seed is a stand-in exercising the
    `IdentitySigner` boundary, and the session key (the one that used to be a
    file) is memory-only in dev already. The seed file that "dies" in §7.6 is
    the per-record one; the identity seed is dev-only scaffolding for the
@@ -286,13 +291,14 @@ path, envelope, bundle, and seal are untouched. Tests are the bulk, as ever.
    them for the *gateway's* identity signer too. Options: (a) lift the
    PKCS#11 module into a small shared crate both depend on; (b) duplicate the
    bindings in the proxy (the tamper-test precedent for deliberately not
-   sharing forgery helpers — but this is infrastructure, not a forgery
-   helper). *Recommended: (a)*, a `obsign-pkcs11` support crate — the bindings are
-   audited infrastructure, and two hand-rolled copies drifting is the exact
-   single-implementation-of-the-proof risk obsign-audit-core exists to avoid.
+   sharing forgery helpers, though these bindings are plain infrastructure).
+   *Recommended: (a)*, a `obsign-pkcs11` support crate, since the bindings
+   are audited infrastructure and two hand-rolled copies drifting is the
+   exact single-implementation-of-the-proof risk obsign-audit-core exists to
+   avoid.
 4. **Certificate lifetime default.** How long is `not_after - not_before`?
    *Recommended: bounded to the session, with a generous ceiling* (e.g. the
-   session's expected max lifetime, hours not days) — the whole value is that
-   a leaked session key expires soon. A concrete default belongs in the
-   runbook, not hardcoded; the gateway sets it, the verifier enforces it only
-   against anchored time (§6).
+   session's expected max lifetime, hours not days), because the whole value
+   is that a leaked session key expires soon. A concrete default belongs in
+   the runbook and stays out of the code; the gateway sets it, the verifier
+   enforces it only against anchored time (§6).

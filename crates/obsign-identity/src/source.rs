@@ -10,7 +10,7 @@ use crate::Error;
 /// What happened during a reload attempt.
 ///
 /// `Failed` is deliberately not an error: an invalid identity bundle dropped
-/// on disk — botched deployment, truncated file, bad signature — must
+/// on disk (botched deployment, truncated file, bad signature) must
 /// **never** bring the gateway down. The previous bundle stays in place and
 /// the service keeps running. The type says so explicitly so that no caller
 /// can treat this case as fatal by accident.
@@ -27,7 +27,7 @@ pub enum ReloadOutcome {
         content: Hash,
     },
     /// Attempt failed, the previous bundle is kept. `content` hashes the
-    /// rejected bytes — evidence of *what* was refused — and is `None` only
+    /// rejected bytes as evidence of *what* was refused; it is `None` only
     /// when the file could not be read at all.
     Failed {
         reason: String,
@@ -37,8 +37,8 @@ pub enum ReloadOutcome {
 
 /// Hot-reloadable identity bundle.
 ///
-/// Identity providers rotate their signing keys routinely — Keycloak in
-/// particular, on its realm keys. Without reloading, every rotation would
+/// Identity providers rotate their signing keys routinely, Keycloak in
+/// particular on its realm keys. Without reloading, every rotation would
 /// require a gateway restart, i.e. an outage on the critical path for a
 /// completely mundane operation.
 ///

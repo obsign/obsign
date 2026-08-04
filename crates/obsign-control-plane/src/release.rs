@@ -35,7 +35,7 @@ pub const FORMAT: &str = "obsign-release/1";
 
 /// What a release contains, hashed file by file.
 ///
-/// The artifact hashes are plain SHA-256 of the file bytes — deliberately
+/// The artifact hashes are plain SHA-256 of the file bytes, deliberately
 /// comparable with `sha256sum`, so "is the bundle my gateway loaded the one
 /// the manifest names?" is answerable with standard tooling. What is signed
 /// is the manifest, through the canonical encoding, like everything else.

@@ -9,7 +9,7 @@
 //! The trust this key carries is stated where it is earned: it authenticates
 //! the *writer*, raising the attack from "write the WAL directory" to "read
 //! the gateway's key material". It is not, and cannot be, a defense against
-//! a compromised gateway process — the gateway *is* the origin.
+//! a compromised gateway process; the gateway *is* the origin.
 
 use anyhow::{bail, Context as _, Result};
 use obsign_audit_core::checkpoint::{KeyRole, PublicKeyEntry};
@@ -34,7 +34,7 @@ pub trait OriginSigner: Send + Sync {
     ///
     /// On the hot path: called for every record, between the chain append
     /// and the fsync. An implementation that cannot sign in microseconds
-    /// does not belong here — hardware keys certify a session key instead
+    /// does not belong here. Hardware keys certify a session key instead
     /// (see the design's two-tier target).
     fn sign(&self, message: &[u8]) -> Result<[u8; 64], io::Error>;
 }
@@ -102,7 +102,7 @@ impl OriginSigner for FileOriginSigner {
 // ===========================================================================
 
 /// The long-lived gateway identity key. Signs session certificates, never
-/// records — so it can live in hardware (a TPM/HSM implementation certifies
+/// records, so it can live in hardware (a TPM/HSM implementation certifies
 /// once per session, off the hot path) while records keep signing at
 /// memory-key speed.
 ///
@@ -168,8 +168,8 @@ impl IdentitySigner for FileIdentitySigner {
 
 /// Production identity signer: the key lives in a PKCS#11 token (HSM/TPM/
 /// smartcard) and never enters this process. Wraps the same
-/// [`obsign_pkcs11::Pkcs11Signer`] the ledger's sealing key uses — one audited FFI,
-/// two roles.
+/// [`obsign_pkcs11::Pkcs11Signer`] the ledger's sealing key uses: one audited
+/// FFI, two roles.
 pub struct Pkcs11IdentitySigner {
     inner: obsign_pkcs11::Pkcs11Signer,
     key_id: String,
@@ -266,7 +266,7 @@ impl OriginSigner for SessionKey {
 /// identity key sign a certificate over it, and returns both.
 ///
 /// The certificate binds the session key to this `chain_id` and `gateway_id`,
-/// and to a validity window `[now, now+lifetime]` — a leaked session key
+/// and to a validity window `[now, now+lifetime]`. A leaked session key
 /// forges records only for this chain, only until it expires.
 pub fn certify_session(
     identity: &dyn IdentitySigner,
@@ -298,7 +298,7 @@ pub fn certify_session(
 /// A resumed tail was signed by a *previous* session key; the gateway no
 /// longer holds it, but the chain carries its certificate, and the identity
 /// key vouches for it. So the gateway rebuilds the trust set from the chain
-/// itself — a tail whose certificate the identity key did not sign is
+/// itself. A tail whose certificate the identity key did not sign is
 /// foreign.
 pub fn resume_session_trust(
     existing: &[obsign_audit_core::SignedRecord],
@@ -360,7 +360,7 @@ pub struct SessionSetup {
 }
 
 impl GatewayKeys {
-    /// The key id this gateway must be enrolled under — its origin key (v0/v1)
+    /// The key id this gateway must be enrolled under: its origin key (v0/v1)
     /// or its identity key (v2).
     pub fn own_key_id(&self) -> Option<String> {
         match &self.signing {
@@ -371,7 +371,7 @@ impl GatewayKeys {
     }
 
     /// Fails at startup if a deployment bundle is configured but does not
-    /// enroll this gateway's key — its records would be refused at sealing.
+    /// enroll this gateway's key, whose records would be refused at sealing.
     pub fn verify_enrolled(&self) -> Result<()> {
         if let (Some(trust), Some(id)) = (&self.deployment, self.own_key_id()) {
             trust.require_enrolled(&id)?;
@@ -451,8 +451,8 @@ impl GatewayKeys {
 /// left open), and it is recorded in-chain (`ConfigKind::DeploymentBundle`)
 /// so every pack self-documents which origin keys the gateway trusted.
 pub struct DeploymentTrust {
-    /// Active origin keys by id — the resume trust set and, in-chain, the
-    /// answer to "who could have written this?".
+    /// Active origin keys by id, which are the resume trust set and, in-chain,
+    /// the answer to "who could have written this?".
     pub active: BTreeMap<String, VerifyingKey>,
     pub version: String,
     /// Hash of the exact bytes on disk, recorded in-chain so the pack names
@@ -463,7 +463,7 @@ pub struct DeploymentTrust {
 
 impl DeploymentTrust {
     /// Loads and verifies the bundle under the ops key it names, resolved
-    /// from the gateway's trusted keys — the same root that verifies the
+    /// from the gateway's trusted keys, the same root that verifies the
     /// policy and identity bundles.
     pub fn load(path: &Path, trusted: &[PublicKeyEntry]) -> Result<Self> {
         let raw = std::fs::read_to_string(path)
@@ -499,9 +499,9 @@ impl DeploymentTrust {
         })
     }
 
-    /// Confirms this gateway's own key is enrolled — a gateway signing with a
-    /// key the deployment does not trust would write records the ledger
-    /// refuses, and it should learn that at startup, not at the first seal.
+    /// Confirms this gateway's own key is enrolled, since a gateway signing
+    /// with a key the deployment does not trust would write records the ledger
+    /// refuses, and it should learn that at startup, before the first seal.
     pub fn require_enrolled(&self, own_key_id: &str) -> Result<()> {
         if !self.active.contains_key(own_key_id) {
             bail!(
@@ -555,8 +555,8 @@ mod tests {
     ///     source scripts/pkcs11-test-env.sh
     ///     cargo test -p obsign-proxy
     ///
-    /// Without `OBSIGN_TEST_PKCS11_MODULE` it passes vacuously and says so —
-    /// an unprovisioned machine must not fail the suite.
+    /// Without `OBSIGN_TEST_PKCS11_MODULE` it passes vacuously and says so.
+    /// An unprovisioned machine must not fail the suite.
     #[test]
     fn an_hsm_identity_key_certifies_a_memory_session_key() {
         let Ok(module) = std::env::var("OBSIGN_TEST_PKCS11_MODULE") else {

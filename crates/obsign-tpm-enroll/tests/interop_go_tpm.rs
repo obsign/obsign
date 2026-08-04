@@ -3,7 +3,7 @@
 //! exercised in production against real TPM hardware fleets.
 //!
 //! swtpm proves our bytes satisfy *one* TPM; it cannot prove our reading of
-//! the TCG format is the consensus reading — parser and encoder were written
+//! the TCG format is the consensus reading. Parser and encoder were written
 //! by the same hands and could agree on a shared mistake. This test closes
 //! that gap in both directions:
 //!
@@ -16,7 +16,7 @@
 //!
 //! What this still does not prove: behavior of real silicon (provisioned
 //! hierarchy auths, EK certificates, vendor quirks). That pass needs a
-//! machine with `/dev/tpmrm0` — see `docs/real-tpm-interop.md`.
+//! machine with `/dev/tpmrm0` (see `docs/real-tpm-interop.md`).
 //!
 //! Gated on `swtpm` and `go` on PATH, the SoftHSM pattern: skip loudly,
 //! never fail an unprovisioned machine. The first run downloads go-tpm into

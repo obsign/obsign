@@ -1,13 +1,11 @@
 //! Signed policy bundles and Cedar evaluation.
 //!
-//! Two principles carry everything:
-//!
-//! * **rules come from git, signed** — the control plane compiles a
-//!   repository into a signed bundle, the gateway verifies it before loading.
-//!   A policy file dropped on disk changes nothing: without a valid signature
-//!   it is rejected;
-//! * **the catalogue is authoritative** — a tool the bundle does not describe
-//!   is refused, even if the MCP server advertises it.
+//! Two principles carry everything. Rules come from git, signed: the control
+//! plane compiles a repository into a signed bundle, and the gateway verifies
+//! it before loading. A policy file dropped on disk changes nothing, since
+//! without a valid signature it is rejected. The catalogue is authoritative
+//! as well, so a tool the bundle does not describe is refused, even if the
+//! MCP server advertises it.
 
 pub mod bundle;
 pub mod engine;

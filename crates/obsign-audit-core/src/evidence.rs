@@ -35,15 +35,15 @@ pub struct Evidence {
     pub keys: Vec<PublicKeyEntry>,
     /// RFC 3161 timestamp tokens over checkpoint hashes. Optional (`default`):
     /// packs produced before anchoring existed stay readable, and an absent
-    /// field is an absent proof, not a format break.
+    /// field is simply an absent proof.
     #[serde(default)]
     pub anchors: Vec<Anchor>,
     /// The ops-signed deployment bundle whose origin keys were trusted when
     /// this pack was sealed. Optional and `default`, the `anchors` precedent:
     /// packs from before the deployment bundle stay readable. Embedding it
-    /// makes the pack self-describing — the auditor verifies the whole origin
-    /// chain of trust (ops key → bundle → origin keys → records) with nothing
-    /// but the ops key obtained out of band.
+    /// makes the pack self-describing. The auditor verifies the whole origin
+    /// chain of trust (ops key to bundle to origin keys to records) with
+    /// nothing but the ops key obtained out of band.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployment: Option<SignedDeploymentBundle>,
 }
@@ -98,9 +98,9 @@ pub struct Report {
     /// Records whose origin signature verified against a trusted origin key.
     #[serde(default)]
     pub records_origin_ok: usize,
-    /// Records carrying a payload type this build has no schema for. Reported
-    /// rather than skipped: a verifier that quietly ignored what it could not
-    /// read would answer "intact" about a log it had only partly seen.
+    /// Records carrying a payload type this build has no schema for. Always
+    /// reported: a verifier that quietly ignored what it could not read would
+    /// answer "intact" about a log it had only partly seen.
     #[serde(default)]
     pub records_unknown: usize,
     pub first_seq: Option<u64>,
@@ -120,13 +120,13 @@ pub struct Report {
 pub struct VerifyOptions {
     /// The deployment mandates origin authentication: a record with no
     /// verifiable origin signature becomes an error instead of a warning.
-    /// This is what defeats signature stripping — an attacker who removes
+    /// This is what defeats signature stripping. An attacker who removes
     /// `origin_sig` fields produces a pack that merely *lacks* proof, and
     /// only the caller knows whether lacking it is acceptable.
     pub require_origin: bool,
     /// The deployment mandates remote attestation: an enrolled identity key
     /// with no attestation becomes an error instead of a warning. The
-    /// signature-stripping argument, one rung up — an attacker who removes
+    /// signature-stripping argument, one rung up: an attacker who removes
     /// attestations produces a bundle that merely *lacks* the boot/binary
     /// proof.
     pub require_attestation: bool,
@@ -701,7 +701,7 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
 /// authorizes is then keyed by [`key_id_for`], the id its records name. A
 /// certificate whose identity key is unknown is unverified (a warning, an
 /// error under `require_origin`), the self-referential logic; one whose
-/// signature is *wrong* is invalid (always an error) — only tampering
+/// signature is *wrong* is invalid (always an error), because only tampering
 /// produces that.
 ///
 /// The validity window (`not_before`/`not_after`) is carried but not enforced
@@ -758,10 +758,9 @@ fn resolve_session_certs(
 ///
 /// The bundle names the ops key that signed it; we resolve that key id from
 /// the trusted set. A bundle we cannot anchor to a supplied key is a warning,
-/// not an error — indistinguishable from the self-referential case the pack
-/// already warns about (`keys_not_anchored`); a bundle whose signature is
-/// *wrong*, or whose keys are role-confused, is an error, because only
-/// tampering produces those.
+/// indistinguishable from the self-referential case the pack already warns
+/// about (`keys_not_anchored`); a bundle whose signature is *wrong*, or whose
+/// keys are role-confused, is an error, because only tampering produces those.
 fn resolve_deployment_bundle(
     sdb: &SignedDeploymentBundle,
     key_source: &[PublicKeyEntry],
@@ -830,9 +829,9 @@ fn resolve_deployment_bundle(
 ///
 /// The out-of-band caveat is stated whenever anything attests, the exact
 /// shape of `anchor_not_validated`: this tool proves the identity key is
-/// bound to a TPM reporting the enrolled measurements, not that the TPM is
-/// genuine silicon — that is the EK-certificate check, which needs a vendor
-/// PKI an air-gapped verifier does not carry.
+/// bound to a TPM reporting the enrolled measurements. Whether that TPM is
+/// genuine silicon is the EK-certificate check, which needs a vendor PKI an
+/// air-gapped verifier does not carry.
 fn resolve_attestations(
     bundle: &crate::deployment::DeploymentBundle,
     opts: &VerifyOptions,
@@ -890,7 +889,7 @@ pub fn genesis() -> Hash {
 #[cfg(test)]
 mod tests {
     //! Anchor verification lives here rather than in `tests/tamper.rs`
-    //! because the DER synthesizer is `#[cfg(test)]` — a helper able to forge
+    //! because the DER synthesizer is `#[cfg(test)]`. A helper able to forge
     //! TSA responses must never be reachable from shipped code.
 
     use super::*;

@@ -106,7 +106,7 @@ pub fn digest(domain: u8, body: &[u8]) -> Hash {
 /// Reserved for hashing distributed files as-is (release artifacts, evidence
 /// packs) inside signed manifests. No prefix, deliberately: the recipient must
 /// be able to check the file they received against the manifest with nothing
-/// but `sha256sum`. There is no type-confusion surface here — these digests
+/// but `sha256sum`. There is no type-confusion surface here. These digests
 /// only ever appear length-prefixed inside a canonical encoding that names
 /// their role. Everything hashed *within* the proof system keeps its domain.
 pub fn sha256(body: &[u8]) -> Hash {

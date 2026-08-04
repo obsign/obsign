@@ -4,7 +4,7 @@
 //!
 //! In production this is the control plane's job: it reads a git repository,
 //! compiles, signs with a KMS key, and publishes. The version carries the
-//! commit sha — that is what makes a decision replayable months later.
+//! commit sha, which is what makes a decision replayable months later.
 
 use obsign_audit_core::checkpoint::PublicKeyEntry;
 use ed25519_dalek::SigningKey;

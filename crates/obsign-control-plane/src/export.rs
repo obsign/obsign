@@ -5,7 +5,7 @@
 //! every agent session is its own chain, and "what did your agents do in Q3"
 //! is dozens of packs. This module walks every chain the WAL holds, exports
 //! and verifies each pack, and binds the set together in a **signed export
-//! manifest** — so the dossier itself cannot lose a pack in transit without
+//! manifest**, so the dossier itself cannot lose a pack in transit without
 //! the loss being visible.
 //!
 //! Pack hashes are plain SHA-256 of the files as written: the recipient

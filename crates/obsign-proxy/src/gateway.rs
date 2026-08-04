@@ -1,6 +1,6 @@
 //! The gateway's transport-independent half.
 //!
-//! Both transports — stdio and Streamable HTTP — funnel every message through
+//! Both transports (stdio and Streamable HTTP) funnel every message through
 //! the two functions here. This is deliberate: arbitration and audit must not
 //! depend on how the bytes travelled. A call refused and recorded over stdio
 //! must be refused and recorded identically over HTTP, or the log's meaning
@@ -44,10 +44,9 @@ pub(crate) enum Forward {
 ///
 /// Several shapes because refusals answer differently: a tool failure is an
 /// `isError` *result* by MCP convention, while `resources/*` and `prompts/*`
-/// fail with a JSON-RPC *error* — an `isError` result there would be
-/// mistaken for resource content — and a method the gateway does not know
-/// fails with the standard "method not found" code, which every client
-/// already handles.
+/// fail with a JSON-RPC *error* (an `isError` result there would be mistaken
+/// for resource content), and a method the gateway does not know fails with
+/// the standard "method not found" code, which every client already handles.
 enum Act {
     Tool {
         tool: String,
@@ -59,7 +58,7 @@ enum Act {
         target: String,
     },
     /// A method neither arbitrated nor on the machinery allowlist: a vendor
-    /// extension, a future protocol revision, a typo. Never forwarded —
+    /// extension, a future protocol revision, a typo. Never forwarded;
     /// recorded, then refused. No policy can permit it: permitting would
     /// require knowing what it does, and nobody here does.
     OutOfScope {
@@ -80,18 +79,19 @@ impl Act {
 
 /// Protocol machinery forwarded without arbitration: discovery (filtered on
 /// the response path), lifecycle, liveness, log level. An explicit
-/// allowlist — the method space is default-deny. Default-forward would mean
-/// one server update, or one agent speaking a vendor dialect, opens a data
-/// channel no policy ever saw and no record ever named.
+/// allowlist, since the method space is default-deny. Default-forward would
+/// mean one server update, or one agent speaking a vendor dialect, opens a
+/// data channel no policy ever saw and no record ever named.
 ///
 /// Conscious exemption: what this allowlist relays is neither arbitrated nor
-/// recorded, and two of these notifications carry free text —
+/// recorded, and two of these notifications carry free text,
 /// `notifications/cancelled` (`reason`) and `notifications/progress`
 /// (`message`). An agent can push text to a complicit server outside the
-/// log — the narrow residual documented in the README. The notification
-/// that *could* enumerate the hidden catalogue, `notifications/message`, is
-/// no longer exempt: it is arbitrated under `Capability::Notify` (see
-/// `server_notification` and `arbitrate_notification`).
+/// log. That is the narrow residual documented in the README. The
+/// notification that *could* enumerate the hidden catalogue,
+/// `notifications/message`, is no longer exempt: it is arbitrated under
+/// `Capability::Notify` (see `server_notification` and
+/// `arbitrate_notification`).
 fn machinery(method: &str) -> bool {
     matches!(
         method,
@@ -109,13 +109,13 @@ fn machinery(method: &str) -> bool {
     )
 }
 
-/// True when `handle_from_agent` arbitrates this method — and therefore
+/// True when `handle_from_agent` arbitrates this method and therefore
 /// presents the bearer itself. The HTTP transport consults this to avoid
 /// presenting the same token twice.
 ///
 /// The complement of `machinery`: whatever is not machinery is arbitrated,
-/// including methods the gateway has never heard of. `None` — a response,
-/// not a request — is not arbitrated: the act it answers already was.
+/// including methods the gateway has never heard of. `None` marks a
+/// response, which is not arbitrated: the act it answers already was.
 pub(crate) fn arbitrated(method: Option<&str>) -> bool {
     match method {
         None => false,
@@ -128,7 +128,7 @@ pub(crate) fn arbitrated(method: Option<&str>) -> bool {
 /// `args` is the call's `arguments` object for a tool call, `Null` for a
 /// capability access (the target already travels in `tool`). The engine
 /// reads only the fields the tool's `policy_args` declare; the values stay
-/// in memory for the decision — the log keeps `args_hash`.
+/// in memory for the decision, and the log keeps `args_hash`.
 fn request(
     deleg: &obsign_identity::Delegation,
     ctx: &Ctx,
@@ -152,11 +152,11 @@ fn request(
     }
 }
 
-/// The record for an act whose target *is* the wrapped server rather than an
-/// object it holds: a server-initiated channel, or an unsolicited message.
+/// The record for an act whose target *is* the wrapped server itself: a
+/// server-initiated channel, or an unsolicited message.
 ///
 /// Stated once because "the target is the server itself" is a single
-/// decision, and MCP keeps adding server-initiated methods — the next one
+/// decision, and MCP keeps adding server-initiated methods; the next one
 /// should inherit that decision instead of re-copying it.
 fn self_access(ctx: &Ctx, method: String, params: &[u8]) -> Payload {
     Payload::McpAccess(McpAccess {
@@ -580,12 +580,12 @@ pub(crate) fn handle_from_agent(
 /// The refusal the agent sees, shaped per act.
 ///
 /// MCP convention: a tool failure is signalled by an `isError` result, not a
-/// JSON-RPC error — the agent receives it as a tool return and can fall back
+/// JSON-RPC error. The agent receives it as a tool return and can fall back
 /// to something else, instead of treating the session as broken. Resource
 /// and prompt requests have no such envelope: there a refusal is a JSON-RPC
 /// error (server-defined code), since a fabricated `contents` would be
 /// indistinguishable from the resource itself. An out-of-scope method
-/// answers -32601 — "method not found" — which is the truth as the agent
+/// answers -32601 ("method not found"), which is the truth as the agent
 /// should understand it: through this gateway, the method does not exist.
 fn refusal_reply(act: &Act, id: &Value, text: &str) -> String {
     match act {
@@ -617,21 +617,21 @@ pub(crate) enum Downstream {
     Forward(Value),
     /// Answer the *server* in the gateway's place; nothing reaches the agent.
     Reply(Value),
-    /// Neither deliverable nor answerable — a refused notification. The
+    /// A refused notification, neither deliverable nor answerable. The
     /// record is already written; the message itself goes nowhere.
     Drop,
 }
 
 /// Server-initiated notifications the gateway relays. The same default-deny
 /// posture as the agent-side method space: a notification the protocol does
-/// not define is dropped and recorded, not forwarded into the agent's
-/// context.
+/// not define is recorded and dropped before it reaches the agent's context.
 ///
-/// `notifications/message` is *not* here on purpose: it carries arbitrary
-/// `data` at any log level straight into the agent's context — the one
-/// server notification that can spell out the resource and prompt names the
-/// listing filter hides — so it is arbitrated per server (`Capability::Notify`,
-/// default deny) and recorded, handled in [`handle_server_initiated`].
+/// `notifications/message` is *not* here on purpose. It carries arbitrary
+/// `data` at any log level straight into the agent's context, and it is the
+/// one server notification that can spell out the resource and prompt names
+/// the listing filter hides. It is therefore arbitrated per server
+/// (`Capability::Notify`, default deny) and recorded, handled in
+/// [`handle_server_initiated`].
 ///
 /// What remains here is genuine liveness/UX machinery. `notifications/progress`
 /// (a `message`) and `notifications/cancelled` (a `reason`) still carry free
@@ -780,18 +780,18 @@ pub(crate) fn handle_from_server(
 
 /// Arbitrates the channels the *server* opens: `sampling/createMessage`
 /// borrows the agent's model, `elicitation/create` puts a question to the
-/// human — both move data across the boundary in the direction no policy
+/// human, and both move data across the boundary in the direction no policy
 /// used to see. They are held to their own capability actions, granted per
 /// server, under Cedar's default deny: absent an explicit
 /// `permit (…, action == Action::"sampling", …)`, the request is refused in
 /// the agent's place and the refusal recorded. When permitted, the request
 /// is recorded before it is forwarded and its effect closes on the agent's
-/// response — the same call/decision/effect triple as an agent act, because
-/// to the investigation it is one.
+/// response. That is the same call/decision/effect triple as an agent act,
+/// because to the investigation it is one.
 ///
 /// The rest of the server-initiated surface: `ping` and `roots/list` pass
 /// (liveness, and a question the agent client answers under its own
-/// control), defined notifications pass, and anything else is refused —
+/// control), defined notifications pass, and anything else is refused under
 /// the same default-deny as the agent-side method space.
 fn handle_server_initiated(
     msg: Value,
@@ -978,8 +978,8 @@ fn handle_server_initiated(
 
 /// Arbitrates a server `notifications/message` under `Capability::Notify`.
 ///
-/// A notification carries no id and no response: the call/decision/effect
-/// triple closes in one pass — `Ok` when the message is delivered, `Blocked`
+/// A notification carries no id and no response, so the call/decision/effect
+/// triple closes in one pass: `Ok` when the message is delivered, `Blocked`
 /// when policy refuses it or the log cannot be written. Refused or
 /// unrecordable, the message goes nowhere (`Drop`); a notification cannot be
 /// answered, so the record is its only trace.

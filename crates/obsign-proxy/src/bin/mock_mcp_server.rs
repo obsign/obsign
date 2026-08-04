@@ -1,7 +1,7 @@
 //! Minimal MCP server for the demo.
 //!
 //! Speaks JSON-RPC 2.0 over stdio and exposes four tools, one of them
-//! destructive. It executes whatever it is asked, with no checks at all —
+//! destructive. It executes whatever it is asked, with no checks at all,
 //! which is precisely the point: the server does not defend itself, the
 //! gateway protects it.
 

@@ -9,7 +9,7 @@ on the wire is an identity anyone on the path can replay. **SSO tokens must
 never cross a network in clear.**
 
 The pattern: the gateway listens where TLS ends. Same host as the TLS
-terminator, bound to loopback — or the same private container network, with
+terminator and bound to loopback, or the same private container network with
 no published port. Any reverse proxy that honours the contract below works;
 the nginx and Caddy configurations in this page were run against the gateway
 (nginx 1.27, Caddy 2.11) and passed the full MCP flow: session open, filtered
@@ -18,27 +18,27 @@ the nginx and Caddy configurations in this page were run against the gateway
 ## The contract
 
 1. **Never expose the plain port.** `--http 127.0.0.1:8080` on a shared
-   host; in compose, no `ports:` entry on the gateway — the proxy joins its
+   host; in compose, no `ports:` entry on the gateway. The proxy joins its
    network and is the only service published.
 2. **Pass `Authorization` and `Mcp-Session-Id` through untouched.** nginx
    and Caddy both do by default.
 3. **Upstream requests carry `Content-Length`.** The gateway's parser is
    strict: chunked transfer encoding is refused (411). nginx's default
    request buffering absorbs a chunked client request and re-sends it with
-   `Content-Length` — keep `proxy_request_buffering` at its default (`on`).
+   `Content-Length`. Keep `proxy_request_buffering` at its default (`on`).
 4. **Do not buffer responses.** The GET stream is server-sent events; a
    proxy that spools the response delivers notifications only when the
    session dies. `proxy_buffering off` (nginx), `flush_interval -1` (Caddy).
 5. **Read timeout longer than the slowest tool.** A POSTed `tools/call`
-   produces no bytes until the tool answers — the gateway sets no timeout of
+   produces no bytes until the tool answers; the gateway sets no timeout of
    its own, so the proxy's is the one that fires. The SSE stream is safe at
    any setting above 15 s (the gateway writes a keep-alive comment at that
    interval); size the timeout for the tools.
 6. **The `Origin` allowlist names the public origin.** The proxy passes
    `Origin` through and the gateway's DNS-rebinding check compares it
    verbatim, so browser-based clients need
-   `--allowed-origin https://mcp.example.com` — the TLS origin, not the
-   loopback one. Non-browser MCP clients send no `Origin` and pass.
+   `--allowed-origin https://mcp.example.com` (the TLS origin, not the
+   loopback one). Non-browser MCP clients send no `Origin` and pass.
 
 The gateway caps request bodies at 4 MiB; matching the cap at the proxy
 (`client_max_body_size 4m`) refuses oversized bodies before they cross.
@@ -81,7 +81,7 @@ and everything else has no business reaching it.
 ## Caddy
 
 Caddy obtains and renews the certificate itself (ACME) and needs to be told
-almost nothing else — its defaults already stream SSE-shaped responses and
+almost nothing else; its defaults already stream SSE-shaped responses and
 set no read timeout:
 
 ```caddy
@@ -98,7 +98,7 @@ a certificate from Caddy's local CA.
 
 ## In compose
 
-The gateway loses its `ports:` entry entirely — the proxy is the only
+The gateway loses its `ports:` entry entirely. The proxy is the only
 service that listens on the host:
 
 ```yaml
@@ -133,7 +133,7 @@ who can present a token, it does not replace one.
 TLS protects the token and the traffic in transit. It is not part of the
 evidence story: what makes the log provable is the signature chain in the
 WAL and the ledger's seal, neither of which involves the transport. A pack
-sealed from a session that ran over plain HTTP verifies identically — the
+sealed from a session that ran over plain HTTP verifies identically: the
 channel protects the identity from leaking, it does not make the log true.
 
 ## Checking a deployment

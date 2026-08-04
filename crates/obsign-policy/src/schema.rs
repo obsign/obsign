@@ -4,8 +4,8 @@
 //! context attributes were built by hand in `engine.rs` and described in
 //! prose in `docs/policies-cedar.md`, and the engine evaluated with no
 //! schema at all. A rule reading `principal.permissions` or
-//! `context.enviroment` therefore parsed fine, compiled fine, shipped fine
-//! — and then raised an evaluation error on the first live call, where it
+//! `context.enviroment` therefore parsed fine, compiled fine, shipped fine,
+//! and then raised an evaluation error on the first live call, where it
 //! falls to the fail mode. That is the worst place to discover a typo.
 //!
 //! This module writes that model down, derived from the same catalogue the
@@ -28,7 +28,7 @@ use crate::bundle::{ArgKind, ToolDef};
 use crate::engine::WRAPPED_SERVER;
 use crate::Error;
 
-/// Conventional file name, in `policies/` next to the rules it types — where
+/// Conventional file name, in `policies/` next to the rules it types, where
 /// the Cedar VS Code extension auto-detects it.
 pub const SCHEMA_FILE: &str = "obsign.cedarschema";
 
@@ -36,7 +36,7 @@ pub const SCHEMA_FILE: &str = "obsign.cedarschema";
 ///
 /// Mirrors `Engine::context_pairs`. The unit test
 /// `engine::tests::the_schema_and_the_engine_agree_on_the_context` asserts
-/// the two carry the same attribute *names*, in both directions — a schema
+/// the two carry the same attribute *names*, in both directions. A schema
 /// that drifts from the engine is worse than no schema, because it would
 /// reject rules that work and accept rules that do not, and the second kind
 /// falls to the fail mode on a live gateway.
@@ -190,11 +190,11 @@ pub fn schema_source(tools: &[ToolDef]) -> Result<String, Error> {
 /// Every attribute is **required**, never optional, even though a given call
 /// only ever carries the arguments its own tool declares. Optional attributes
 /// would force every rule to write `context.args has channel &&` before
-/// reading it — noise, and false comfort: extraction already guarantees that
-/// a declared argument is present or the call was refused (`extract_args` is
-/// total by construction). What the union buys is the typo check, and rules
-/// are scoped to a resource, so a rule reading another tool's argument never
-/// evaluates on that tool's calls.
+/// reading it, which is noise and false comfort: extraction already
+/// guarantees that a declared argument is present or the call was refused
+/// (`extract_args` is total by construction). What the union buys is the
+/// typo check, and rules are scoped to a resource, so a rule reading another
+/// tool's argument never evaluates on that tool's calls.
 fn args_record(args: &BTreeMap<&str, (ArgKind, &str)>) -> String {
     if args.is_empty() {
         // No tool declares arguments: reading `context.args.<anything>` is a
@@ -222,9 +222,9 @@ fn args_record(args: &BTreeMap<&str, (ArgKind, &str)>) -> String {
 
 /// The union of every `policy_args` declaration, keyed by name.
 ///
-/// `context.args` is one namespace across the whole catalogue — Cedar types
+/// `context.args` is one namespace across the whole catalogue (Cedar types
 /// the context per *action*, and every tool call is the same `tool_call`
-/// action — so two tools cannot give one name two types. Caught here, in a
+/// action), so two tools cannot give one name two types. Caught here, in a
 /// diff, rather than as a type error pointing at a rule that is not wrong.
 fn declared_args(tools: &[ToolDef]) -> Result<BTreeMap<&str, (ArgKind, &str)>, Error> {
     let mut sorted: Vec<&ToolDef> = tools.iter().collect();
@@ -259,7 +259,7 @@ fn declared_args(tools: &[ToolDef]) -> Result<BTreeMap<&str, (ArgKind, &str)>, E
 /// Text safe to drop into a `//` comment.
 ///
 /// A tool name reaches here straight from `tools.json`, where the only
-/// checks are non-empty and unique — and the names in that file are copied
+/// checks are non-empty and unique, and the names in that file are copied
 /// from what a remote MCP server advertises. A newline in one would end the
 /// comment and leave its tail as a bare token inside a record type, so the
 /// generated schema would not parse and `compile` would blame Obsign for the

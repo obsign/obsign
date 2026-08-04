@@ -2,7 +2,7 @@
 //! gateway host after it was sealed. Every test here either performs that
 //! attack (or a cousin: truncation, store edition, key substitution) and
 //! asserts detection, or exercises the legitimate path and asserts it still
-//! works — a control that only ever says "blocked" proves nothing.
+//! works. A control that only ever says "blocked" proves nothing.
 
 use obsign_audit_core::evidence;
 use obsign_audit_core::record::{Effect, EffectStatus, Payload};

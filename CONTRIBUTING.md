@@ -1,7 +1,7 @@
 # Contributing
 
-Contributions are welcome. Two rules govern every change, and they are not
-style preferences — the product is a proof artifact, and its guarantees live
+Contributions are welcome. Two rules govern every change, and neither is a
+style preference. The product is a proof artifact, and its guarantees live
 in the invariants:
 
 1. **Read the invariants first** (see the README): frozen record format,
@@ -15,7 +15,7 @@ in the invariants:
 
 The project is licensed under [Apache-2.0](LICENSE). Inbound = outbound: by
 contributing, you license your contribution under Apache-2.0, nothing more is
-asked. There is no CLA — no copyright assignment, no relicensing grant.
+asked. There is no CLA, no copyright assignment, no relicensing grant.
 
 Instead, the project uses the [Developer Certificate of
 Origin](https://developercertificate.org/) (DCO 1.1): every commit must be

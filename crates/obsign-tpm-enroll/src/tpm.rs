@@ -1,9 +1,9 @@
 //! The TPM 2.0 command subset enrollment needs, marshalled by hand.
 //!
 //! Every command here is TCG-standard (Part 3 of the TPM 2.0 spec); the
-//! transport is a raw byte stream — swtpm's TCP command socket, or a real
-//! TPM's character device (`/dev/tpmrm0`) on Linux. The two differ only in
-//! framing: TCP delivers the response as a stream (header first, then the
+//! transport is a raw byte stream, either swtpm's TCP command socket or a
+//! real TPM's character device (`/dev/tpmrm0`) on Linux. The two differ only
+//! in framing: TCP delivers the response as a stream (header first, then the
 //! body it announces), a character device answers one `read` with the whole
 //! response.
 //! Authorization is the password session with an empty password throughout:
@@ -37,7 +37,7 @@ pub const TPM_RH_OWNER: u32 = 0x4000_0001;
 pub const TPM_RH_ENDORSEMENT: u32 = 0x4000_000B;
 const TPM_RS_PW: u32 = 0x4000_0009;
 
-/// `TPM_RC_INITIALIZE`: Startup after the TPM already started — the one
+/// `TPM_RC_INITIALIZE`: Startup after the TPM already started, the one
 /// response code treated as success (a re-run against a live TPM).
 const RC_INITIALIZE: u32 = 0x100;
 
@@ -57,8 +57,8 @@ pub const ECC_CURVE_25519: u16 = 0x0040;
 
 /// Object attributes: fixedTPM | fixedParent | sensitiveDataOrigin |
 /// userWithAuth | sign, plus restricted for the AK. The identity key is
-/// deliberately *not* restricted — it must sign session certificates, which
-/// are external bytes a restricted key refuses.
+/// deliberately *not* restricted, because it must sign session certificates,
+/// which are external bytes a restricted key refuses.
 const ATTRS_AK: u32 = 0x0005_0072;
 const ATTRS_IDENTITY: u32 = 0x0004_0072;
 
@@ -85,7 +85,7 @@ impl KeyAlg {
 /// A key the TPM created and holds loaded.
 pub struct CreatedKey {
     pub handle: u32,
-    /// The marshalled `TPMT_PUBLIC` the TPM reported — the exact bytes it
+    /// The marshalled `TPMT_PUBLIC` the TPM reported, the exact bytes it
     /// hashes into the key's Name.
     pub public: Vec<u8>,
 }
@@ -180,10 +180,10 @@ impl Tpm {
     /// Reads a complete `u16`-keyed capability list. Real TPMs may answer in
     /// pages (moreData set); libtpms answers in one. The next page starts
     /// after the last property seen. A response this loop cannot prove
-    /// complete — the page budget exhausted with moreData still set, an
-    /// empty page claiming more, a count above what was asked for — is an
-    /// error, never a silently shortened list: callers pick key algorithms
-    /// off this answer.
+    /// complete is an error, never a silently shortened list: the page budget
+    /// exhausted with moreData still set, an empty page claiming more, or a
+    /// count above what was asked for. Callers pick key algorithms off this
+    /// answer.
     fn capability_u16_list(
         &mut self,
         name: &'static str,
@@ -460,7 +460,7 @@ pub fn ak_template(alg: KeyAlg) -> Vec<u8> {
 }
 
 /// The `TPMT_PUBLIC` template for the identity key: ordinary ECC signing
-/// key — non-restricted, it signs session certificates (external bytes).
+/// key, non-restricted, so it signs session certificates (external bytes).
 pub fn identity_template(alg: KeyAlg) -> Vec<u8> {
     ecc_signing_template(ATTRS_IDENTITY, alg)
 }
@@ -538,10 +538,10 @@ pub fn public_key_bytes(tpmt_public: &[u8]) -> Result<(KeyAlg, Vec<u8>), Error> 
     }
 }
 
-/// Parses `parameterSize, TPM2B_ATTEST, TPMT_SIGNATURE` — the shared
-/// response shape of Certify and Quote — into attest bytes and a 64-byte
-/// signature (`r || s` zero-padded for ECDSA; EdDSA rides the same ECC
-/// signature structure).
+/// Parses `parameterSize, TPM2B_ATTEST, TPMT_SIGNATURE` (the shared response
+/// shape of Certify and Quote) into attest bytes and a 64-byte signature
+/// (`r || s` zero-padded for ECDSA; EdDSA rides the same ECC signature
+/// structure).
 fn parse_attest_and_signature(name: &'static str, body: &[u8]) -> Result<SignedAttest, Error> {
     let mut r = Reader::new(name, body);
     r.u32()?; // parameterSize
@@ -574,8 +574,8 @@ fn parse_attest_and_signature(name: &'static str, body: &[u8]) -> Result<SignedA
     Ok(SignedAttest { attest, sig })
 }
 
-/// Bounds-checked reader — the obsign-audit-core `Reader` discipline, with the
-/// command name carried so a malformed response says which answer broke.
+/// Bounds-checked reader in the obsign-audit-core `Reader` discipline, with
+/// the command name carried so a malformed response says which answer broke.
 struct Reader<'a> {
     name: &'static str,
     b: &'a [u8],

@@ -26,7 +26,7 @@ pub trait Sealer {
 ///
 /// The self-check is not paranoia: with a remote signer, a misconfigured key
 /// slot answers with a *valid signature from the wrong key*. That must fail
-/// here, at sealing time — not twenty-four months later in front of an
+/// here, at sealing time, not twenty-four months later in front of an
 /// auditor.
 pub fn sign_checkpoint(cp: Checkpoint, sealer: &dyn Sealer) -> Result<SignedCheckpoint, Error> {
     let sig = sealer.sign(&cp.signing_bytes())?;

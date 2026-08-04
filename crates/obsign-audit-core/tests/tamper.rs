@@ -310,7 +310,7 @@ fn payload_types_are_not_confusable() {
 /// The record format is frozen: these hashes must NEVER change.
 ///
 /// Any change to the canonical encoding, to field order or to a discriminant
-/// makes this test fail — which is the point. The day it breaks, the question
+/// makes this test fail, which is the point. The day it breaks, the question
 /// is not "how do I update the constants" but "which already-sealed logs have
 /// just been invalidated".
 ///

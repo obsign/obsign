@@ -6,7 +6,7 @@
 //!
 //! Two of the bugs these tests lock down were found by a manual demo, not by
 //! unit tests: a duplicated effect identifier when two calls are in flight,
-//! and auto-numbered — hence unstable — Cedar rule identifiers. Neither breaks
+//! and auto-numbered (hence unstable) Cedar rule identifiers. Neither breaks
 //! the integrity chain; both ruin the log's usefulness.
 
 use obsign_audit_core::evidence::{self, Evidence};
@@ -174,8 +174,8 @@ struct Fixture {
 /// Seals the WAL the gateway left behind and assembles the evidence pack.
 ///
 /// The gateway no longer holds a signing key: its output is the WAL, full
-/// stop. This helper is the ledger's job run in-process — same `seal_pass`,
-/// same `export` — so the tests exercise the exact division of trust a
+/// stop. This helper is the ledger's job run in-process (same `seal_pass`,
+/// same `export`), so the tests exercise the exact division of trust a
 /// deployment has.
 fn seal_and_export(dir: &Path, chain_id: &str) -> Evidence {
     let now = std::time::SystemTime::now()
@@ -245,7 +245,7 @@ fn run_with(
     run_bundle_with(name, bundle, ident, traffic, key_mode)
 }
 
-/// Same harness, caller-supplied bundle — for catalogues the standard
+/// Same harness with a caller-supplied bundle, for catalogues the standard
 /// fixture cannot express (argument declarations need `obsign-policy/2`).
 fn run_bundle_with(
     name: &str,

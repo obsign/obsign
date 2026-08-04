@@ -9,8 +9,8 @@ use crate::Error;
 
 /// Current format: the display-label paths join the signed bytes.
 pub const FORMAT: &str = "obsign-identity/3";
-/// First format. Still verifiable — a bundle published before the revision
-/// keeps its hash and its signature — but its signature does not cover
+/// First format. Still verifiable (a bundle published before the revision
+/// keeps its hash and its signature), but its signature does not cover
 /// machine markers, so only the default markers are accepted with it.
 pub const FORMAT_V1: &str = "obsign-identity/1";
 /// Machine markers signed, label paths not yet. Same rule as v1 for what its
@@ -38,7 +38,7 @@ pub struct IdentityBundle {
     /// Expected audience (`aud` claim).
     ///
     /// Known operational trap: Keycloak access tokens carry `aud: "account"`
-    /// by default. You must configure an audience mapper in the realm — never
+    /// by default. You must configure an audience mapper in the realm. Never
     /// relax the check on this side.
     pub audience: String,
     pub jwks: JwkSet,

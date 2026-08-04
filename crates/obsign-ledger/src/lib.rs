@@ -2,7 +2,7 @@
 //!
 //! The reason this crate exists: as long as sealing happens inside the
 //! gateway, the signing key and the log cohabit on the same host. Whoever
-//! compromises that host can rewrite the log *and* re-seal it — the
+//! compromises that host can rewrite the log *and* re-seal it. The
 //! checkpoints then certify the attacker's version of history, which defeats
 //! exactly what they are for.
 //!
@@ -11,7 +11,7 @@
 //! and seals with a key the gateway never sees. The division of trust:
 //!
 //! * the **gateway** guarantees durability (fsync before forwarding) and can
-//!   at worst fail to write — never rewrite sealed history unnoticed;
+//!   at worst fail to write, never rewrite sealed history unnoticed;
 //! * the **ledger** guarantees that what was sealed stays sealed: any
 //!   divergence between the WAL and sealed history is detected at the next
 //!   pass, before a single new seal is produced.
@@ -22,8 +22,8 @@
 //! material never enters this process's memory either.
 //!
 //! The ledger makes no network calls, like every other component. RFC 3161
-//! anchoring works by files — a request artifact carried to the TSA, a
-//! response artifact carried back — because the deployments this product
+//! anchoring works by files (a request artifact carried to the TSA, a
+//! response artifact carried back) because the deployments this product
 //! targets are air-gapped first.
 
 mod anchor;
@@ -60,7 +60,7 @@ pub enum Error {
     /// A record whose payload type this build has no schema for.
     ///
     /// Sealing it would bake a hash this build invented into a signed
-    /// checkpoint — and a checkpoint chains to the next, so it cannot be
+    /// checkpoint, and a checkpoint chains to the next, so it cannot be
     /// redone. Every verifier that *does* know the type would then recompute
     /// a different leaf and report `root_mismatch` on an honest log, forever.
     /// The ledger refuses instead, and the operator upgrades it.
@@ -72,8 +72,7 @@ pub enum Error {
     UnreadablePayload { seq: u64, kind: String },
 
     /// The WAL no longer reaches the last sealed record. Records that were
-    /// sealed have disappeared: that is not a state to seal over, it is an
-    /// incident to surface.
+    /// sealed have disappeared, and that is an incident to surface.
     #[error(
         "the log ends at seq {log_last:?} but sealed history reaches seq \
          {sealed_to}: sealed records have disappeared from the WAL"
@@ -84,8 +83,8 @@ pub enum Error {
     },
 
     /// The record at the sealed boundary no longer hashes to what was sealed.
-    /// The chain may be internally consistent — a rewriter recomputes every
-    /// hash — but it is no longer the history the checkpoints certify.
+    /// The chain may be internally consistent (a rewriter recomputes every
+    /// hash), but it is no longer the history the checkpoints certify.
     #[error(
         "the log diverges from sealed history at seq {seq}: the record no \
          longer matches the sealed head. The WAL was rewritten after sealing."
@@ -95,7 +94,8 @@ pub enum Error {
     /// A record past the sealed head that no trusted origin key vouches
     /// for. Raised *after* the authentic prefix (if any) was sealed: honest
     /// records keep their path to proof, the forgery keeps none, and the
-    /// error is the alarm — someone wrote to the WAL who is not the gateway.
+    /// error is the alarm that someone wrote to the WAL who is not the
+    /// gateway.
     #[error(
         "record seq {seq} is not authenticated by any trusted origin key \
          ({reason}). {}; nothing at or past seq {seq} was sealed — the WAL \
@@ -132,7 +132,7 @@ pub enum Error {
     /// Anything the HSM side refuses or garbles, vendor return code included.
     /// One variant, not a taxonomy: the operator's next step is the same
     /// (read the message, check the token), and `run` treats every sealer
-    /// construction failure as fatal anyway — retrying PINs against an HSM
+    /// construction failure as fatal anyway; retrying PINs against an HSM
     /// walks it toward lock-out.
     #[error("pkcs#11: {0}")]
     Pkcs11(String),

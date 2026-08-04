@@ -1,8 +1,8 @@
 //! End-to-end tests of the Streamable HTTP transport.
 //!
-//! Same philosophy as `e2e.rs` — run the real binary, speak the real
+//! Same philosophy as `e2e.rs` (run the real binary, speak the real
 //! protocol, check both what the client receives and what the audit log
-//! contains — but the client here is a raw TCP socket writing HTTP/1.1 by
+//! contains), but the client here is a raw TCP socket writing HTTP/1.1 by
 //! hand. Deliberate: the gateway's HTTP layer is hand-written, so the tests
 //! must not share its assumptions through a common client library.
 
@@ -134,7 +134,7 @@ impl Drop for Gateway {
 }
 
 /// Starts the gateway on an OS-assigned port and reads the port back from its
-/// stderr announcement — the only place it exists.
+/// stderr announcement, the only place it exists.
 fn start(name: &str, oidc: bool, extra: &[&str]) -> Gateway {
     let dir = std::env::temp_dir().join(format!("obsign-http-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -355,7 +355,8 @@ fn call(gw: &Gateway, sid: &str, extra: &[(&str, &str)], id: u64, tool: &str) ->
 ///
 /// The gateway holds no signing key; DELETE only guarantees the log is
 /// complete when it returns. This helper is the ledger's job run in-process
-/// over that finished chain — the exact division of trust a deployment has.
+/// over that finished chain. That is the exact division of trust a deployment
+/// has.
 fn evidence(gw: &Gateway, sid: &str) -> Evidence {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

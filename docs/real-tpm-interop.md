@@ -10,11 +10,11 @@ lines of evidence say our reading of the TCG format is the consensus one:
    a real TPM 2.0 *implementation*, verified offline, plus tamper cases.
 2. **go-tpm cross-validation** (`tests/interop_go_tpm.rs`): every structure
    we marshal decodes and re-encodes byte-identically under Google's
-   go-tpm — an independent implementation exercised against real hardware
-   fleets — and an enrollment marshalled entirely *by* go-tpm verifies
+   go-tpm (an independent implementation exercised against real hardware
+   fleets), and an enrollment marshalled entirely *by* go-tpm verifies
    under `obsign_audit_core::verify_attestation`. This rules out a shared private
    dialect between our encoder and our parser.
-3. **Real silicon** — this document. The one thing the first two cannot
+3. **Real silicon**: this document. The one thing the first two cannot
    prove: the behavior of an actual discrete/firmware TPM (provisioned
    hierarchy auth, EK certificates in NV, capability pagination, vendor
    quirks). Until this pass has been run on at least one real machine, do
@@ -47,7 +47,7 @@ sudo target/release/obsign-tpm-enroll \
 The binary self-verifies the attestation with `obsign-audit-core` before emitting
 anything: **exit 0 with JSON on stdout is the pass**. Keep the emitted
 `attestation.json` and the machine/TPM identification (`tpm2_getcap
-properties-fixed | grep -A2 MANUFACTURER`) as the interop record — the
+properties-fixed | grep -A2 MANUFACTURER`) as the interop record. That
 attestation also verifies on any other machine, which is the product claim.
 
 ## Preconditions and expected failure modes
@@ -55,7 +55,7 @@ attestation also verifies on any other machine, which is the product claim.
 | Symptom | Cause | Response |
 |---|---|---|
 | `connecting to the TPM at /dev/tpmrm0: Permission denied` | not in the `tss` group | `sudo`, or `usermod -aG tss $USER` |
-| `TPM2_CreatePrimary failed with TPM_RC 0x9a2` (auth fail) | endorsement/owner hierarchy has a password set (Windows dual-boot does this) | run on a machine whose hierarchies carry empty auth; `tpm2_clear` resets them but **wipes all TPM-resident keys — only on a disposable test machine** |
+| `TPM2_CreatePrimary failed with TPM_RC 0x9a2` (auth fail) | endorsement/owner hierarchy has a password set (Windows dual-boot does this) | run on a machine whose hierarchies carry empty auth; `tpm2_clear` resets them but **wipes all TPM-resident keys, so only on a disposable test machine** |
 | `TPM_RC 0x902` (object memory) | loaded-session/object slots full | reboot, or `tpm2_flushcontext -t` |
 | warning: `this TPM produced a ecdsa-p256 identity key` | expected — real TPMs implement no EdDSA, the enroller falls back to P-256 as designed | keep the attestation; the identity entry waits for P-256 origin-key support |
 | `TPM2_Startup failed with TPM_RC 0x100` | never — `TPM_RC_INITIALIZE` is treated as success (the kernel already started the TPM) | file a bug if seen |
@@ -72,10 +72,10 @@ vendor root as `attestation_not_rooted`, as designed.
 
 ## PCR note
 
-PCR 16 is the resettable debug PCR — right for an interop pass, wrong for
-production (a reset-and-replay is trivial). Production enrollment binds a
-launch-wrapper PCR; the interop pass only needs to prove the wire formats
-and the device transport against real silicon.
+PCR 16 is the resettable debug PCR, right for an interop pass and wrong
+for production, where a reset-and-replay is trivial. Production enrollment
+binds a launch-wrapper PCR; the interop pass only needs to prove the wire
+formats and the device transport against real silicon.
 
 ## Recording the result
 

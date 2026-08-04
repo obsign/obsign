@@ -34,7 +34,7 @@ struct CompileArgs {
     source: PathBuf,
 
     /// Version label when the source is not in git. Defaults to the short
-    /// commit sha of HEAD — in which case the working tree must match that
+    /// commit sha of HEAD, in which case the working tree must match that
     /// commit: compile refuses to stamp a sha onto uncommitted bytes.
     #[arg(long)]
     label: Option<String>,

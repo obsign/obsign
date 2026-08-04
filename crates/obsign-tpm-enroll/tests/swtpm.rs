@@ -1,14 +1,15 @@
-//! Integration with a real (software) TPM — the loop the attestation-v3
+//! Integration with a real (software) TPM, the loop the attestation-v3
 //! design said only real hardware could close: enrollment produces the AK,
 //! the certify and the quote from an actual TPM 2.0 implementation, and
 //! `obsign_audit_core::verify_attestation` accepts the output, byte for byte.
 //! Nothing here is swtpm-specific above the process management: the command
 //! stream is TCG-standard, which is the point.
 //!
-//! Gated on `swtpm` being on PATH (brew install swtpm / apt install swtpm) —
-//! the SoftHSM pattern: an unprovisioned machine must not fail the suite,
-//! but the skip has to be visible, not silent. The test provisions its own
-//! instance: temp state dir, ephemeral ports, shut down and removed after.
+//! Gated on `swtpm` being on PATH (brew install swtpm / apt install swtpm),
+//! following the SoftHSM pattern: an unprovisioned machine must not fail the
+//! suite, but the skip has to be visible, not silent. The test provisions
+//! its own instance: temp state dir, ephemeral ports, shut down and removed
+//! after.
 //!
 //! One #[test], sequential: the swtpm process and its TPM state are shared
 //! ground, and the tamper cases must run against the same real output they

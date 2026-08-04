@@ -12,7 +12,7 @@ pub struct Auth {
     source: Option<BundleSource>,
     token_path: Option<PathBuf>,
     /// Last token accepted via `present` (HTTP transport). Kept so that the
-    /// common case — the same token on every request — costs a string
+    /// common case (the same token on every request) costs a string
     /// comparison, not a signature verification.
     presented: Option<String>,
     current: Delegation,
@@ -133,7 +133,7 @@ impl Auth {
     /// Drains the reloads observed since the last call.
     ///
     /// The caller owns the audit chain; whatever is drained MUST be written
-    /// to it. Drained unconditionally — even when the act that triggered the
+    /// to it. Drained unconditionally, even when the act that triggered the
     /// reload ends up refused: a rejected rogue bundle deserves a record most
     /// of all.
     pub fn take_reloads(&mut self) -> Vec<ConfigReload> {
@@ -142,13 +142,12 @@ impl Auth {
 
     /// The delegation in force at this instant.
     ///
-    /// Expiry is re-evaluated **on every act**, not only when the session
-    /// opens: an agent session routinely outlives a token. Checking once at
-    /// startup amounts to granting unlimited authority from a 30-minute
-    /// token.
+    /// Expiry is re-evaluated **on every act**, since an agent session
+    /// routinely outlives a token. Checking once at startup amounts to
+    /// granting unlimited authority from a 30-minute token.
     ///
-    /// Returns `true` when the delegation has just been renewed — the caller
-    /// must then record it in the log.
+    /// Returns `true` when the delegation has just been renewed, and the
+    /// caller must then record it in the log.
     pub fn refresh(&mut self, now_ms: i64) -> Result<bool, AuthDenied> {
         if !self.current.is_expired(now_ms) {
             return Ok(false);
@@ -191,12 +190,11 @@ impl Auth {
     ///
     /// The HTTP counterpart of `refresh`: same contract, same per-act
     /// re-evaluation, but the fresh token arrives in the request instead of a
-    /// file. Returns `true` when the delegation changed — the caller must
+    /// file. Returns `true` when the delegation changed; the caller must
     /// then record it in the log.
     ///
     /// A rejected token does not touch the delegation in force: expiry keeps
-    /// doing its work, and the refusal reason names the token, not the
-    /// session.
+    /// doing its work, and the refusal reason names the token itself.
     pub fn present(&mut self, token: &str, now_ms: i64) -> Result<bool, AuthDenied> {
         if self.presented.as_deref() == Some(token) {
             // Same token as last time: only its expiry can have changed.
@@ -241,8 +239,8 @@ impl Auth {
 ///
 /// An unknown `kid` is the exact signal of a rotation: identity providers
 /// renew their signing keys routinely, and Keycloak does so on its realm
-/// keys. We then reload the bundle from disk — where the control plane has
-/// published the new version — and retry once.
+/// keys. We then reload the bundle from disk (where the control plane has
+/// published the new version) and retry once.
 ///
 /// **Once only.** Looping on the reload would turn a permanently invalid
 /// token into a disk-access loop, and the `BundleSource` minimum interval

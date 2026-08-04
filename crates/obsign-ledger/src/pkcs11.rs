@@ -3,7 +3,7 @@
 //! A thin wrapper over the shared [`obsign_pkcs11::Pkcs11Signer`]: the FFI, the token
 //! selection and the Ed25519 signing live in the `pkcs11` crate, shared with
 //! the gateway's identity key. Here we only give the signer the *sealing*
-//! role — the key that certifies history, distinct from the origin/identity
+//! role: the key that certifies history, distinct from the origin/identity
 //! keys that write it.
 
 use crate::sealer::Sealer;

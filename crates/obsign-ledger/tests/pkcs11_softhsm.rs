@@ -10,14 +10,14 @@
 //! ```
 //!
 //! Without `OBSIGN_TEST_PKCS11_MODULE` the test passes vacuously and says
-//! so — an unprovisioned machine must not fail the suite, but the skip has
+//! so. An unprovisioned machine must not fail the suite, but the skip has
 //! to be visible, not silent.
 //!
 //! One #[test], sequential: PKCS#11 login state is per-token per-process, so
 //! concurrent test functions would see each other's sessions
 //! (CKR_USER_ALREADY_LOGGED_IN) and the wrong-PIN check would depend on
-//! ordering. Failure paths run first — a wrong PIN presented after the right
-//! one proves less.
+//! ordering. Failure paths run first, because a wrong PIN presented after
+//! the right one proves less.
 
 #![cfg(unix)]
 

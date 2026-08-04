@@ -1,7 +1,7 @@
 //! Arbitration of non-tool MCP capabilities: resource reads, prompt fetches.
 //!
 //! The gap this pins down: `resources/*` and `prompts/*` used to traverse
-//! the gateway with neither policy nor record — a read channel invisible to
+//! the gateway with neither policy nor record, a read channel invisible to
 //! the proof. There is no signed catalogue of resource URIs (the server
 //! mints them at runtime), so Cedar's default deny is the whole gate: a
 //! capability nobody explicitly permitted is refused.

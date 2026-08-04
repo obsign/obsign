@@ -1,4 +1,4 @@
-//! swtpm control channel — the out-of-band socket that stands in for the
+//! swtpm control channel, the out-of-band socket that stands in for the
 //! platform's power and reset lines. A hardware TPM is initialized by the
 //! machine it sits in; swtpm waits for `CMD_INIT` on this channel before the
 //! command socket answers anything. Only the two commands enrollment and its
@@ -30,7 +30,7 @@ impl SwtpmCtrl {
         self.exec("CMD_INIT", CMD_INIT, &0u32.to_be_bytes())
     }
 
-    /// Asks the swtpm process to exit (`CMD_SHUTDOWN`) — test cleanup.
+    /// Asks the swtpm process to exit (`CMD_SHUTDOWN`), for test cleanup.
     pub fn shutdown(&self) -> Result<(), Error> {
         self.exec("CMD_SHUTDOWN", CMD_SHUTDOWN, &[])
     }

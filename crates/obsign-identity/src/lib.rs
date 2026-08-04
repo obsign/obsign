@@ -14,7 +14,7 @@
 //! * **no network calls** — the JWKS comes from a signed bundle distributed by
 //!   the control plane, like the policy bundle. The gateway stays deployable
 //!   air-gapped and adds no outbound surface. Key rotation happens by
-//!   reloading that file, not by querying the IdP;
+//!   reloading that file, with no query to the IdP;
 //! * **expiry is re-evaluated on every act**, not only when the session
 //!   opens. An agent session outlives a token.
 

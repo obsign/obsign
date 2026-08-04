@@ -1,5 +1,5 @@
 //! Shared swtpm process management for the integration tests: temp state
-//! dir, ephemeral ports, cleanup on drop. Nothing here is test-logic — the
+//! dir, ephemeral ports, cleanup on drop. Nothing here is test-logic. The
 //! tests own what they prove against the instance.
 
 #![allow(dead_code)] // each integration test binary uses its own subset

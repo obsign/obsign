@@ -3,11 +3,11 @@
 //!
 //! It sits between the agent and the MCP server. The wrapped server is always
 //! spawned as a child over stdio; on the agent side the gateway speaks either
-//! stdio (the default — you swap the MCP server command in the agent's
+//! stdio (the default; you swap the MCP server command in the agent's
 //! configuration, that is all) or Streamable HTTP (`--http`, one session per
 //! agent, see `http.rs`).
 //!
-//! Three interceptions, identical on both transports:
+//! The interceptions, identical on both transports:
 //!
 //! * discovery (`tools/list`, `resources/list`, `prompts/list`): the response
 //!   is filtered, the agent only sees what the policy allows it. What you
@@ -18,7 +18,7 @@
 //!   identity verified, policy evaluated, act logged, then forwarded or
 //!   refused.
 //! * a fixed allowlist of protocol machinery: relayed as-is. Everything
-//!   else — vendor methods, future revisions — is refused and recorded:
+//!   else (vendor methods, future revisions) is refused and recorded:
 //!   the method space is default-deny in both directions.
 //!
 //! **All logging goes to stderr.** stdout is the MCP channel in stdio mode:
@@ -47,13 +47,13 @@ use std::sync::{Arc, Mutex};
 use obsign_wal::Wal;
 
 /// What the records name the wrapped server when the operator did not.
-/// Deliberately useless to an investigator rather than plausibly wrong: a
-/// fixed vendor string in the `server` field reads like an answer.
+/// Deliberately useless to an investigator: a fixed vendor string in the
+/// `server` field would read like an answer.
 const DEFAULT_SERVER_ID: &str = "mcp://unspecified";
 
 impl Cli {
-    /// The wrapped server as records will name it. Absence is honest, not
-    /// fatal — it is recorded as such, and said once at startup.
+    /// The wrapped server as records will name it. Absence is honest and
+    /// never fatal; it is recorded as such, and said once at startup.
     fn server_id(&self) -> &str {
         self.server_id.as_deref().unwrap_or(DEFAULT_SERVER_ID)
     }
@@ -87,8 +87,8 @@ struct Cli {
     http: Option<String>,
 
     /// Origin allowed on the HTTP endpoint (repeatable). Requests carrying
-    /// any other Origin are refused — the DNS-rebinding defence. Non-browser
-    /// clients send no Origin and are unaffected.
+    /// any other Origin are refused; that is the DNS-rebinding defence.
+    /// Non-browser clients send no Origin and are unaffected.
     #[arg(long = "allowed-origin")]
     allowed_origins: Vec<String>,
 
@@ -130,14 +130,14 @@ struct Cli {
     wal: PathBuf,
 
     /// Origin key seed (32 bytes, hex): the gateway signs every record it
-    /// writes directly with this key (v0/v1). Without it — and without
-    /// --identity-key — the log is chained but unsigned.
+    /// writes directly with this key (v0/v1). Without it, and without
+    /// --identity-key, the log is chained but unsigned.
     #[arg(long, conflicts_with = "identity_key")]
     origin_key: Option<PathBuf>,
 
     /// Identity key seed (32 bytes, hex): the two-tier scheme (v2). This
     /// long-lived key certifies a fresh session key per chain; the session
-    /// key — generated in memory, never on disk — signs the records. The
+    /// key, generated in memory and never on disk, signs the records. The
     /// seed file is dev-grade; production uses --identity-hsm-module.
     #[arg(long, conflicts_with = "identity_hsm_module")]
     identity_key: Option<PathBuf>,
@@ -190,13 +190,13 @@ struct Cli {
     agent_id: String,
 
     /// Identifier of the wrapped MCP server, as it will appear in every
-    /// record — `mcp://crm.internal`, not a hostname the log then has to be
+    /// record: `mcp://crm.internal`, not a hostname the log then has to be
     /// joined against.
     ///
-    /// Descriptive, not authorizing: it also reaches policies as
-    /// `context.server`, like `--env` reaches them as `context.env`, but no
-    /// Cedar *resource* is keyed on it. Nothing an operator types decides a
-    /// verdict a signed bundle did not already decide.
+    /// Descriptive only: it also reaches policies as `context.server`, like
+    /// `--env` reaches them as `context.env`, but no Cedar *resource* is
+    /// keyed on it. Nothing an operator types decides a verdict a signed
+    /// bundle did not already decide.
     ///
     /// Left unset, records name `mcp://unspecified` and say so at startup.
     #[arg(long)]
@@ -446,7 +446,7 @@ fn run_http(
 }
 
 /// Opens the identity key on a PKCS#11 token, from the --identity-hsm-* flags.
-/// The credentials are presented once, here, at startup — never in a loop
+/// The credentials are presented once, here, at startup, never in a loop
 /// that could walk the token toward lock-out (the ledger's PIN discipline).
 fn build_hsm_identity(cli: &Cli, module: &std::path::Path) -> Result<origin::Pkcs11IdentitySigner> {
     let label = cli

@@ -48,21 +48,21 @@ pub enum Payload {
     ToolCall(ToolCall),
     /// An attempted MCP capability access outside tool calls: a resource
     /// read or subscription, a prompt fetch. Data leaves the server on this
-    /// channel exactly as it does on `tools/call`, so it is recorded — and
-    /// arbitrated — the same way.
+    /// channel exactly as it does on `tools/call`, so it is recorded (and
+    /// arbitrated) the same way.
     McpAccess(McpAccess),
     /// A human-readable name for a subject the log names elsewhere.
     ///
-    /// Real OIDC subjects are opaque — Keycloak issues UUIDs — so a pack
+    /// Real OIDC subjects are opaque (Keycloak issues UUIDs), so a pack
     /// naming only `sub` is unreadable to the auditor it is written for,
     /// who by construction cannot query the issuer's directory. Recording
-    /// the label *beside* the subject rather than instead of it keeps both
-    /// properties: `sub` stays the stable identifier a rename cannot move,
-    /// the label stays the string a human can act on.
+    /// the label *beside* the subject keeps both properties: `sub` stays
+    /// the stable identifier a rename cannot move, the label stays the
+    /// string a human can act on.
     PrincipalLabel(PrincipalLabel),
     /// A payload type this build does not know, kept verbatim.
     ///
-    /// The alternative — refusing the whole log — was the behaviour, and it
+    /// The alternative, refusing the whole log, was the behaviour, and it
     /// is wrong for the reader this product is written for: an auditor
     /// building the verifier from source, months after the log was written,
     /// against a gateway that has since gained a payload type. Refusing gave
@@ -71,7 +71,7 @@ pub enum Payload {
     ///
     /// Keeping the record readable is *not* the same as accepting it. A
     /// payload this build cannot re-encode is a payload whose hash it cannot
-    /// recompute, so it cannot attest to that record at all — the verifier
+    /// recompute, so it cannot attest to that record at all. The verifier
     /// reports `unknown_payload_type` as an **error** and the pack does not
     /// come out valid. What changes is the diagnosis: an operator learns
     /// which type, on which record, and that the fix is a newer verifier.
@@ -428,8 +428,8 @@ impl ApprovalMode {
 /// the acting, and nesting `act` describes multi-hop delegation.
 ///
 /// Without it, the log records "marie.dupont" with no way to substantiate
-/// that an agent was acting in her name: the attribution chain is inferred
-/// rather than attested.
+/// that an agent was acting in her name: the attribution chain is then only
+/// an inference.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Actor {
@@ -438,7 +438,7 @@ pub struct Actor {
     pub chain: Vec<String>,
     /// Deliberately verbose name: `Payload` is serialized with
     /// `#[serde(tag = "kind")]`, so a field called `kind` would collide with
-    /// the discriminant serde injects — the value would be written twice and
+    /// the discriminant serde injects. The value would be written twice and
     /// reading it back would fail.
     pub principal_kind: PrincipalKind,
 }
@@ -452,7 +452,7 @@ pub enum PrincipalKind {
     /// Attested delegation: an actor acts on behalf of a human.
     DelegatedHuman,
     /// Service token (`sub` == `client_id`): no human at the end of the
-    /// chain. The distinction is essential — a destructive action with no
+    /// chain. The distinction is essential. A destructive action with no
     /// identifiable human behind it is defensible to no one.
     Machine,
 }
@@ -489,8 +489,9 @@ pub struct LlmTurn {
     pub provider: String,
     pub model: String,
     /// The hash, not the content: prompts almost always carry personal data
-    /// or business secrets. Nothing here retains the cleartext — same rule,
-    /// and same absence of a retention path, as `ToolCall::args_sealed`.
+    /// or business secrets. Nothing here retains the cleartext, by the same
+    /// rule and the same absence of a retention path as
+    /// `ToolCall::args_sealed`.
     pub prompt_hash: Hash,
     pub response_hash: Hash,
     pub input_tokens: Option<u64>,
@@ -508,8 +509,8 @@ pub struct ToolCall {
     pub args_hash: Hash,
     /// Reserved for retained content. **Nothing in this repository writes
     /// it**: the gateway hashes the arguments and drops the values, so this
-    /// is `None` in every log written today. It sits in the format — and in
-    /// the record hash, see the encoding below — so that turning retention
+    /// is `None` in every log written today. It sits in the format (and in
+    /// the record hash, see the encoding below) so that turning retention
     /// on later does not change how existing records hash.
     ///
     /// The constraint on any implementation is already settled: the content
@@ -519,7 +520,7 @@ pub struct ToolCall {
     pub args_sealed: Option<SealedRef>,
 }
 
-/// A display name for a subject, recorded beside it rather than instead of it.
+/// A display name recorded beside the subject it names.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PrincipalLabel {
@@ -530,14 +531,14 @@ pub struct PrincipalLabel {
     /// unique *within* an issuer. The gateway hot-reloads identity bundles,
     /// so one chain can hold delegations from two providers, and a `sub` as
     /// ordinary as `1000` collides across realms. A label joined on the
-    /// subject alone would then name the wrong human — the one failure this
+    /// subject alone would then name the wrong human, the one failure this
     /// payload exists to prevent.
     pub issuer: String,
     /// The subject this names, byte-for-byte as the `Delegation` recorded it.
     /// The other half of the join key: a reader that does not understand this
     /// payload loses the label and keeps a log that still says who acted.
     pub subject: String,
-    /// What a human reads — `guillaume`, `service-account-n8n-agent`.
+    /// What a human reads: `guillaume`, `service-account-n8n-agent`.
     pub label: String,
     /// The claim it came from (`/preferred_username`, `/email`, ...).
     ///
@@ -550,10 +551,10 @@ pub struct PrincipalLabel {
 
 /// An MCP capability access outside tool calls.
 ///
-/// The investigation needs to know *what* was touched, so the target — a
-/// resource URI or a prompt name — is recorded verbatim: it is an
-/// identifier, like a tool name, not a payload. The content that came back
-/// only ever appears as the effect's `result_hash`.
+/// The investigation needs to know *what* was touched, so the target (a
+/// resource URI or a prompt name) is recorded verbatim: it is an
+/// identifier, like a tool name. The content that came back only ever
+/// appears as the effect's `result_hash`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct McpAccess {
@@ -638,7 +639,7 @@ impl EffectStatus {
 
 /// A configuration reload observed by the gateway.
 ///
-/// The bundles the gateway trusts — JWKS, claim mapping, policies — are
+/// The bundles the gateway trusts (JWKS, claim mapping, policies) are
 /// reloaded from disk when the control plane republishes them, typically on a
 /// key rotation. That changes what the log means: the same token is refused
 /// before the reload and accepted after. So the reload itself goes into the
@@ -646,10 +647,10 @@ impl EffectStatus {
 /// answer: the last applied `config_reload` (or the opening `agent_session`)
 /// before the act.
 ///
-/// Rejected attempts are recorded too. A bundle refused at reload — bad
-/// signature, truncated file — leaves the previous configuration in force,
+/// Rejected attempts are recorded too. A bundle refused at reload (bad
+/// signature, truncated file) leaves the previous configuration in force,
 /// but the attempt itself is exactly what an investigation wants to see:
-/// dropping a rogue JWKS on disk is an attack, not noise.
+/// dropping a rogue JWKS on disk is an attack.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigReload {
@@ -658,7 +659,7 @@ pub struct ConfigReload {
     pub config_kind: ConfigKind,
     pub status: ReloadStatus,
     /// Version in force AFTER the attempt: the new version when applied, the
-    /// previous one — kept — when rejected.
+    /// previous one, which is kept, when rejected.
     pub bundle_version: String,
     /// Content hash of the file that was read: the applied bundle, or the
     /// rejected bytes. None when the file could not be read at all.
@@ -672,7 +673,7 @@ pub struct ConfigReload {
 /// The two-tier key architecture: a long-lived identity key (in hardware)
 /// certifies a session key generated in memory at chain open, and the session
 /// key signs every record. This certificate is what lets a verifier trust the
-/// session key — it is the chain's first record, sealed like any other, so it
+/// session key. It is the chain's first record, sealed like any other, so it
 /// cannot be stripped. The `identity_sig` binds the session key to this exact
 /// `chain_id` (carried by the record) and this `gateway_id`, so a leaked
 /// session key cannot be replayed onto another chain or another gateway.
@@ -725,7 +726,7 @@ impl ConfigKind {
 pub enum ReloadStatus {
     /// New configuration verified and in force.
     Applied,
-    /// File refused — bad signature, unreadable — the previous configuration
+    /// File refused (bad signature, unreadable); the previous configuration
     /// stays in force.
     Rejected,
 }

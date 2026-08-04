@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// The hash chain alone proves internal consistency and not much more:
 /// whoever holds the log can rewrite it entirely and recompute every hash.
-/// The checkpoint closes that hole — it is signed with a key held in a
+/// The checkpoint closes that hole: it is signed with a key held in a
 /// KMS/HSM, out of reach of the process that writes the log.
 ///
 /// In production the root is additionally timestamped per RFC 3161: that is
@@ -67,7 +67,7 @@ impl Checkpoint {
 
 /// Builds a checkpoint over a contiguous slice of already-written records.
 ///
-/// This is the ledger's sealing path — the ledger seals a log it did not
+/// This is the ledger's sealing path. The ledger seals a log it did not
 /// write. It lives here, next to `ChainWriter::seal`, because defining what a
 /// checkpoint over records *means* is proof logic, and there must be exactly
 /// one implementation of it.
@@ -125,7 +125,7 @@ pub fn seal_interval(
 
 /// The one pack structure without `deny_unknown_fields`: serde does not
 /// support it in combination with `flatten`, on either side. The exposure is
-/// small — a stray field cannot alter verification, since the signature is
+/// small. A stray field cannot alter verification, since the signature is
 /// checked over `signing_bytes()`, which is rebuilt from the known fields.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SignedCheckpoint {
@@ -158,9 +158,9 @@ impl SignedCheckpoint {
 /// it writes it); sealing keys certify the *log* (the ledger signs
 /// checkpoints over it); ops keys name *who may write* (the control plane
 /// signs the deployment bundle enrolling the origin keys). Confusing any two
-/// would let one component hold an authority the split exists to deny — the
+/// would let one component hold an authority the split exists to deny (the
 /// writer certifying its own log, or the operator who decides policy also
-/// certifying the history that policy produced — so every verification
+/// certifying the history that policy produced), so every verification
 /// resolves a key within its role, and a key found under the wrong role is an
 /// error, not a fallback.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]

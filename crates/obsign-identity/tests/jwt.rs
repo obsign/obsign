@@ -2,7 +2,7 @@
 //!
 //! We use Ed25519: key generation is instantaneous, where RSA would make the
 //! suite too slow to run on every commit. The algorithm is not what these
-//! tests are about — the checks around it are.
+//! tests are about; the checks around it are.
 
 use base64::Engine;
 use ed25519_dalek::SigningKey;

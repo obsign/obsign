@@ -13,24 +13,25 @@
 //! deployment bundle (so the ops key covers it), the pair lets the verifier
 //! answer "which software was enforcing the policy?".
 //!
-//! What is proven where — the [`crate::rfc3161`] anchor stance exactly:
+//! What is proven where, following the [`crate::rfc3161`] anchor stance
+//! exactly:
 //!
 //! * **offline** (here): the AK signed the quote and the certify; the certify
 //!   binds *this* identity key; the quote's PCR digest matches the
 //!   expectations the ops key signed. This proves the identity key is bound
 //!   to a TPM reporting these measurements.
 //! * **out of band** (named, not performed here): the EK certificate chains
-//!   to the TPM vendor root, proving the AK is genuine silicon and not a
-//!   software fake. An air-gapped verifier has no vendor PKI; the report says
-//!   so (`attestation_not_rooted`), it does not pretend otherwise.
+//!   to the TPM vendor root, proving the AK is genuine silicon. An air-gapped
+//!   verifier has no vendor PKI; the report says so
+//!   (`attestation_not_rooted`), it does not pretend otherwise.
 //!
-//! Interop note (resolved against a real software TPM — swtpm/libtpms,
-//! driven by `obsign-tpm-enroll`): the `TPMS_ATTEST` wire format below is the
+//! Interop note (resolved against a real software TPM, swtpm/libtpms driven
+//! by `obsign-tpm-enroll`): the `TPMS_ATTEST` wire format below is the
 //! TCG-standard subset the checks need, bounds-checked in the DER
 //! discipline, and it parses real TPM output byte-for-byte. Two facts that
 //! only real TPM output could settle, both now settled:
 //!
-//! * **AK algorithm.** The AK signs Ed25519 where the TPM implements EdDSA —
+//! * **AK algorithm.** The AK signs Ed25519 where the TPM implements EdDSA,
 //!   the system-uniform choice. The libtpms swtpm builds on (0.10) implements
 //!   no EdDSA at all (no `TPM_ALG_EDDSA`, no 25519 curve; an EdDSA
 //!   `CreatePrimary` fails `TPM_RC_SCHEME`), and real silicon rarely does
@@ -39,13 +40,13 @@
 //!   the attest bytes (see [`crate::p256`]). Which algorithm applies is read
 //!   off the key material, never off attacker-controlled fields.
 //! * **Name binding.** A real `TPM2_Certify` names the key as
-//!   `alg || H(TPMT_PUBLIC)` — the hash of the full marshalled public area,
+//!   `alg || H(TPMT_PUBLIC)`, the hash of the full marshalled public area,
 //!   not of the bare key. An attestation therefore carries the identity
 //!   key's `TPMT_PUBLIC` (`identity_pub`), from which the verifier both
 //!   recomputes the Name the certify must match and extracts the raw public
 //!   key that must equal the enrolled bundle entry. Attestations without
 //!   `identity_pub` keep verifying under the earlier synthetic binding,
-//!   `alg || H(raw ed25519 key)` — the two forms are documented on
+//!   `alg || H(raw ed25519 key)`. The two forms are documented on
 //!   [`KeyAttestation::identity_pub`].
 
 use crate::checkpoint::PublicKeyEntry;
@@ -54,16 +55,16 @@ use crate::hash::sha256;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
-/// `TPM_GENERATED_VALUE` — the magic prefixing every genuine `TPMS_ATTEST`,
+/// `TPM_GENERATED_VALUE`, the magic prefixing every genuine `TPMS_ATTEST`,
 /// so a caller cannot pass an arbitrary blob off as an attestation.
 const TPM_GENERATED: u32 = 0xFF54_4347; // "\xFFTCG"
 const ST_ATTEST_CERTIFY: u16 = 0x8017;
 const ST_ATTEST_QUOTE: u16 = 0x8018;
 /// `TPM_ALG_SHA256`, the name algorithm this verifier supports.
 const ALG_SHA256: u16 = 0x000B;
-/// `TPM_ALG_ECC` — the object type of both key shapes this verifier reads.
+/// `TPM_ALG_ECC`, the object type of both key shapes this verifier reads.
 const ALG_ECC: u16 = 0x0023;
-/// `TPM_ALG_ECDSA` / `TPM_ALG_EDDSA` — the two signing schemes an identity
+/// `TPM_ALG_ECDSA` / `TPM_ALG_EDDSA`, the two signing schemes an identity
 /// key's `TPMT_PUBLIC` may carry (see the module interop note).
 const ALG_ECDSA: u16 = 0x0018;
 const ALG_EDDSA: u16 = 0x0060;
@@ -78,8 +79,8 @@ pub const ALGO_ECDSA_P256: &str = "ecdsa-p256";
 const ALGO_ED25519: &str = "ed25519";
 
 /// One PCR the quote must report, with the value the ops key expects it to
-/// hold. The gateway-binary PCR is the hash of the released binary — chained
-/// to the release manifest — so a running gateway proves it *is* that binary.
+/// hold. The gateway-binary PCR is the hash of the released binary (chained
+/// to the release manifest), so a running gateway proves it *is* that binary.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PcrExpectation {
     pub index: u32,
@@ -95,11 +96,11 @@ pub struct KeyAttestation {
     pub key_id: String,
     /// AK public key, hex: signs the quote and the certify. 32 bytes for an
     /// ed25519 AK; 65 bytes (`04 || x || y`, the uncompressed point) for an
-    /// ECDSA-P256 AK — the fallback for TPMs that implement no EdDSA, which
-    /// includes the swtpm this tree tests against (module interop note).
+    /// ECDSA-P256 AK. That is the fallback for TPMs that implement no EdDSA,
+    /// which includes the swtpm this tree tests against (module interop note).
     pub ak_pub: String,
-    /// EK certificate (DER, hex). Chains to the TPM vendor root — validated
-    /// out of band, never here.
+    /// EK certificate (DER, hex). Chains to the TPM vendor root, validated
+    /// out of band and never here.
     pub ek_cert: String,
     /// `TPM2_Certify` output binding the identity key to the AK: the
     /// marshalled `TPMS_ATTEST` followed by the AK's 64-byte signature, hex.
@@ -109,16 +110,16 @@ pub struct KeyAttestation {
     pub quote: String,
     /// The PCR values the quote must report, ops-signed via the bundle.
     pub expected_pcrs: Vec<PcrExpectation>,
-    /// The identity key's marshalled `TPMT_PUBLIC` (hex) — the structure a
+    /// The identity key's marshalled `TPMT_PUBLIC` (hex), the structure a
     /// real TPM hashes into the Name its certify reports.
     ///
     /// The two binding forms, in order of preference:
     ///
     /// * **Present** (everything a real TPM emits, via `obsign-tpm-enroll`): the
     ///   certify must name `alg || H(these bytes)`, and the raw public key
-    ///   extracted from them must equal the enrolled bundle entry — so the
-    ///   chain entry → public area → Name → AK signature closes with no gap
-    ///   an attacker could stand in.
+    ///   extracted from them must equal the enrolled bundle entry, closing
+    ///   the chain from bundle entry to public area to Name to AK signature
+    ///   with no gap an attacker could stand in.
     /// * **Absent** (pre-hardware attestations): the certify must name
     ///   `alg || H(raw ed25519 key)`, the synthetic binding the verifier
     ///   shipped with. Kept so existing attestations verify unchanged; a
@@ -132,7 +133,7 @@ pub struct KeyAttestation {
 
 /// The legacy TPM Name of an identity key: `alg || H(raw ed25519 key)`.
 ///
-/// A real TPM names a key `alg || H(TPMT_PUBLIC)` — carried and recomputed
+/// A real TPM names a key `alg || H(TPMT_PUBLIC)`, carried and recomputed
 /// via [`KeyAttestation::identity_pub`]. This synthetic form remains what an
 /// attestation *without* that field must bind, so pre-hardware attestations
 /// keep verifying; it is equally sufficient to prove the certify names
@@ -200,7 +201,7 @@ enum Attested {
 ///
 /// `entry` is the identity key as it appears in the deployment bundle. On
 /// success the caller may trust that this key is bound to a TPM reporting the
-/// expected measurements — subject to the out-of-band EK-root check the
+/// expected measurements, subject to the out-of-band EK-root check the
 /// caller must still surface.
 pub fn verify_attestation(entry: &PublicKeyEntry, att: &KeyAttestation) -> Result<(), Error> {
     let ak = parse_ak(&att.ak_pub)?;
@@ -278,7 +279,7 @@ pub fn verify_attestation(entry: &PublicKeyEntry, att: &KeyAttestation) -> Resul
     Ok(())
 }
 
-/// The Name the certify must report for this enrollment — and, when the
+/// The Name the certify must report for this enrollment and, when the
 /// attestation carries the identity key's `TPMT_PUBLIC`, the proof that the
 /// public area is the enrolled key's and not a substitute.
 ///
@@ -335,7 +336,7 @@ enum TpmPublicKey {
     EcdsaP256(Vec<u8>),
 }
 
-/// Parses the marshalled `TPMT_PUBLIC` of an ECC signing key — the exact
+/// Parses the marshalled `TPMT_PUBLIC` of an ECC signing key, the exact
 /// bytes the TPM hashes into the key's Name, so the parse must consume them
 /// all: trailing bytes would mean naming something this parser did not read.
 fn parse_tpmt_public(b: &[u8]) -> Result<TpmtPublic, Error> {
@@ -436,7 +437,7 @@ fn verify_signed_attest(hexed: &str, ak: &AkPublic) -> Result<Attested, Error> {
     parse_attest(attest)
 }
 
-/// Bounds-checked reader over a byte slice, no recursion — the `rfc3161`
+/// Bounds-checked reader over a byte slice, no recursion, in the `rfc3161`
 /// parser discipline: a hostile blob must not panic or spin.
 struct Reader<'a> {
     b: &'a [u8],
@@ -622,8 +623,8 @@ pub mod testutil {
         sign(ak, a)
     }
 
-    /// A complete, valid attestation for `identity`, signed by a fresh AK —
-    /// the legacy form, no `TPMT_PUBLIC` carried.
+    /// A complete, valid attestation for `identity`, signed by a fresh AK, in
+    /// the legacy form with no `TPMT_PUBLIC` carried.
     pub fn attestation(
         key_id: &str,
         identity: &VerifyingKey,
@@ -895,10 +896,10 @@ mod tests {
 #[cfg(test)]
 mod swtpm_fixture_tests {
     //! Real TPM output, captured once from `obsign-tpm-enroll` against a swtpm
-    //! (libtpms 0.10) and embedded — so the ECDSA-P256 path and the
-    //! real Name binding are exercised on every `cargo test`, with no TPM
-    //! anywhere near the test run. The gated integration test in
-    //! `obsign-tpm-enroll` regenerates this material live.
+    //! (libtpms 0.10) and embedded, so the ECDSA-P256 path and the real Name
+    //! binding are exercised on every `cargo test`, with no TPM anywhere near
+    //! the test run. The gated integration test in `obsign-tpm-enroll`
+    //! regenerates this material live.
 
     use super::*;
     use crate::checkpoint::KeyRole;

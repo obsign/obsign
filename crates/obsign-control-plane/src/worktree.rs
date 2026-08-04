@@ -6,8 +6,8 @@
 //! edited-but-uncommitted rule would be signed under a commit that does not
 //! contain it, and every decision in the log would cite a version that lies
 //! to the auditor replaying it. This module is the missing tie. It runs on
-//! the sha path only — an explicit `--label` names the build without citing
-//! a commit, and skips it.
+//! the sha path only. An explicit `--label` names the build without citing a
+//! commit, and skips it.
 //!
 //! Like [`git_head`](crate::source::git_head), it reads `.git` directly: the
 //! control plane must compile where there is a checkout but no git binary.
@@ -15,18 +15,18 @@
 //! (zlib, packfiles, deltas); the index gives almost all of it without that:
 //!
 //! * every working file the compilation reads is content-hashed and compared
-//!   to its index entry — edits, deletions and untracked additions are
+//!   to its index entry, so edits, deletions and untracked additions are
 //!   caught exactly, whatever the stat data says (an rsync'ed checkout, with
 //!   its fresh mtimes, hashes the same);
 //! * an invalidated cache-tree entry in the index means `git add` ran with
-//!   no commit after it — staged-but-uncommitted state is caught too.
+//!   no commit after it; staged-but-uncommitted state is caught too.
 //!
 //! Accepted blind spots, for the record: a `git reset --soft` (index and
 //! tree agree, HEAD points elsewhere) passes, because telling that apart
 //! needs the object store; a mode-only change (chmod +x) passes, because the
 //! compiled bytes do not depend on it; and a checkout using content filters
 //! (autocrlf, clean/smudge) reads as diverged, because the blob and the
-//! working file legitimately differ — `--label` is the escape hatch there.
+//! working file legitimately differ. `--label` is the escape hatch there.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -34,8 +34,8 @@ use std::path::Path;
 use crate::source::find_git_dirs;
 use crate::Error;
 
-/// Every way the working tree diverges from what the index — and, through
-/// the cache tree, the last commit — holds for the files `compile` reads.
+/// Every way the working tree diverges from what the index (and, through the
+/// cache tree, the last commit) holds for the files `compile` reads.
 /// Empty means clean. Each entry names the path and the nature of the lie,
 /// ready to be printed as a refusal.
 pub fn worktree_divergence(source_root: &Path) -> Result<Vec<String>, Error> {
@@ -182,8 +182,8 @@ fn compiled_inputs(source_root: &Path, prefix: &str) -> Result<Vec<String>, Erro
 // Object ids
 // ---------------------------------------------------------------------------
 
-/// The object id git would give `content` as a blob — `git hash-object`
-/// without the git binary. `oid_len` selects the repository's object format:
+/// The object id git would give `content` as a blob (`git hash-object`
+/// without the git binary). `oid_len` selects the repository's object format:
 /// 20 for SHA-1, 32 for SHA-256.
 pub fn blob_oid(content: &[u8], oid_len: usize) -> Result<Vec<u8>, Error> {
     let mut buf = Vec::with_capacity(content.len() + 16);
@@ -202,9 +202,9 @@ pub fn blob_oid(content: &[u8], oid_len: usize) -> Result<Vec<u8>, Error> {
 }
 
 /// 20 unless the repository config says `objectFormat = sha256`. The key is
-/// only legal under `[extensions]`, so matching it alone is enough — and a
-/// wrong guess cannot accept a diverged tree, only mis-parse the index into
-/// a refusal.
+/// only legal under `[extensions]`, so matching it alone is enough. A wrong
+/// guess cannot accept a diverged tree, only mis-parse the index into a
+/// refusal.
 fn object_id_len(common: &Path) -> usize {
     let Ok(cfg) = std::fs::read_to_string(common.join("config")) else {
         return 20;
@@ -228,7 +228,7 @@ fn object_id_len(common: &Path) -> usize {
 /// SHA-1, exactly RFC 3174. Hand-rolled because nothing else in the
 /// workspace needs it and a dependency for forty lines is a poor trade.
 /// It authenticates nothing: both the hash and the bytes come from the
-/// operator's own disk, so collision resistance is not relied on — equality
+/// operator's own disk, so collision resistance is not relied on; equality
 /// with git's own arithmetic is.
 fn sha1(data: &[u8]) -> [u8; 20] {
     let mut h: [u32; 5] = [
@@ -305,7 +305,7 @@ struct Index {
     cache_tree_stale: bool,
 }
 
-/// Parses `.git/index` versions 2 to 4 — the shapes git writes today.
+/// Parses `.git/index` versions 2 to 4, the shapes git writes today.
 ///
 /// The trailing checksum is not verified: whoever can corrupt the index can
 /// also recompute its checksum, so it proves nothing here, and a garbled
@@ -442,8 +442,8 @@ fn parse_index(b: &[u8], oid_len: usize) -> Result<Index, Error> {
 /// A cache-tree entry with a negative count was invalidated by `git add` or
 /// `git rm` and no commit re-validated it: the index carries staged state
 /// HEAD does not have. `git describe --dirty` calls this dirty for the same
-/// reason, anywhere in the repository — attribution to a path is not
-/// possible without the object store, so neither is attempted.
+/// reason, anywhere in the repository. Attribution to a path is not possible
+/// without the object store, so neither is attempted.
 fn cache_tree_has_invalidated_entry(data: &[u8], oid_len: usize) -> Result<bool, Error> {
     let corrupt = || Error::Source(".git/index: corrupt TREE extension".to_string());
     let mut i = 0usize;

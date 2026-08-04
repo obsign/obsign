@@ -2,12 +2,12 @@
 
 Status: **verification layer AND enrollment signer implemented, exercised
 end-to-end against swtpm** (2026-07-30, branch `los-angeles`, 263 tests).
-The §8-item-3 piece the first landing deferred now exists: `obsign-tpm-enroll`
+The §8-item-3 piece the first landing deferred now exists. `obsign-tpm-enroll`
 (binary `obsign-tpm-enroll`) speaks the TPM2 command stream directly over
-swtpm's TCP sockets — hand-rolled marshalling of Startup, GetCapability,
+swtpm's TCP sockets, with hand-rolled marshalling of Startup, GetCapability,
 CreatePrimary, PCR_Extend/Read, Certify, Quote, FlushContext plus the swtpm
-control channel (CMD_INIT), no TSS stack — creates the AK and the identity
-key, measures the gateway binary hash into a PCR, and emits the
+control channel (CMD_INIT) and no TSS stack; it creates the AK and the
+identity key, measures the gateway binary hash into a PCR, and emits the
 `KeyAttestation` that `obsign_audit_core::verify_attestation` accepts. A gated
 integration test (`crates/obsign-tpm-enroll/tests/swtpm.rs`, the SoftHSM pattern:
 skips vacuously without `swtpm` on PATH) provisions its own swtpm, enrolls,
@@ -20,14 +20,15 @@ The two flagged interop points, resolved by real TPM output:
    0.10 implements **no EdDSA**: `TPM_CAP_ALGS` lists no `TPM_ALG_EDDSA`
    (0x0060), `TPM_CAP_ECC_CURVES` no 25519 curve (0x0040), and an EdDSA
    `CreatePrimary` fails with `TPM_RC_SCHEME` (0x2d2, parameter 2). The
-   enroller therefore picks the algorithm off the TPM's capabilities —
-   ed25519 where implemented (system-uniform, the templates exist), else
-   ECDSA-P256 — and the verifier accepts both AK shapes: 32-byte ed25519
-   key with a signature over the attest bytes, or 65-byte uncompressed
-   P-256 point with a raw `r || s` signature over the attest's SHA-256,
-   checked by a hand-rolled verification-only P-256 in `obsign_audit_core::p256`
-   (public inputs only, so correctness — pinned by OpenSSL known-answer
-   vectors and the swtpm fixtures — is the whole requirement).
+   enroller therefore picks the algorithm off the TPM's capabilities,
+   taking ed25519 where implemented (system-uniform, the templates exist)
+   and ECDSA-P256 otherwise. The verifier accepts both AK shapes: 32-byte
+   ed25519 key with a signature over the attest bytes, or 65-byte
+   uncompressed P-256 point with a raw `r || s` signature over the attest's
+   SHA-256, checked by a hand-rolled verification-only P-256 in
+   `obsign_audit_core::p256` (public inputs only, so correctness is the whole
+   requirement; it is pinned by OpenSSL known-answer vectors and the swtpm
+   fixtures).
 2. **Name binding — the real form, `alg || H(TPMT_PUBLIC)`.** Confirmed:
    swtpm's certify names exactly `0x000B || SHA256(marshalled TPMT_PUBLIC)`.
    `KeyAttestation` gained `identity_pub` (the identity key's marshalled
@@ -39,40 +40,40 @@ The two flagged interop points, resolved by real TPM output:
    and the synthesizer tests verify unchanged.
 
 Remaining, named, untested: **real silicon.** swtpm proves the wire format
-and the ceremony against an independent TPM 2.0 implementation, not against
-hardware: no vendor EK certificate has been chained (a fresh swtpm carries
+and the ceremony against an independent TPM 2.0 implementation, and stops
+there: no vendor EK certificate has been chained (a fresh swtpm carries
 none; `ek_cert` rides opaquely, the out-of-band stance unchanged), and the
-ed25519 template/signature path — the preferred algorithm where EdDSA-capable
-TPMs exist — has no EdDSA implementation to run against yet. Note the
+ed25519 template/signature path, the preferred algorithm where EdDSA-capable
+TPMs exist, has no EdDSA implementation to run against yet. Note the
 system-uniformity consequence meanwhile: a P-256 identity key verifies
 through the attestation layer (fixtures prove it), but the rest of the
 system signs ed25519, so on an EdDSA-less TPM the *identity key in the
 bundle* cannot yet be the TPM-resident key; closing that (P-256 session
-certificates, or EdDSA hardware) is a follow-on decision, not taken here.
+certificates, or EdDSA hardware) is a follow-on decision, left open here.
 
 *The first-landing status follows.*
 
 Status: **verification layer implemented** (2026-07-30, branch
-`wal-origin-auth-design`, 221 tests) — option **(a)** of §10.4. Implements
+`wal-origin-auth-design`, 221 tests), option **(a)** of §10.4. Implements
 §7.5 of [wal-origin-auth.md](wal-origin-auth.md), the horizon v2 §8 did not
 commit to. Decisions 1–3 landed on their recommended defaults; decision 4 was
 **(a)**: the auditor-facing verification layer is built and fully tested with
 a `#[cfg(test)]` quote synthesizer (the RFC 3161 pattern), and the real-TPM
-enrollment signer is deferred — **there is no TPM/`swtpm` on this machine, so
+enrollment signer is deferred. **There is no TPM/`swtpm` on this machine, so
 the hardware enroll/quote path is not exercised here.** What is built and
 tested:
 
 - **obsign-audit-core**: `KeyAttestation` + `PcrExpectation`, a bounds-checked
-  `TPMS_ATTEST` parser (quote + certify, no recursion — the `rfc3161`
+  `TPMS_ATTEST` parser (quote + certify, no recursion, the `rfc3161`
   discipline), `verify_attestation` doing the offline structural checks, and
   the `#[cfg(test)]` synthesizer. The attestation rides `DeploymentBundle`
   (a `#[serde(default)]` `Vec<KeyAttestation>`, **not** a field on
-  `PublicKeyEntry` — enrollment concept, and no churn on every key literal),
-  covered by the ops signature via `signing_bytes` (appended only when
-  present, so v1 bundles stay byte-identical and keep verifying).
+  `PublicKeyEntry`, an enrollment concept with no churn on every key
+  literal), covered by the ops signature via `signing_bytes` (appended only
+  when present, so v1 bundles stay byte-identical and keep verifying).
 - **evidence**: `resolve_attestations` after the bundle resolution; findings
-  `attestation_invalid` (error), `identity_not_attested`
-  (warning → error under `require_attestation`), `attestation_not_rooted`
+  `attestation_invalid` (error), `identity_not_attested` (a warning that
+  becomes an error under `require_attestation`), `attestation_not_rooted`
   (the standing out-of-band caveat, the `anchor_not_validated` shape).
   `VerifyOptions.require_attestation`.
 - **control-plane**: `deployment/attestation.json` read and validated
@@ -90,13 +91,13 @@ enrollment signer that produces the AK, the `TPM2_Certify` and the
 `TPM2_Quote`. Interop caveat: the parser and synthesizer both encode *this
 implementation's* reading of the TCG wire format; only real-hardware output
 can confirm it, and the identity Name is bound as `alg || H(raw pubkey)`
-rather than `alg || H(TPMT_PUBLIC)` — both are the flagged real-TPM interop
-points. *(Both since resolved — see the current status above.)*
+instead of `alg || H(TPMT_PUBLIC)`. Both are the flagged real-TPM interop
+points. *(Both since resolved; see the current status above.)*
 
 ---
 
 *Original design follows.* Decision 4's testability caveat: **there is no
-TPM or `swtpm` on this machine, so — unlike SoftHSM for v2 — the real-hardware
+TPM or `swtpm` on this machine, so, unlike SoftHSM for v2, the real-hardware
 path cannot be end-to-end verified here.** That shaped the recommendation,
 and option (a) above is what was built.
 
@@ -107,7 +108,7 @@ session, and minting new session certificates needs the hardware identity
 key. But origin authentication's floor, stated since v0 §3.3, still stands:
 **it cannot defend against a compromised gateway *process*.** The origin
 signs whatever the origin says. An attacker who owns the running gateway
-binary — a swapped executable, an injected library, a debugger — makes the
+binary (a swapped executable, an injected library, a debugger) makes the
 hardware identity key certify session keys for records that describe acts the
 real software would have refused. Every signature verifies. The proof says
 "an origin signed this"; it cannot say "an origin running the software you
@@ -120,10 +121,10 @@ gateway enforcing the policy was the gateway you shipped?*
 
 **Bind the identity key to a measured boot and a measured gateway binary via
 a TPM quote, and enroll that attestation alongside the identity key in the
-deployment bundle. The offline verifier checks the attestation structurally —
-the quote binds *this* identity key, the measurements match the policy the
-ops key signed — and defers the TPM-vendor certificate chain to an
-out-of-band step, exactly as it already defers the RFC 3161 CMS signature.**
+deployment bundle. The offline verifier checks the attestation structurally
+(the quote binds *this* identity key, the measurements match the policy the
+ops key signed) and defers the TPM-vendor certificate chain to an out-of-band
+step, exactly as it already defers the RFC 3161 CMS signature.**
 
 The claim then strengthens, provably and offline for the structural part,
 from *an origin signed this* to *an origin whose boot state and binary match
@@ -131,10 +132,10 @@ the enrolled measurements signed this*.
 
 Nothing in the chain, the record envelope, the session certificate, or the
 seal changes. v3 is an **enrollment-time** strengthening of what a deployment
-bundle's identity key *means* — the most additive place the whole ladder
-could put it.
+bundle's identity key *means*, the most additive place the whole ladder could
+put it.
 
-## 3. The TPM shape (why three keys, not one)
+## 3. The TPM shape (why three keys)
 
 A TPM Attestation Key (AK) is *restricted*: it will only sign TPM-internal
 structures (`TPMS_ATTEST`), never arbitrary external bytes. So the identity
@@ -153,19 +154,20 @@ keys, and how they relate:
 
 Two TPM operations tie them together at enrollment:
 
-- `TPM2_Certify(identity_key, AK)` → a signed statement that the identity key
-  is TPM-resident with fixed, non-exportable properties. This is what binds
-  *this* identity key (the one in the deployment bundle) to the attested TPM.
-- `TPM2_Quote(AK, PCRs)` → a signed statement of the platform's PCR values:
-  measured boot (firmware → bootloader → kernel) plus the **gateway binary
-  hash**, extended into a PCR by the launch wrapper.
+- `TPM2_Certify(identity_key, AK)` returns a signed statement that the
+  identity key is TPM-resident with fixed, non-exportable properties. This is
+  what binds *this* identity key (the one in the deployment bundle) to the
+  attested TPM.
+- `TPM2_Quote(AK, PCRs)` returns a signed statement of the platform's PCR
+  values: measured boot (firmware, then bootloader, then kernel) plus the
+  **gateway binary hash**, extended into a PCR by the launch wrapper.
 
 ## 4. The enrollment attestation
 
 The deployment bundle's identity-key entry grows an optional attestation.
 `PublicKeyEntry` gains one `#[serde(default)]` field (the `anchors`
-precedent — old bundles parse unchanged, and an absent attestation is an
-absent proof, not a format break):
+precedent, so old bundles parse unchanged and an absent attestation is simply
+an absent proof):
 
 ```rust
 pub struct KeyAttestation {
@@ -188,7 +190,7 @@ pub struct KeyAttestation {
 
 Because it lives inside the bundle, the **ops key already signs it** (the
 bundle `signing_bytes` covers every entry). So the attestation a verifier
-reads is the attestation the control plane blessed at publish time — no new
+reads is the attestation the control plane blessed at publish time; no new
 obsign-level signature, no new domain byte. The AK's own signatures over the
 quote and certify are TPM-native (the TPM defines those bytes), carried
 opaquely as the RFC 3161 token is.
@@ -196,14 +198,14 @@ opaquely as the RFC 3161 token is.
 ### The gateway binary measurement closes on the release manifest
 
 The expected gateway-binary PCR is the hash of the binary the **control
-plane built and signed** — the same artifact the release manifest
+plane built and signed**, the same artifact the release manifest
 (`RELEASE_MANIFEST`, domain 0x07) already covers. So the loop closes: the
 control plane releases a gateway binary, records its hash, and enrolls that
 hash as the expected PCR; a running gateway proves via the quote that it *is*
 that binary. "Which software was enforcing the policy?" is answered by a
 measurement chained to a signed release.
 
-## 5. What the verifier checks — offline vs out of band
+## 5. What the verifier checks offline, and what it defers
 
 Modelled exactly on the anchor pass (`anchor_not_validated`): structural
 consistency is proven offline; the cryptographic root is an out-of-band step
@@ -216,21 +218,19 @@ the report names, never silently skipped.
 - the `certify` binds the identity key present in the bundle entry (not some
   other key);
 - the quote's PCR digests equal the `expected_pcrs` the ops key signed;
-- findings: `attestation_invalid` (**error** — a signature or binding that
-  does not hold; only tampering produces it), `identity_not_attested`
-  (**warning**, error under a new `--require-attestation` — an identity key
-  with no attestation, the self-referential/legacy case).
+- findings: `attestation_invalid` (**error**: a signature or binding that
+  does not hold; only tampering produces it) and `identity_not_attested`
+  (**warning**, becoming an error under a new `--require-attestation`, for an
+  identity key with no attestation, the self-referential/legacy case).
 
-**Out of band (named, not performed offline):**
-
-- the EK certificate chains to the TPM vendor root, and the AK is bound to
-  that EK. This needs the vendor root CA and revocation state, which have no
-  place in an air-gapped offline verifier by default. Finding
-  `attestation_not_rooted` (**warning**): "the quote is structurally
-  consistent and matches the enrolled measurements; this tool does not
-  validate the EK certificate against a TPM vendor root — do so with
-  `tpm2_checkquote` / the vendor chain." The exact shape of
-  `anchor_not_validated`.
+**Out of band (named here, performed elsewhere):** the EK certificate chains
+to the TPM vendor root, and the AK is bound to that EK. This needs the vendor
+root CA and revocation state, which have no place in an air-gapped offline
+verifier by default. Finding `attestation_not_rooted` (**warning**): "the
+quote is structurally consistent and matches the enrolled measurements; this
+tool does not validate the EK certificate against a TPM vendor root; do so
+with `tpm2_checkquote` / the vendor chain." The exact shape of
+`anchor_not_validated`.
 
 Why this split is the honest one: the offline check proves *this identity key
 is bound to a TPM reporting these measurements*; the vendor-root check proves
@@ -241,30 +241,32 @@ taught auditors to read this exact caveat.
 
 ## 6. Rotation, revocation, and PCR churn
 
-- **Binary updates** are the common case: every gateway release changes the
-  expected binary PCR. That is already a control-plane operation — the new
-  release carries the new expected PCR into a republished deployment bundle,
-  the same enroll-by-commit flow v1 built. A gateway running the old binary
-  then fails `attestation_invalid` against the new bundle, which is correct:
-  it is not the shipped software.
-- **AK/identity-key rotation and revocation** ride the v1 bundle mechanism
-  unchanged (enroll new, overlap, retire; revoke = remove + republish).
-- **Sealed history stays valid** on any of these: the checkpoint attests the
-  attestation verified at seal time; revoking or re-measuring bounds the
-  future, the release lineage dates the boundary.
+Binary updates are the common case: every gateway release changes the
+expected binary PCR. That is already a control-plane operation, since the new
+release carries the new expected PCR into a republished deployment bundle,
+the same enroll-by-commit flow v1 built. A gateway running the old binary
+then fails `attestation_invalid` against the new bundle, which is correct: it
+is not the shipped software.
+
+AK/identity-key rotation and revocation ride the v1 bundle mechanism
+unchanged (enroll new, overlap, retire; revoke = remove + republish). Sealed
+history stays valid on any of these: the checkpoint attests the attestation
+verified at seal time; revoking or re-measuring bounds the future, and the
+release lineage dates the boundary.
 
 ## 7. What v3 deliberately does not do
 
-- **Continuous / runtime attestation.** This is enrollment-time (and
-  bundle-republish-time) attestation: it proves the gateway *booted* the
-  measured binary, not that nothing was injected into the live process
-  afterwards. Runtime integrity (IMA, periodic re-quote into the chain) is a
-  further horizon; it would be the first thing to put *in* the chain (a new
-  payload tag) rather than the bundle. Out of scope here, noted as the next
-  pull.
-- **A specific TPM vendor.** The quote and certify are standard `TPMS_ATTEST`;
-  the parser is vendor-neutral like the PKCS#11 bindings. `swtpm` in
-  test/CI, real silicon in production — the standard is the point.
+Continuous / runtime attestation stays out. This is enrollment-time (and
+bundle-republish-time) attestation: it proves the gateway *booted* the
+measured binary and says nothing about what was injected into the live
+process afterwards. Runtime integrity (IMA, periodic re-quote into the chain)
+is a further horizon; it would be the first thing to put *in* the chain (a
+new payload tag) instead of the bundle. Out of scope here, noted as the next
+pull.
+
+Nor is any specific TPM vendor assumed. The quote and certify are standard
+`TPMS_ATTEST`; the parser is vendor-neutral like the PKCS#11 bindings.
+`swtpm` in test/CI, real silicon in production. The standard is the point.
 
 ## 8. Implementation shape
 
@@ -276,9 +278,9 @@ and, on this machine, cannot be exercised (§10.4). Split accordingly:
    `TPMS_ATTEST` parsing (bounds-checked, no-recursion, the RFC 3161 DER
    discipline), the offline checks in `evidence::verify`, the three findings,
    `--require-attestation` plumbed through `VerifyOptions`. **Tests: a
-   `#[cfg(test)]` quote synthesizer** — an AK signing a hand-built
+   `#[cfg(test)]` quote synthesizer** (an AK signing a hand-built
    `TPMS_ATTEST`, exactly as `rfc3161::testutil::granted_response` forges TSA
-   responses — proving: valid attestation resolves, forged quote rejected,
+   responses) proving: valid attestation resolves, forged quote rejected,
    wrong-PCR rejected, certify bound to the wrong key rejected, absent
    attestation warns/errs under the flag. This exercises every line of the
    security logic with no hardware.
@@ -289,7 +291,7 @@ and, on this machine, cannot be exercised (§10.4). Split accordingly:
 3. **A TPM signer** (gateway enrollment side): produce the AK, the certify
    and the quote. This is the piece that needs real hardware; wrap `swtpm`
    for CI the way SoftHSM backs the PKCS#11 test, **gated on a provisioned
-   TPM and skipped-vacuously without one** — and, here, unverified until a
+   TPM and skipped-vacuously without one**, and unverified here until a
    TPM/`swtpm` exists.
 4. **obsign verify**: `--require-attestation`, report the attestation
    verdict and the out-of-band caveat.
@@ -299,12 +301,12 @@ and, on this machine, cannot be exercised (§10.4). Split accordingly:
 - **Attestation in the chain, per session.** Puts platform state where the
   business log is, re-quotes on the hot-path-adjacent step, and answers a
   question (what booted) that does not change per session. Enrollment is its
-  natural cadence. (Runtime re-quote *would* go in the chain — §7 — but that
+  natural cadence. (§7's runtime re-quote *would* go in the chain, but that
   is a different, later thing.)
 - **A obsign-defined signature over the quote.** The TPM already signs
   `TPMS_ATTEST` with the AK; re-wrapping it in our own signature adds a key
   to trust and proves nothing more. Carry the TPM's bytes opaquely, verify
-  them as the TPM defines — the RFC 3161 stance.
+  them as the TPM defines, the RFC 3161 stance.
 - **Full EK-chain validation offline.** Drags a vendor PKI into the
   air-gapped verifier and implies a genuineness guarantee an offline tool
   cannot honestly make. Out-of-band, named, like the TSA CMS check.
@@ -312,16 +314,16 @@ and, on this machine, cannot be exercised (§10.4). Split accordingly:
 ## 10. Open decisions (need a call before implementation)
 
 1. **AK certifies the identity key vs. the identity key is the AK.**
-   *Recommended: AK certifies a separate identity key* (§3) — TPM AKs are
+   *Recommended: AK certifies a separate identity key* (§3). TPM AKs are
    restricted and cannot sign session certificates, so the separation is
-   forced by the standard, not a preference.
+   forced by the standard.
 2. **Where the expected-PCR policy lives.** *Recommended: in the deployment
    bundle*, ops-signed, with the gateway-binary PCR chained to the release
-   manifest (§4) — so "which software" is answered by a measurement tied to a
+   manifest (§4), so "which software" is answered by a measurement tied to a
    signed release, and the enrollment attestation is covered by the ops
    signature for free.
 3. **Offline structural + out-of-band vendor root.** *Recommended: yes*, the
-   `anchor_not_validated` precedent (§5) — it is the only honest split for an
+   `anchor_not_validated` precedent (§5); it is the only honest split for an
    air-gapped verifier, and auditors already read this caveat for timestamps.
 4. **Scope now, given no local TPM/`swtpm` (the call the other rungs did not
    need).** Unlike SoftHSM for v2, this machine has no TPM, so the
@@ -332,19 +334,19 @@ and, on this machine, cannot be exercised (§10.4). Split accordingly:
      findings, `--require-attestation`) is fully testable with the
      `#[cfg(test)]` synthesizer, exactly as the RFC 3161 verifier was tested
      without a TSA. The gateway-side TPM signer lands gated-and-unverified,
-     flagged for a machine that has a TPM. *Recommended* — it delivers and
-     proves the part an auditor runs, and matches how the anchor verifier
+     flagged for a machine that has a TPM. *Recommended*, since it delivers
+     and proves the part an auditor runs, and matches how the anchor verifier
      shipped ahead of any real TSA integration.
-   - **(b) Install `swtpm` first** (`brew install swtpm` + `tpm2-tools`) so
-     the enroll/quote path is exercised against a software TPM the way
-     SoftHSM backs PKCS#11 — then build the full path verified. Heavier setup;
-     turns (a)'s deferred piece into a tested one.
+   - **(b) Install `swtpm` first.** With `brew install swtpm` and
+     `tpm2-tools`, the enroll/quote path is exercised against a software TPM
+     the way SoftHSM backs PKCS#11, and the full path lands verified. Heavier
+     setup; turns (a)'s deferred piece into a tested one.
    - **(c) Design-only for now.** Stop at this document until a regulator or
-     design partner actually pulls v3 (its §7.5 framing: pulled, not pushed),
+     design partner actually pulls v3 (the "pull, not push" framing of §7.5),
      and spend the effort on the deferred `obsign-identity/2` claims HIGH or
      the open mediums instead.
 
-   My recommendation: **(a)** if v3 is wanted in code now — it lands the
+   My recommendation: **(a)** if v3 is wanted in code now, since it lands the
    auditor-facing security logic with full test coverage and honestly gates
    the one piece this environment cannot verify; **(c)** is the right call if
    v3 is still horizon rather than a current requirement, because unlike

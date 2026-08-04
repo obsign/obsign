@@ -36,7 +36,7 @@ pub enum Error {
     /// `ForeignRecord` below: the gateway would chain its next record on a
     /// hash it cannot compute correctly, and every honest record written
     /// afterwards would carry a `prev_hash` that a build which *does* know
-    /// the type recomputes differently — reporting `broken_link` forever on
+    /// the type recomputes differently, reporting `broken_link` forever on
     /// a log nobody touched. Reading a log to verify it stays tolerant; only
     /// *extending* one demands that we understand its head.
     #[error(
@@ -50,8 +50,8 @@ pub enum Error {
     ///
     /// Raised only on the resuming path: adopting such a record as the new
     /// head would make the honest gateway chain its own authentic records on
-    /// top of a forgery, laundering it. Not an I/O hiccup to retry — a human
-    /// decides.
+    /// top of a forgery, laundering it. That is an incident for a human to
+    /// decide on, well outside the class of recoverable I/O hiccups.
     #[error(
         "record seq {seq} is not signed by a trusted origin key ({reason}): \
          refusing to resume on top of a record no trusted gateway wrote"
@@ -79,7 +79,7 @@ impl Wal {
     /// resume after a restart.
     ///
     /// No origin check: for a gateway that signs its records, use
-    /// [`Wal::open_authenticated`] — this variant would silently adopt a
+    /// [`Wal::open_authenticated`]. This variant would silently adopt a
     /// record fabricated on disk while the process was down.
     pub fn open(dir: &Path, chain_id: &str) -> Result<(Self, ChainWriter), Error> {
         Self::open_impl(dir, chain_id, None)
@@ -92,14 +92,14 @@ impl Wal {
     /// what the attacker writes: a record fabricated between two gateway
     /// runs would be adopted as the head and everything appended after it
     /// would chain on top of the forgery. Here, every replayed record must
-    /// carry an origin signature verifiable with one of `trusted` — resolved
-    /// by the record's `origin_key_id` — any failure is [`Error::ForeignRecord`],
-    /// and nothing is trimmed or adopted.
+    /// carry an origin signature verifiable with one of `trusted` (resolved
+    /// by the record's `origin_key_id`); any failure is
+    /// [`Error::ForeignRecord`], and nothing is trimmed or adopted.
     ///
     /// `trusted` is the set of *currently active* origin keys, keyed by id.
     /// Passing just the gateway's own key refuses any tail its own key did
     /// not sign; passing the deployment bundle's active set (v1) additionally
-    /// accepts a tail written by a predecessor key during a rotation window —
+    /// accepts a tail written by a predecessor key during a rotation window,
     /// the home v0 left open for rotation mid-chain.
     pub fn open_authenticated(
         dir: &Path,
@@ -225,7 +225,7 @@ impl Wal {
 ///
 /// Unlike `Wal::open`, this neither opens the file for append nor trims a
 /// truncated tail: a reader must not mutate another process's log. A
-/// truncated final line is simply not returned — the gateway never
+/// truncated final line is simply not returned. The gateway never
 /// acknowledged that record, so the act it would describe did not happen.
 pub fn read(dir: &Path, chain_id: &str) -> Result<Vec<SignedRecord>, Error> {
     Ok(replay(&dir.join(format!("{chain_id}.jsonl")))?.0)

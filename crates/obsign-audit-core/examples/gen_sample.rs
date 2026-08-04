@@ -10,7 +10,7 @@
 //! record as it writes it (origin), the ledger signs the checkpoint over them
 //! (seal), and the control plane signs the deployment bundle that enrols the
 //! gateway (ops). The pack embeds that bundle, so the auditor verifies the
-//! whole chain — ops key -> bundle -> origin key -> records — holding nothing
+//! whole chain (ops key to bundle to origin key to records) holding nothing
 //! but the two keys in `trusted-keys.json`.
 //!
 //! Every key is derived from a fixed seed: this is an example, not a

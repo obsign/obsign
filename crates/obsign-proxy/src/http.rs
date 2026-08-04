@@ -5,9 +5,9 @@
 //! request opens a session: its own instance of the wrapped stdio server, its
 //! own audit chain, its own identity. The client gets an `Mcp-Session-Id`
 //! back and presents it on every subsequent request; deleting the session
-//! closes the log — sealing and evidence export belong to the ledger, which
-//! runs with a key this process never holds. One agent's session ending — or
-//! misbehaving — never touches another's log.
+//! closes the log; sealing and evidence export belong to the ledger, which
+//! runs with a key this process never holds. One agent's session ending, or
+//! misbehaving, never touches another's log.
 //!
 //! Identity travels in the `Authorization: Bearer` header of each request and
 //! is verified against the same signed identity bundle as in stdio mode. The
@@ -17,11 +17,11 @@
 //! The HTTP layer is written by hand on `std::net`, one thread per
 //! connection. Not bravado: the gateway's dependency list is part of the
 //! product (an auditor must be able to read it end to end), and the subset of
-//! HTTP/1.1 this transport needs — POST/GET/DELETE on one path,
-//! `Content-Length` bodies, server-sent events — is small enough that a web
+//! HTTP/1.1 this transport needs (POST/GET/DELETE on one path,
+//! `Content-Length` bodies, server-sent events) is small enough that a web
 //! framework would cost more in tree than it saves in code. The parser
-//! compensates by being strict: anything outside that subset is refused, not
-//! interpreted.
+//! compensates by being strict, refusing anything outside that subset instead
+//! of trying to interpret it.
 //!
 //! Inbound HTTP does not contradict "the gateway makes no network calls":
 //! that invariant bans *outbound* dependencies (JWKS fetches, ledger RTTs),
@@ -48,8 +48,8 @@ const ENDPOINT: &str = "/mcp";
 /// Ceiling on request headers. Above this, someone is not speaking MCP.
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 
-/// Ceiling on a request body. Tool arguments are hashed into the log, not
-/// stored, so there is no audit reason to accept arbitrarily large payloads.
+/// Ceiling on a request body. Only the hash of tool arguments goes into the
+/// log, so there is no audit reason to accept arbitrarily large payloads.
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 
 /// Idle time after which a kept-alive connection is closed. Closing is always
@@ -57,12 +57,12 @@ const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Interval between comment lines on the GET stream, so that a dead client is
-/// detected by the write failing rather than never.
+/// eventually detected by a write failing.
 const SSE_KEEPALIVE: Duration = Duration::from_secs(15);
 
 /// How the gateway establishes the identity of each HTTP session.
 pub enum Identity {
-    /// Declared on the command line, unverified — development only. Every
+    /// Declared on the command line, unverified, for development only. Every
     /// session carries the same declared principal.
     Declared {
         principal: String,
@@ -104,13 +104,13 @@ struct McpSession {
     /// "session terminated" instead of racing a dying process.
     child_stdin: Mutex<Option<ChildStdin>>,
     /// POST threads waiting for the response to a forwarded request, keyed by
-    /// the serialized JSON-RPC id — the same key `Session::pending` uses.
+    /// the serialized JSON-RPC id, the same key `Session::pending` uses.
     waiters: Mutex<HashMap<String, mpsc::Sender<Value>>>,
     /// Sink of the GET stream, when one is open. Server-initiated messages
     /// go there; without a stream they are dropped, loudly.
     events: Mutex<Option<mpsc::Sender<Value>>>,
-    /// Signalled once the log is complete — every buffered response processed
-    /// and durable — so DELETE returns only when a ledger pass would see the
+    /// Signalled once the log is complete (every buffered response processed
+    /// and durable), so DELETE returns only when a ledger pass would see the
     /// whole session.
     finished: (Mutex<bool>, Condvar),
 }
@@ -464,7 +464,7 @@ fn handle_post(
 /// comes back through the dispatcher.
 ///
 /// No timeout of our own: a slow tool is the client's business, and a dead
-/// server is detected structurally — the dispatcher clears the waiters map on
+/// server is detected structurally. The dispatcher clears the waiters map on
 /// EOF, which disconnects the channel.
 fn forward_and_wait(
     sess: &McpSession,
@@ -496,8 +496,8 @@ fn forward_raw(sess: &McpSession, raw: &str) -> std::io::Result<()> {
 
 /// Takes the bearer of a non-`tools/call` request into account, recording the
 /// new delegation if it changed. Verification failure is not fatal here: the
-/// previous delegation stays in force and its expiry does the enforcement —
-/// tools/list hides everything, tools/call refuses and records.
+/// previous delegation stays in force and its expiry does the enforcement
+/// (tools/list hides everything, tools/call refuses and records).
 fn present_bearer(sess: &McpSession, bearer: Option<&str>) {
     let Some(token) = bearer else { return };
     let now = now_ms();
@@ -739,8 +739,8 @@ fn open_session(
 /// server-initiated traffic to the GET stream.
 ///
 /// This thread is also the only place a session is declared finished.
-/// Everything that ends a session — DELETE, a dying child, gateway shutdown
-/// via child exit — converges here as an EOF on the child's stdout, after
+/// Everything that ends a session (DELETE, a dying child, gateway shutdown
+/// via child exit) converges here as an EOF on the child's stdout, after
 /// every last buffered response has been processed. Declaring it anywhere
 /// else would race the effects still being written.
 fn dispatch_from_server(
@@ -1061,7 +1061,7 @@ impl HttpError {
 }
 
 /// Reads one request. `Ok(None)` means the connection ended between requests
-/// — closed by the client or idle past the timeout — which calls for silence,
+/// (closed by the client or idle past the timeout), which calls for silence,
 /// not an error page.
 fn read_request(
     reader: &mut BufReader<TcpStream>,
@@ -1200,8 +1200,8 @@ fn rpc_error(id: &Value, code: i64, message: &str) -> Vec<u8> {
 /// A fresh session identifier.
 ///
 /// The identifier is a capability: whoever holds it speaks as the session.
-/// The spec asks for a cryptographically secure value and that is not
-/// pedantry — a guessable id lets a neighbour inject calls into someone
+/// The spec asks for a cryptographically secure value, and that is not
+/// pedantry. A guessable id lets a neighbour inject calls into someone
 /// else's audited session.
 fn new_session_id() -> std::result::Result<String, getrandom::Error> {
     let mut bytes = [0u8; 16];

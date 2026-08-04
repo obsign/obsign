@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 /// Durable home of everything the ledger produces: checkpoints, anchors,
 /// and the public halves of the keys that sealed.
 ///
-/// Same file philosophy as the WAL — JSONL, readable with `tail` during an
-/// incident — and the same trust model: the files prove nothing by
+/// Same file philosophy as the WAL (JSONL, readable with `tail` during an
+/// incident) and the same trust model: the files prove nothing by
 /// themselves. Every checkpoint is re-verified on load (signature, chaining,
 /// gapless coverage), so a store whose disk was edited refuses to open
 /// instead of quietly serving rewritten history.
@@ -224,7 +224,7 @@ impl Store {
 /// Reads a JSONL file, tolerating exactly one torn line at the very end.
 ///
 /// A torn final line is a crash mid-append: the seal (or anchor) was never
-/// acknowledged, and the records it covered are still unsealed — sealing them
+/// acknowledged, and the records it covered are still unsealed; sealing them
 /// again is harmless. The torn line is trimmed so it does not poison every
 /// future load. Anywhere else, an unreadable line is genuine corruption.
 fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T>, Error> {

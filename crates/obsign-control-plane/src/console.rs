@@ -1,17 +1,17 @@
 //! Read-only console: what the log looks like to the operator.
 //!
-//! Server-rendered HTML on `std::net`, no JavaScript, no template engine —
-//! three pages assembled by hand. Same reasoning as the gateway's HTTP
+//! Server-rendered HTML on `std::net`, no JavaScript, no template engine,
+//! just three pages assembled by hand. Same reasoning as the gateway's HTTP
 //! transport: the subset needed here (GET, three routes) is smaller than any
 //! framework's dependency tree, and that tree is part of the product.
 //!
 //! Read-only **by construction**: the only accepted method is GET and no
 //! handler writes anything. The console can therefore never become a second
-//! write path around git — rules change through a reviewed commit and
+//! write path around git. Rules change through a reviewed commit and
 //! `obsign-control publish`, or not at all.
 //!
 //! Everything is re-read from disk on every request. No cache to invalidate,
-//! and what the console shows is what the files say *now* — the same property
+//! and what the console shows is what the files say *now*, the same property
 //! the gateway's hot reload relies on. These are admin pages over directory
 //! listings; if serving them ever needs a cache, something else went wrong.
 //!
@@ -173,7 +173,7 @@ struct ChainRow {
     records: usize,
     last_seq: Option<u64>,
     /// Timestamp of the last record, and the column an investigation reads
-    /// first. `None` when the chain is empty or unreadable — those sort last,
+    /// first. `None` when the chain is empty or unreadable; those sort last,
     /// where "nothing happened here" belongs.
     last_ms: Option<i64>,
     sealed_to: Option<u64>,

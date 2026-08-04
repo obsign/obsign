@@ -1,4 +1,4 @@
-//! TPM enrollment for attestation v3 — the gateway-side signer the design
+//! TPM enrollment for attestation v3, the gateway-side signer the design
 //! doc deferred until a TPM existed to exercise it against.
 //!
 //! What it produces, pointed at a TPM 2.0 command socket:
@@ -12,19 +12,19 @@
 //! offline verifier checks, plus the identity public key for the deployment
 //! bundle entry.
 //!
-//! The TPM2 marshalling is hand-rolled — the PKCS#11/DER/HTTP stance: only
-//! the command subset enrollment needs, bounds-checked response parsing, no
-//! recursion, no TSS stack in the dependency tree. The transport is a raw
-//! command stream: swtpm's `--server type=tcp` socket, or a real TPM's
-//! character device (`/dev/tpmrm0`) on Linux hardware. The [`ctrl`] module
-//! drives swtpm's control channel to bring the simulated TPM up, which real
-//! hardware does not need.
+//! The TPM2 marshalling is hand-rolled, following the PKCS#11/DER/HTTP
+//! stance: only the command subset enrollment needs, bounds-checked response
+//! parsing, no recursion, no TSS stack in the dependency tree. The transport
+//! is a raw command stream: swtpm's `--server type=tcp` socket, or a real
+//! TPM's character device (`/dev/tpmrm0`) on Linux hardware. The [`ctrl`]
+//! module drives swtpm's control channel to bring the simulated TPM up, which
+//! real hardware does not need.
 //!
 //! Algorithm choice is read off the TPM's capabilities: EdDSA/ed25519 where
 //! implemented (system-uniform), ECDSA-P256 otherwise. The swtpm builds this
-//! tree tests against (libtpms 0.10) implement no EdDSA — the capability
-//! list carries neither `TPM_ALG_EDDSA` nor the 25519 curve, and an EdDSA
-//! `CreatePrimary` fails `TPM_RC_SCHEME` — so the exercised path is P-256;
+//! tree tests against (libtpms 0.10) implement no EdDSA. The capability list
+//! carries neither `TPM_ALG_EDDSA` nor the 25519 curve, and an EdDSA
+//! `CreatePrimary` fails `TPM_RC_SCHEME`, so the exercised path is P-256;
 //! the verifier accepts both (see `obsign_audit_core::attestation`).
 
 pub mod ctrl;

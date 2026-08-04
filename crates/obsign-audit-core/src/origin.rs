@@ -2,7 +2,7 @@
 //!
 //! The hash chain proves *internal consistency*; the checkpoint proves *who
 //! sealed*. Neither proves *who wrote*: every input to a record's hash is
-//! public, so an attacker with write access to the WAL — and no key — can
+//! public, so an attacker with write access to the WAL (and no key) can
 //! fabricate a perfectly well-formed record after the sealed head, and the
 //! honest sealer blesses it on its next pass. The origin signature closes
 //! that gap: the gateway signs each record as it writes it, and both the
@@ -12,12 +12,11 @@
 //! The signature is deliberately layered *outside* the frozen proof object.
 //! `Record` and `Record::hash()` are untouched; the signature rides as
 //! sibling fields in the serde envelope (WAL line, evidence pack). An absent
-//! signature is an absent proof, not a format break — the same rule the pack
-//! applies to `anchors`.
+//! signature is an absent proof, the same rule the pack applies to `anchors`.
 //!
 //! What the signature can and cannot claim: it authenticates the *writer*,
 //! raising the attack from "write the WAL directory" to "hold the gateway's
-//! key material". It cannot defend against a compromised gateway process —
+//! key material". It cannot defend against a compromised gateway process:
 //! the gateway *is* the origin, and origin authentication cannot defend
 //! against the origin.
 
@@ -33,7 +32,7 @@ use serde::{Deserialize, Serialize};
 /// One derivation, used by whoever signs (the gateway naming its key in a
 /// record envelope) and whoever verifies (resolving a session key from its
 /// certificate): two schemes drifting is the single-implementation risk this
-/// crate exists to remove. Sixteen hex chars of the public key — collision
+/// crate exists to remove. Sixteen hex chars of the public key; a collision
 /// there would already break the customer's key management.
 pub fn key_id_for(key: &VerifyingKey) -> String {
     format!("origin-{}", &hex::encode(key.to_bytes())[..16])
@@ -42,7 +41,7 @@ pub fn key_id_for(key: &VerifyingKey) -> String {
 /// The bytes the identity key signs to certify a session key.
 ///
 /// Covers the session public key, the identity key that vouches for it, the
-/// gateway, the validity window, and — via `chain_id` — the one chain this
+/// gateway, the validity window, and, via `chain_id`, the one chain this
 /// certificate authorizes. A leaked session key cannot be replayed onto
 /// another chain (chain_id bound) or presented as another gateway's
 /// (gateway_id bound). `identity_sig` itself is excluded: it is the output.
@@ -87,7 +86,7 @@ pub fn verify_session_cert(
 ///
 /// The record hash already binds `seq`, `prev_hash`, `ts_ms`, the ids and
 /// the payload, so the signature is position-bound within its chain. The
-/// chain id is added here because the record does not carry it — the WAL
+/// chain id is added here because the record does not carry it. The WAL
 /// *filename* does, and filenames are exactly what a disk attacker rewrites.
 /// Without it, a signed record could be transplanted into another chain at
 /// the same position.
@@ -102,7 +101,7 @@ pub fn origin_signing_bytes(chain_id: &str, record_hash: &Hash) -> Vec<u8> {
 ///
 /// `#[serde(flatten)]` keeps the wire format additive: a line written before
 /// origin authentication existed deserializes with `None` fields, and a line
-/// written after stays readable with `tail` — two hex fields longer.
+/// written after stays readable with `tail`, two hex fields longer.
 ///
 /// Deserialize is written by hand: serde silently disables the inner
 /// struct's `deny_unknown_fields` across a `flatten`, and a smuggled field

@@ -2,7 +2,7 @@
 //!
 //! Same philosophy as the other crates: each control has its paired
 //! legitimate-path test, and what matters is not that the code runs but that
-//! the refusals refuse — a version that could be silently rewritten, a key id
+//! the refusals refuse. A version that could be silently rewritten, a key id
 //! that could be rebound or a dossier that hid an invalid pack would each
 //! defeat the product.
 
@@ -434,7 +434,7 @@ const TRACKED: &[&str] = &[
 ];
 
 /// Hand-writes `.git/HEAD` plus a real `.git/index` covering `paths` exactly
-/// as they sit on disk — the state git leaves right after a commit. Written
+/// as they sit on disk, the state git leaves right after a commit. Written
 /// by hand for the same reason the git_head tests are: the verification must
 /// not need a git binary, so neither may its tests.
 fn write_git_checkout(root: &Path, paths: &[&str]) {

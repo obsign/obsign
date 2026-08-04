@@ -102,8 +102,8 @@ impl Verifier {
     /// Verifies a token and extracts the delegation from it.
     ///
     /// Checks, in this order: presence of `kid`, existence of the key,
-    /// signature, issuer, audience, expiry. None of these steps is optional —
-    /// verifying the signature without verifying the audience lets through a
+    /// signature, issuer, audience, expiry. None of these steps is optional.
+    /// Verifying the signature without verifying the audience lets through a
     /// valid token issued for another service.
     pub fn verify(&self, token: &str) -> Result<Delegation, Error> {
         let header = decode_header(token)?;

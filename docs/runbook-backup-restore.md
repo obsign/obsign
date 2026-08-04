@@ -3,29 +3,29 @@
 The operator's counterpart to [deploy-docker.md](deploy-docker.md): how to
 back up the WAL and the ledger store, restore them after a loss, and keep
 proofs verifiable over your retention window. How long that window is comes
-from your contract or your regulator; this runbook uses 24 months — a
-common regulatory floor — as the worked example, and the procedure is the
-same for longer windows.
+from your contract or your regulator; this runbook uses 24 months, a common
+regulatory floor, as the worked example, and the procedure is the same for
+longer windows.
 
 One property shapes everything here: **integrity travels with the data, not
 with the backup**. Every record is hash-chained and origin-signed, every
 checkpoint is signed and re-verified on load, and a store whose disk was
 edited refuses to open instead of serving rewritten history. A backup
 therefore protects *availability* (a lost disk must not lose the audit
-trail) and *confidentiality* (records name identities, tools and arguments —
+trail) and *confidentiality* (records name identities, tools and arguments;
 encrypt copies at rest), never integrity. The corollary is just as useful:
 a restored copy proves itself or refuses to load, so every restore ends
-with a machine-checkable verdict, not a judgement call.
+with a machine-checkable verdict.
 
 ## What there is to save
 
 | Artifact | Written by | Typical path (Docker) | Contents |
 |---|---|---|---|
-| WAL directory | gateway (`obsign-proxy`) | volume `obsign-wal`, `/var/lib/obsign/wal` | one `<chain>.jsonl` per audit chain — with the HTTP transport, one chain (hence one file) per session, named `<chain-id>-<session>` |
+| WAL directory | gateway (`obsign-proxy`) | volume `obsign-wal`, `/var/lib/obsign/wal` | one `<chain>.jsonl` per audit chain. With the HTTP transport, one chain (hence one file) per session, named `<chain-id>-<session>` |
 | Ledger store | ledger (`obsign-ledger`) | volume `obsign-store`, `/store` | per chain: `<chain>.checkpoints.jsonl`, `<chain>.anchors.jsonl`; store-wide: `keys.json` (public halves of every sealing key) |
 | Evidence packs | `obsign-ledger export` | wherever `--out` pointed | self-contained proof (records + checkpoints + keys + anchors); **the retention artifact** — see below |
 | Trust material | ops | version-controlled config | `trusted-keys.json` (ops keys), the signed deployment bundle. Small, changes rarely; treat as configuration, back up with your config. |
-| Sealing key | HSM | never on these paths | not yours to file-copy: the HSM vendor's backup ceremony applies. Losing it stops **new** seals; it invalidates nothing already sealed (verification uses the recorded public key). A replacement key takes a **new** `key_id` — re-binding an old id is refused (`KeyConflict`). |
+| Sealing key | HSM | never on these paths | not yours to file-copy: the HSM vendor's backup ceremony applies. Losing it stops **new** seals; it invalidates nothing already sealed (verification uses the recorded public key). A replacement key takes a **new** `key_id`; re-binding an old id is refused (`KeyConflict`). |
 
 Everything in the first three rows is JSONL or JSON, append-only, readable
 with `tail`. That is deliberate, and it makes backup boring: files only
@@ -40,7 +40,7 @@ Hot copies are safe at the file level.
 The store's files reference each other: an anchor names a checkpoint, a
 checkpoint names a signing key. `Store::open` re-verifies those references
 and refuses a store where they dangle. A copy taken in the wrong order
-while the ledger is sealing can capture a reference without its referent —
+while the ledger is sealing can capture a reference without its referent:
 a backup that refuses to restore even though production is healthy.
 
 Copy **in reference order**, so the copy can never hold a reference to
@@ -51,9 +51,9 @@ something it missed:
 3. `keys.json`
 
 Across the two directories: **store before WAL**. Sealed coverage must
-never run past the end of the log (that is `TruncatedLog`, an incident, not
-a retry). Copying the store first guarantees the WAL in the same backup set
-is at least as advanced as the store.
+never run past the end of the log (that is `TruncatedLog`, an incident and
+never a retry). Copying the store first guarantees the WAL in the same
+backup set is at least as advanced as the store.
 
 ```bash
 # Hot backup, safe while gateway and ledger run.
@@ -64,7 +64,7 @@ rsync -a wal/                       backup/wal/
 ```
 
 A single atomic filesystem snapshot (LVM, ZFS, EBS) of both directories is
-equivalent and simpler — the ordering above exists for plain file copies.
+equivalent and simpler. The ordering above exists for plain file copies.
 Either way, restore-test it (below).
 
 ### Frequency
@@ -77,7 +77,7 @@ interval, so nothing sealed exists only on one disk.
 
 ### Verify every backup
 
-A backup nobody has opened is a hope. Export and verify from the copy —
+A backup nobody has opened is a hope. Export and verify from the copy.
 `export` reads the WAL without writing to it, and both `export` and the
 verifier fail loudly on a damaged copy:
 
@@ -93,11 +93,11 @@ done
 ```
 
 Exit code 0 or the backup is not a backup. (Opening the store copy may trim
-a torn final line captured mid-append — that is the normal crash-recovery
-path, not damage.)
+a torn final line captured mid-append. The copy is undamaged; that is the
+normal crash-recovery path.)
 
 Then encrypt and follow 3-2-1: two media, one off-site. The copies carry no
-key material, but they do carry who did what — treat them as confidential.
+key material, but they do carry who did what, so treat them as confidential.
 
 ## Restoring
 
@@ -123,7 +123,7 @@ Two refusals are possible, and both are the system working:
   deleting lines.
 
 Acts performed after the last backup are absent from the restored log.
-Say so in the incident record — a documented gap is a defensible gap; a
+Say so in the incident record. A documented gap is a defensible gap; a
 quietly shortened chain is not.
 
 ### Ledger host lost
@@ -138,10 +138,10 @@ serving anything, so a successful open *is* the integrity check.
 - `TruncatedLog` on the next pass — your restored WAL is older than the
   store: sealed records are missing from the log. Restore a newer WAL
   backup. If none exists, the store and the archived packs remain the
-  evidence of what was sealed; open an incident rather than deleting the
-  store to make the error go away.
+  evidence of what was sealed; open an incident, and do not delete the store
+  to make the error go away.
 - `DivergedLog` — the WAL and the store disagree about sealed history: one
-  of them is not the original. The anchors arbitrate — an RFC 3161 token
+  of them is not the original. The anchors arbitrate: an RFC 3161 token
   fixes what the checkpoint said, and when.
 
 ### Both hosts lost
@@ -150,22 +150,22 @@ The archived evidence packs are self-contained and verify offline with no
 service: history is not lost, it is already in its long-term form.
 Operations resume on fresh chains (with the HTTP transport, every new
 session is a new chain anyway). Do not attempt to reconstruct WAL files
-from packs to "resume" old chains — the packs are the proof of record;
+from packs to "resume" old chains. The packs are the proof of record;
 new work gets new chains.
 
 ### Sealing key lost
 
 Nothing already sealed is affected. Provision a new key in the HSM, seal
 under a **new** `key_id`, and distribute the updated public key to whoever
-verifies. The old id stays bound to the old key forever — that binding is
+verifies. The old id stays bound to the old key forever, and that binding is
 what keeps old seals verifiable.
 
 ## Retention
 
-The retention artifact is the **evidence pack**, not the raw WAL. A pack is
-one JSON file, self-contained, offline-verifiable for as long as you can
-run `sha256` and Ed25519 — the right shape for a multi-year shelf. The WAL
-and store are the working set; the archive is packs.
+The retention artifact is the **evidence pack**. A pack is one JSON file,
+self-contained, offline-verifiable for as long as you can run `sha256` and
+Ed25519, the right shape for a multi-year shelf. The WAL and store are the
+working set; the archive is packs.
 
 Per chain (with the HTTP transport: per session), the lifecycle is:
 
@@ -181,10 +181,11 @@ Per chain (with the HTTP transport: per session), the lifecycle is:
    an auditor would run; run it before they do.
 6. **Archive** — pack plus its `sha256` into immutable storage (S3 Object
    Lock or equivalent), retention set to your window (here: 24 months)
-   counted from the anchor's TSA time, two locations. A layout that ages well: `archive/<yyyy>/<mm>/<chain>.pack.json`.
+   counted from the anchor's TSA time, two locations. A layout that ages
+   well: `archive/<yyyy>/<mm>/<chain>.pack.json`.
 7. **Prune** — only now may the chain's WAL file and its
    `<chain>.checkpoints.jsonl` / `<chain>.anchors.jsonl` be deleted.
-   Pruning removes whole chains' files, never lines within a file — a
+   Pruning removes whole chains' files, never lines within a file; a
    shortened file is indistinguishable from tampering, and the tooling will
    treat it as such. `keys.json` is kept for the life of the store.
 
@@ -203,16 +204,16 @@ exit $fail
 ```
 
 Treat **any** non-zero exit as a failure, including 3: exit 3 means the
-verifier ran self-referentially — internally consistent, but checked only
+verifier ran self-referentially, internally consistent but checked only
 against keys the pack itself supplied. In a scheduled job that is a
-misconfiguration (the trusted-keys file did not reach the verifier), not a
-pass. The codes: 0 proven, 1 invalid, 2 execution error, 3 consistent but
-unproven.
+misconfiguration (the trusted-keys file did not reach the verifier), and
+never a pass. The codes: 0 proven, 1 invalid, 2 execution error, 3 consistent
+but unproven.
 
 Two long-horizon points the quarterly run should carry:
 
 - **Keys**: the `trusted-keys.json` used for re-verification must be the
-  out-of-band copy under your control, not one extracted from a pack — and
+  out-of-band copy under your control, never one extracted from a pack, and
   it must accumulate, never shrink: a key retired from *new* deployments
   still verifies two years of old seals.
 - **TSA material**: archive the TSA's certificate chain alongside the

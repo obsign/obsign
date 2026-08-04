@@ -1,8 +1,8 @@
 //! Exit-code contract of the binary, exercised end to end.
 //!
 //! Exit 0 is the product: pipelines gate on `obsign verify … && deploy`.
-//! The one scenario that must never happen is a fully forged pack — signed
-//! with the attacker's own key, embedded in the pack itself — coming out
+//! The one scenario that must never happen is a fully forged pack (signed
+//! with the attacker's own key, embedded in the pack itself) coming out
 //! with exit 0. These tests run the real binary on real files.
 
 use obsign_audit_core::checkpoint::{KeyRole, PublicKeyEntry};
@@ -24,7 +24,7 @@ fn entry(key: &SigningKey, key_id: &str) -> PublicKeyEntry {
 }
 
 /// A structurally impeccable pack sealed with `key`. Whether it is honest or
-/// forged depends only on whose key that is — exactly the point.
+/// forged depends only on whose key that is, which is exactly the point.
 fn pack(key: &SigningKey, key_id: &str) -> Evidence {
     let mut chain = ChainWriter::new("cli-chain");
     let records = (0..3)

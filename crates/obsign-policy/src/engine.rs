@@ -10,7 +10,7 @@ use crate::bundle::{ArgKind, Bundle, FailBehaviour, ToolDef, FORMAT_V2};
 use crate::Error;
 
 /// Caps on what one call may put in front of Cedar. Policy-relevant
-/// arguments are identifiers — channels, tables, paths, amounts — not
+/// arguments are identifiers (channels, tables, paths, amounts) and never
 /// payloads; the caps state that, and bound what a hostile agent can make
 /// a `like` pattern chew on.
 const MAX_DECLARED_ARGS: usize = 16;
@@ -22,13 +22,13 @@ const MAX_SET_ELEMENTS: usize = 64;
 /// target.
 ///
 /// A constant, deliberately. One gateway fronts one server, so the entity a
-/// policy matches on is always "the server this gateway wraps" — and making
-/// it an operator-supplied string would let `--server-id`, which nobody
-/// signs, decide a verdict: change the flag, and a `forbid` keyed on the old
-/// value stops applying. What varies per deployment reaches policies through
+/// policy matches on is always "the server this gateway wraps". Making it an
+/// operator-supplied string would let `--server-id`, which nobody signs,
+/// decide a verdict: change the flag, and a `forbid` keyed on the old value
+/// stops applying. What varies per deployment reaches policies through
 /// `context.server`, the same unsigned-declaration channel as `context.env`.
 ///
-/// It lives in this crate rather than in the gateway because it is a fact of
+/// The gateway does not own it; this crate does, because it is a fact of
 /// the *model*: the generated schema enumerates it, so a rule keyed on a
 /// deployment's own name (`Server::"mcp://crm.internal"`) is an editor error
 /// and a compile error, instead of a rule that silently never matches.
@@ -91,17 +91,17 @@ impl ToolRequest {
 
 /// Non-tool MCP capabilities the gateway arbitrates.
 ///
-/// Unlike tools there is no signed catalogue to check against — resource
-/// URIs and prompt names are minted by the MCP server at runtime — so
-/// Cedar's default deny is the whole gate: absent an explicit permit for the
-/// action, the access is refused. Policies match the target either exactly
-/// (`resource == Resource::"file:///etc/motd"`) or by pattern
-/// (`context.target like "docs/*"`).
+/// Unlike tools there is no signed catalogue to check against, because
+/// resource URIs and prompt names are minted by the MCP server at runtime.
+/// Cedar's default deny is therefore the whole gate: absent an explicit
+/// permit for the action, the access is refused. Policies match the target
+/// either exactly (`resource == Resource::"file:///etc/motd"`) or by
+/// pattern (`context.target like "docs/*"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Capability {
     /// `resources/read`, `resources/subscribe`, `resources/unsubscribe`,
     /// and `completion/complete` against a resource template: one
-    /// permission for all — a subscription is only ever a promise of
+    /// permission for all, since a subscription is only ever a promise of
     /// reads, a completion enumerates the very URIs a read would fetch,
     /// and denying the read must deny both.
     ResourceRead,
@@ -109,15 +109,15 @@ pub enum Capability {
     PromptGet,
     /// `sampling/createMessage`, initiated by the *server*: it borrows the
     /// agent's model, so data crosses the boundary in both directions. The
-    /// resource is the server itself — there is no finer-grained target.
+    /// resource is the server itself; there is no finer-grained target.
     Sampling,
     /// `elicitation/create`, initiated by the *server*: it puts a question
     /// to the human and carries the answer back. Same shape as sampling.
     Elicitation,
     /// `notifications/message`, initiated by the *server*: a log message at
     /// any level, carrying arbitrary `data` straight into the agent's
-    /// context. Unlike progress and cancellation notifications — genuine
-    /// liveness machinery — this one can spell out the very resource and
+    /// context. Unlike progress and cancellation notifications (genuine
+    /// liveness machinery), this one can spell out the very resource and
     /// prompt names the listing filter hides, so it is arbitrated per
     /// server like sampling. A notification carries no response, so its
     /// effect closes the instant it is delivered or refused.
@@ -252,8 +252,8 @@ impl Engine {
     /// An MCP server can advertise new tools at any time (update,
     /// compromise). If the signed catalogue does not describe it, nobody
     /// approved its use: we refuse by construction. Shared by `evaluate` and
-    /// `evaluate_listing` so the deny wording — which the audit log and the
-    /// tests key on — cannot drift between the call and listing paths.
+    /// `evaluate_listing` so the deny wording (which the audit log and the
+    /// tests key on) cannot drift between the call and listing paths.
     fn lookup(&self, tool: &str) -> Result<&ToolDef, Verdict> {
         self.tools.get(tool).ok_or_else(|| Verdict {
             outcome: Outcome::Deny,
@@ -318,21 +318,21 @@ impl Engine {
     /// condition fails to evaluate as not applying, so this decision is
     /// taken *as if the argument rules did not exist*: `context.args` is
     /// deliberately absent, and evaluation errors do not fall to the fail
-    /// mode. Permissive on purpose — hiding `send_message` because its
+    /// mode. Permissive on purpose. Hiding `send_message` because its
     /// channel restriction cannot be checked without a channel would hide
     /// every argument-restricted tool from every agent. The listing is
     /// hygiene; `evaluate` on the call path is the enforcement point.
     ///
     /// Two consequences of "drop the unevaluable rule", both documented in
     /// the design doc §3.8:
-    /// - the leniency is not scoped to argument errors — *any* evaluation
+    /// - the leniency is not scoped to argument errors, and *any* evaluation
     ///   error (a typo'd non-argument attribute, a type mismatch) is
     ///   likewise dropped rather than escalated; visibility is best-effort,
     ///   the call path is what enforces;
     /// - it keeps a tool listed when an argument *forbid* is dropped, but
     ///   hides one whose *only* permit is argument-conditional (the permit
     ///   is dropped, nothing grants, default-deny). Pair an argument
-    ///   `forbid` with a broad `permit`, rather than gating visibility on a
+    ///   `forbid` with a broad `permit`, instead of gating visibility on a
     ///   permit that reads `context.args`.
     pub fn evaluate_listing(&self, req: &ToolRequest) -> Verdict {
         let def = match self.lookup(&req.tool) {
@@ -346,7 +346,8 @@ impl Engine {
     }
 
     /// Arbitrates a non-tool capability access. The `tool` field of the
-    /// request carries the target — the resource URI or the prompt name.
+    /// request carries the target, either the resource URI or the prompt
+    /// name.
     pub fn evaluate_capability(&self, cap: Capability, req: &ToolRequest) -> Verdict {
         match self.authorize_capability(cap, req) {
             Ok(v) => v,
@@ -354,12 +355,12 @@ impl Engine {
         }
     }
 
-    /// `args` is `Some` on the call path — strict: an evaluation error is a
-    /// broken policy and falls to the fail mode — and `None` on the listing
-    /// path, where `context.args` is absent by design and a rule that
-    /// cannot evaluate is dropped rather than escalated. The coupling is
-    /// semantic, not incidental: absent args is exactly what makes an
-    /// argument rule unevaluable.
+    /// `args` is `Some` on the call path, which is strict (an evaluation
+    /// error is a broken policy and falls to the fail mode), and `None` on
+    /// the listing path, where `context.args` is absent by design and a
+    /// rule that cannot evaluate is dropped, never escalated. The coupling
+    /// is semantic: absent args is exactly what makes an argument rule
+    /// unevaluable.
     fn authorize(
         &self,
         req: &ToolRequest,
@@ -597,7 +598,7 @@ impl Engine {
     /// `load` only checks that the rules *parse*. Cedar is happy to compile
     /// `principal.permissions` or `context.enviroment`: it discovers at
     /// evaluation time that the attribute is not there, raises an error, and
-    /// the call falls to the fail mode — a fail-open tool would then be let
+    /// the call falls to the fail mode. A fail-open tool would then be let
     /// through by a rule that was meant to stop it. Running the validator
     /// against a schema derived from this very bundle's catalogue moves that
     /// discovery to `obsign-control compile`, where it is a diff and a
@@ -609,8 +610,8 @@ impl Engine {
     /// strict is what every Cedar editor validates with by default.
     ///
     /// But not every strict finding means the rule is wrong, and only the
-    /// ones that do are worth refusing to sign over — see
-    /// [`breaks_the_rule`]. The rest come back as warnings, to be printed
+    /// ones that do are worth refusing to sign over (see
+    /// [`breaks_the_rule`]). The rest come back as warnings, to be printed
     /// rather than to block a release.
     pub fn validate(&self) -> Result<Vec<String>, Error> {
         let tools: Vec<ToolDef> = self.tools.values().cloned().collect();
@@ -701,15 +702,15 @@ impl Engine {
 ///   failures deliberately (an eval error over arguments denies rather than
 ///   fail-opens). Refusing it would delete a working capability as a side
 ///   effect of adding a type checker, and the obvious substitute
-///   (`like "10.*"`) is not CIDR-equivalent — it cannot express a /12 or a
-///   /24 boundary;
+///   (`like "10.*"`) is not CIDR-equivalent, since it cannot express a /12
+///   or a /24 boundary;
 /// * `EmptySetForbidden` — a literal `[]`, whose element type strict mode
 ///   cannot infer. It evaluates fine.
 ///
 /// Both are reported as warnings instead, so nothing is silent. The cost is
 /// that a Cedar editor, which validates strictly, will underline these two
 /// where `compile` accepts them. That disagreement runs in the safe
-/// direction — the editor is stricter than the signer, never the reverse —
+/// direction (the editor is stricter than the signer, never the reverse),
 /// and it is documented in `docs/policies-cedar.md`.
 ///
 /// Deliberately a closed list rather than the inverse: `ValidationError` is
@@ -725,8 +726,8 @@ fn breaks_the_rule(e: &cedar_policy::ValidationError) -> bool {
 }
 
 /// Catalogue-time validation of `policy_args`. Runs at `Engine::load`,
-/// which the control plane also calls at compile time — a bad declaration
-/// fails in CI, not at gateway startup across the fleet.
+/// which the control plane also calls at compile time, so a bad
+/// declaration fails in CI, not at gateway startup across the fleet.
 fn validate_arg_specs(def: &ToolDef, format: &str) -> Result<(), Error> {
     if def.policy_args.is_empty() {
         return Ok(());
@@ -772,9 +773,10 @@ fn validate_arg_specs(def: &ToolDef, format: &str) -> Result<(), Error> {
 }
 
 /// Extracts the declared arguments of one call. Total by construction:
-/// every declared arg comes back — extracted, or defaulted, or the whole
-/// call is refused with the returned reason. The allowlist is also the
-/// privacy boundary: fields the catalogue does not declare are never read.
+/// every declared arg comes back, whether extracted or defaulted, or else
+/// the whole call is refused with the returned reason. The allowlist is
+/// also the privacy boundary: fields the catalogue does not declare are
+/// never read.
 fn extract_args(
     def: &ToolDef,
     args: &serde_json::Value,
@@ -874,17 +876,17 @@ mod tests {
     /// The drift guard the schema module's `COMMON_CONTEXT` relies on.
     ///
     /// It lives here rather than in `tests/` because `context_pairs` is
-    /// private, and comparing against a third hand-written list — which is
-    /// what an integration test would have to do — pins nothing: it agrees
+    /// private, and comparing against a third hand-written list (which is
+    /// what an integration test would have to do) pins nothing: it agrees
     /// with whatever it was written against.
     ///
     /// Both directions matter, and they fail differently:
     ///
-    /// * declared in the schema, not built by the engine — a rule reading it
-    ///   type-checks, then raises on every call it guards and falls to the
-    ///   fail mode. On a fail-open tool that is a `forbid` which never
-    ///   forbids, recorded as `AllowFailOpen`. Exactly the failure the
-    ///   schema exists to eliminate, reintroduced by the schema;
+    /// * declared in the schema, absent from what the engine builds — a
+    ///   rule reading it type-checks, then raises on every call it guards
+    ///   and falls to the fail mode. On a fail-open tool that is a `forbid`
+    ///   which never forbids, recorded as `AllowFailOpen`. Exactly the
+    ///   failure the schema exists to eliminate, reintroduced by the schema;
     /// * built by the engine, absent from the schema — `compile` refuses a
     ///   rule that would have worked, blaming the author.
     #[test]

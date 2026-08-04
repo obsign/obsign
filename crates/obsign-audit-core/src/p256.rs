@@ -3,7 +3,7 @@
 //! Exists for exactly one caller: [`crate::attestation`]. A TPM's attestation
 //! key signs quotes and certifies with the algorithms the TPM implements, and
 //! the software TPM this tree tests against (swtpm/libtpms 0.10) implements
-//! no EdDSA at all — its capability list carries neither `TPM_ALG_EDDSA`
+//! no EdDSA at all: its capability list carries neither `TPM_ALG_EDDSA`
 //! (0x0060) nor the 25519 curve (0x0040), and an EdDSA `TPM2_CreatePrimary`
 //! fails with `TPM_RC_SCHEME`. Real attestations from such a TPM sign
 //! ECDSA-P256, so the offline verifier must check that signature or give up
@@ -12,7 +12,7 @@
 //! Hand-rolled under the same constraint as the DER and TPM parsers: the
 //! auditor-facing dependency list stays readable end to end, so no curve
 //! crate. What makes that defensible here is that this is **verification
-//! only** — every input is public (a public key, a public signature, a public
+//! only**. Every input is public (a public key, a public signature, a public
 //! message), so the side-channel discipline a signer needs does not apply;
 //! only correctness does, and correctness is what the known-answer tests and
 //! the real-TPM fixtures pin down. No signing half exists to get wrong.
@@ -93,7 +93,7 @@ struct Field {
     m0: u64,
     /// `R^2 mod m`, for conversion into Montgomery form.
     r2: U256,
-    /// `R mod m` — the Montgomery representation of 1.
+    /// `R mod m`, the Montgomery representation of 1.
     one: U256,
 }
 
@@ -284,8 +284,8 @@ fn add(fp: &Field, p: &Point, q: &Point) -> Point {
     }
 }
 
-/// Plain double-and-add. Not constant-time — the scalar derives entirely
-/// from public signature material, there is no secret to leak.
+/// Plain double-and-add. Not constant-time, since the scalar derives
+/// entirely from public signature material and there is no secret to leak.
 fn scalar_mul(fp: &Field, k: &U256, p: &Point) -> Point {
     let mut acc = INFINITY;
     for i in (0..256).rev() {

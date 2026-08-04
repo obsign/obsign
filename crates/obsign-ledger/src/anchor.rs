@@ -3,9 +3,9 @@
 //! The exchange is deliberately offline: `timestamp_request` produces a
 //! `.tsq` artifact, an operator (or a cron with network access, where one
 //! exists) carries it to the TSA, and the `.tsr` that comes back is attached
-//! with `validate_response`. No HTTP client in this crate — the deployments
-//! this product targets are air-gapped first, and an internal TSA reachable
-//! by sneakernet is a normal setup there.
+//! with `validate_response`. No HTTP client in this crate, because the
+//! deployments this product targets are air-gapped first, and an internal TSA
+//! reachable by sneakernet is a normal setup there.
 
 use crate::store::Store;
 use crate::Error;
@@ -34,7 +34,7 @@ fn tlv(tag: u8, content: &[u8]) -> Vec<u8> {
 /// Builds the DER `TimeStampReq` for a checkpoint.
 ///
 /// The message imprint is the checkpoint hash itself: RFC 3161 timestamps a
-/// digest, and `Checkpoint::hash()` *is* the checkpoint's identity — the same
+/// digest, and `Checkpoint::hash()` *is* the checkpoint's identity, the same
 /// value the next checkpoint chains from and the verifier recomputes.
 ///
 /// Two deliberate choices:
@@ -42,7 +42,7 @@ fn tlv(tag: u8, content: &[u8]) -> Vec<u8> {
 /// * `certReq` is TRUE: the auditor validates the token against the TSA
 ///   certificate offline, so the token must carry it;
 /// * no nonce: a nonce protects the freshness of an online exchange, which
-///   this is not. Omitting it keeps the request deterministic — the same
+///   this is not. Omitting it keeps the request deterministic: the same
 ///   checkpoint always produces byte-identical request material.
 pub fn timestamp_request(checkpoint_hash: &Hash) -> Vec<u8> {
     let message_imprint = tlv(
@@ -69,7 +69,7 @@ pub fn timestamp_request(checkpoint_hash: &Hash) -> Vec<u8> {
 /// Refused unless the TSA granted the request and the token imprints exactly
 /// the checkpoint hash. Attaching a token that timestamps something else
 /// would decorate the store with an anchor that collapses in front of the
-/// verifier — better to fail at the operator's keyboard.
+/// verifier, so it is better to fail at the operator's keyboard.
 pub fn validate_response(
     store: &Store,
     checkpoint_hash: &Hash,

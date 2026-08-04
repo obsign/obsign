@@ -5,7 +5,7 @@
 //! hash at a timestamping authority (TSA) closes that hole: the date becomes
 //! enforceable against a third party who trusts the TSA, not us.
 //!
-//! What this module checks — and deliberately nothing more:
+//! What this module checks, and deliberately nothing more:
 //!
 //! * the TSA **granted** the request;
 //! * the token's message imprint **is the checkpoint hash** (SHA-256).
@@ -15,11 +15,11 @@
 //! auditor must be able to read this crate's dependency list end to end. The
 //! cryptographic validation is delegated to standard tooling against the TSA
 //! certificate (`openssl ts -verify`), and the verifier's report says so
-//! explicitly — a structural check silently presented as a cryptographic one
+//! explicitly. A structural check silently presented as a cryptographic one
 //! would be worse than none.
 //!
 //! The DER walker below handles exactly the subset RFC 3161 emits: definite
-//! lengths, single-byte tags. Indefinite lengths are BER, not DER, and are
+//! lengths, single-byte tags. Indefinite lengths belong to BER and are
 //! rejected.
 
 use crate::error::Error;
@@ -32,10 +32,10 @@ use serde::{Deserialize, Serialize};
 pub struct Anchor {
     /// `Checkpoint::hash()` of the checkpoint the TSA timestamped.
     pub checkpoint_hash: Hash,
-    /// Complete RFC 3161 `TimeStampResp`, DER, hex-encoded. Hex rather than
-    /// base64: same alphabet as every other binary field in the pack.
+    /// Complete RFC 3161 `TimeStampResp`, DER, hex-encoded. Hex, like every
+    /// other binary field in the pack; base64 would be a second alphabet.
     pub token_hex: String,
-    /// Where the token came from. Informational, not proof.
+    /// Where the token came from. Informational only.
     pub tsa: Option<String>,
 }
 
@@ -43,7 +43,7 @@ pub struct Anchor {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TimestampInfo {
     /// PKIStatus: granted(0) or grantedWithMods(1). Anything else never
-    /// reaches this struct — the parse fails with `TimestampRejected`.
+    /// reaches this struct: the parse fails with `TimestampRejected`.
     pub status: u64,
     /// TSTInfo `messageImprint.hashedMessage`: the bytes the TSA vouches
     /// existed at `gen_time`. Must equal the checkpoint hash.
@@ -143,14 +143,14 @@ fn int_value(bytes: &[u8]) -> Result<u64, Error> {
 
 /// Parses a `TimeStampResp` down to its TSTInfo.
 ///
-/// Path walked: TimeStampResp → PKIStatusInfo.status, then
-/// ContentInfo → `[0]` → SignedData → version, digestAlgorithms,
-/// encapContentInfo (eContentType must be id-ct-TSTInfo) → `[0]` →
-/// OCTET STRING → TSTInfo.
+/// Path walked: TimeStampResp down to PKIStatusInfo.status, then ContentInfo
+/// into `[0]`, SignedData, its version, digestAlgorithms and
+/// encapContentInfo (eContentType must be id-ct-TSTInfo), then that `[0]`,
+/// the OCTET STRING, and TSTInfo.
 ///
 /// Every field is read at its RFC 5652 position and every closed container
 /// must be fully consumed. Scanning SignedData for a TSTInfo-shaped child
-/// instead — as this function once did — would let a decoy placed ahead of
+/// instead (as this function once did) would let a decoy placed ahead of
 /// the real encapContentInfo shadow the eContent the TSA actually signed,
 /// diverging from what `openssl ts -verify` validates.
 pub fn parse_timestamp_response(der: &[u8]) -> Result<TimestampInfo, Error> {

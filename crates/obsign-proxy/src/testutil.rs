@@ -85,8 +85,8 @@ pub fn mint(seed: u8, exp_offset: i64, scopes: &str) -> String {
 /// Mints a token with an explicit absolute expiry (seconds) and, optionally,
 /// an RFC 8693 `act` claim naming the actor really acting on behalf of the
 /// subject. Two tokens minted with the same `exp` differ only by their `act`
-/// chain — the token-exchange shape, where the delegated token is bounded by
-/// its parent's expiry.
+/// chain. That is the token-exchange shape, where the delegated token is
+/// bounded by its parent's expiry.
 pub fn mint_at(seed: u8, exp: i64, scopes: &str, act_sub: Option<&str>) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

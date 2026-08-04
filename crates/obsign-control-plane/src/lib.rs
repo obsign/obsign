@@ -1,13 +1,13 @@
 //! Control plane: the operator-side counterpart of the gateway.
 //!
-//! Everything the gateway trusts — the policy bundle, the identity bundle —
+//! Everything the gateway trusts (the policy bundle, the identity bundle)
 //! arrives as a signed file. This crate is where those files come from:
 //!
 //! * **compile** — reads a policy source tree out of a git checkout,
 //!   validates it (Cedar syntax, mandatory `@id` annotations, catalogue
 //!   consistency, usable JWKS) and signs the bundles. The version carries the
-//!   commit sha, so a rule change is a dated, reviewed pull request — never a
-//!   click in a UI. A working tree that has drifted from HEAD is refused:
+//!   commit sha, so a rule change is a dated, reviewed pull request and never
+//!   a click in a UI. A working tree that has drifted from HEAD is refused:
 //!   the sha never stamps bytes its commit does not contain;
 //! * **publish** — places a release into a distribution directory,
 //!   immutably (`releases/<sha>/` is never rewritten) and atomically (the
@@ -22,7 +22,7 @@
 //!   around git.
 //!
 //! Like every other component, the control plane makes **no network calls**.
-//! The JWKS is a file in the source tree — reviewed like a rule, because it
+//! The JWKS is a file in the source tree, reviewed like a rule, because it
 //! decides who can mint identities. Fetching it from the IdP is a job for
 //! whatever refreshes the git repository, not for this binary.
 
@@ -117,12 +117,12 @@ pub enum Error {
     UnknownManifestFormat(String),
 }
 
-/// The operator's signing key — the one the gateways trust bundles from.
+/// The operator's signing key, the one the gateways trust bundles from.
 ///
 /// A seed in a file is development-grade, exactly like the ledger's
 /// [`obsign_ledger::FileSealer`] and for the same reason: production puts the key in
-/// a KMS/HSM. It is deliberately a *different* key than the sealing key —
-/// compromising the one that writes rules must not yield the one that seals
+/// a KMS/HSM. It is deliberately a *different* key than the sealing key.
+/// Compromising the one that writes rules must not yield the one that seals
 /// history, and vice versa.
 pub struct OpsKey {
     key: SigningKey,
@@ -160,7 +160,7 @@ impl OpsKey {
     /// to neither the sealing nor the origin set.
     ///
     /// It used to carry the default `seal` role, for want of anything better
-    /// to say — which handed whoever published the rules the power to mint
+    /// to say. That handed whoever published the rules the power to mint
     /// checkpoints the auditor would accept, collapsing "who decides policy"
     /// and "who certifies history" into one authority. Nothing ever signed a
     /// checkpoint with it (the ledger seals, from its own key or an HSM), so
@@ -188,7 +188,7 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
-/// Records the ops key's public half in a trusted-keys file — the file a
+/// Records the ops key's public half in a trusted-keys file, the file a
 /// gateway is pointed at with `--trusted-keys`.
 pub fn record_trusted_key_file(path: &Path, ops: &OpsKey) -> Result<Vec<PublicKeyEntry>, Error> {
     record_trusted_key(path, &ops.public_entry())

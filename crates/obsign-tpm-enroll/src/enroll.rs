@@ -13,7 +13,7 @@ use obsign_audit_core::checkpoint::{KeyRole, PublicKeyEntry};
 pub struct EnrollmentRequest {
     /// The bundle `key_id` this attestation will bind.
     pub key_id: String,
-    /// SHA-256 of the gateway binary, extended into `pcr` — the measurement
+    /// SHA-256 of the gateway binary, extended into `pcr` as the measurement
     /// that chains the quote to the release manifest.
     pub binary_hash: [u8; 32],
     /// The PCR receiving the binary measurement (16, the resettable debug
@@ -21,7 +21,7 @@ pub struct EnrollmentRequest {
     pub pcr: u32,
     /// EK certificate bytes (DER), carried opaquely for the out-of-band
     /// vendor-root check. May be empty where the TPM has none provisioned
-    /// (a fresh swtpm) — the offline verifier never validates it either way.
+    /// (a fresh swtpm); the offline verifier never validates it either way.
     pub ek_cert: Vec<u8>,
 }
 
@@ -41,8 +41,8 @@ pub struct Enrollment {
 /// (EdDSA/ed25519 where implemented, ECDSA-P256 otherwise); create the AK
 /// (endorsement hierarchy, restricted) and the identity key (owner
 /// hierarchy); extend the designated PCR with the binary hash and read the
-/// resulting value back — the quote must match what the TPM actually holds,
-/// not what arithmetic predicts; certify the identity key under the AK;
+/// resulting value back (the quote must match what the TPM actually holds,
+/// not what arithmetic predicts); certify the identity key under the AK;
 /// quote the PCR under the AK; flush both keys.
 pub fn enroll(tpm: &mut Tpm, req: &EnrollmentRequest) -> Result<Enrollment, Error> {
     let algorithm = pick_algorithm(tpm)?;
@@ -111,7 +111,7 @@ fn ceremony(
     })
 }
 
-/// Ed25519 if the TPM implements it — the system-uniform choice — else
+/// Ed25519 if the TPM implements it (the system-uniform choice), else
 /// ECDSA-P256, which every TPM 2.0 carries.
 fn pick_algorithm(tpm: &mut Tpm) -> Result<KeyAlg, Error> {
     let algs = tpm.algorithms()?;

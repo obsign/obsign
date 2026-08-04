@@ -1,4 +1,4 @@
-//! The policy source tree — what a customer keeps in git.
+//! The policy source tree that a customer keeps in git.
 //!
 //! Layout, relative to the tree root:
 //!
@@ -12,8 +12,8 @@
 //! ```
 //!
 //! Everything here is *validated*, not merely parsed. The gateway refuses an
-//! unsigned bundle; this module is the matching guarantee on the other side —
-//! a bundle that would blow up at load time (Cedar syntax, missing `@id`,
+//! unsigned bundle; this module is the matching guarantee on the other side.
+//! A bundle that would blow up at load time (Cedar syntax, missing `@id`,
 //! unusable JWKS) or misbehave silently (duplicate tool, fail-mode override
 //! for a tool that does not exist) is refused at compile time, in CI, where
 //! the author of the pull request is still looking.
@@ -31,7 +31,7 @@ use crate::Error;
 #[derive(Debug)]
 pub struct SourceTree {
     pub root: PathBuf,
-    /// Cedar sources concatenated in lexicographic file-name order — the
+    /// Cedar sources concatenated in lexicographic file-name order, so the
     /// same tree always produces the same bytes, hence the same bundle hash.
     pub cedar: String,
     pub cedar_files: Vec<String>,
@@ -41,7 +41,7 @@ pub struct SourceTree {
     /// an identity bundle only starts in declared mode, and says so.
     pub identity: Option<IdentitySource>,
     /// Active gateway origin keys, absent when the tree has no `deployment/`
-    /// directory. Absent means no gateway is enrolled yet — legitimate
+    /// directory. Absent means no gateway is enrolled yet, which is legitimate
     /// before the first one, and honestly distinct from an empty set.
     pub deployment: Option<Vec<PublicKeyEntry>>,
     /// Remote-attestation enrollments (v3), from `deployment/attestation.json`.
@@ -224,8 +224,8 @@ fn read_identity(dir: &Path) -> Result<Option<IdentitySource>, Error> {
 /// Reads and validates the active gateway origin keys.
 ///
 /// The same rigour `read_identity` applies to the JWKS, for the same reason:
-/// the checks that would otherwise fail at the ledger — a seal key posing as
-/// an origin key, a duplicate id, an unusable public key — are compile errors
+/// the checks that would otherwise fail at the ledger (a seal key posing as
+/// an origin key, a duplicate id, an unusable public key) are compile errors
 /// here, where the pull-request author is looking. Enrolling a gateway is
 /// committing its public entry to this file; revoking is removing it.
 fn read_deployment(dir: &Path) -> Result<Option<Vec<PublicKeyEntry>>, Error> {
@@ -272,8 +272,9 @@ fn read_deployment(dir: &Path) -> Result<Option<Vec<PublicKeyEntry>>, Error> {
 }
 
 /// Reads the remote-attestation enrollments, if any, and checks each names an
-/// enrolled origin key — an attestation for a key the bundle does not carry
-/// is a copy-paste slip worth catching in review, not at the verifier.
+/// enrolled origin key, since an attestation for a key the bundle does not
+/// carry is a copy-paste slip that review should catch before the verifier
+/// does.
 fn read_attestations(
     dir: &Path,
     origin_keys: Option<&[PublicKeyEntry]>,

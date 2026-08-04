@@ -1,5 +1,5 @@
-//! `obsign-tpm-enroll` — runs the enrollment ceremony against a TPM 2.0
-//! command socket and emits the attestation the deployment bundle carries.
+//! `obsign-tpm-enroll` runs the enrollment ceremony against a TPM 2.0 command
+//! socket and emits the attestation the deployment bundle carries.
 //!
 //! ```sh
 //! obsign-tpm-enroll \
@@ -10,8 +10,8 @@
 //!
 //! Stdout is one JSON object: the attestation, the ready bundle entry for
 //! the identity key, and the algorithm used. `--out` additionally writes the
-//! bare `KeyAttestation` JSON — the file `deployment/attestation.json`
-//! entries are assembled from.
+//! bare `KeyAttestation` JSON, the file `deployment/attestation.json` entries
+//! are assembled from.
 
 use anyhow::{bail, Context};
 use clap::Parser;
@@ -30,8 +30,8 @@ struct Args {
     tpm: String,
 
     /// swtpm control socket, host:port. When given, the TPM is initialized
-    /// through it first (CMD_INIT) — needed for a freshly started swtpm,
-    /// meaningless for real hardware.
+    /// through it first (CMD_INIT), which a freshly started swtpm needs and
+    /// real hardware does not.
     #[arg(long)]
     ctrl: Option<String>,
 

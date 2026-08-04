@@ -4,7 +4,7 @@
 //! PKCS#11 is the interface the target deployments actually have: on-prem
 //! HSMs (Trustway, Luna, YubiHSM), smartcard middleware, and the software
 //! token (SoftHSM) used in tests all expose the same C API from a vendor
-//! `.so`. It is a local library call — the module may talk to a network HSM
+//! `.so`. It is a local library call. The module may talk to a network HSM
 //! internally, but this process makes no network call, like every other
 //! component. Cloud KMS SDKs would break both that rule and the air-gapped
 //! story; if one is ever wanted, it is another implementation wrapping this.
@@ -16,7 +16,7 @@
 //! makes a partial binding safe: offsets cannot drift.
 //!
 //! Trust model note: the HSM signs what it is handed. It cannot know whether
-//! the message honestly summarizes anything — that stays the caller's job.
+//! the message honestly summarizes anything; that stays the caller's job.
 //! What the HSM buys is that a compromised host can sign *now* but cannot
 //! exfiltrate the key and sign *later, offline, at leisure*.
 
@@ -24,8 +24,8 @@ use std::ffi::{c_void, CString};
 use std::path::Path;
 
 /// Anything the HSM side refuses or garbles, vendor return code included.
-/// One variant, not a taxonomy: the operator's next step is the same (read
-/// the message, check the token).
+/// One variant suffices: the operator's next step is the same (read the
+/// message, check the token).
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("pkcs#11: {0}")]
@@ -194,8 +194,8 @@ struct CkFunctionList {
 }
 
 /// Return codes worth naming: the ones an operator will actually hit while
-/// bringing a token up. Everything else stays numeric — the vendor manual
-/// indexes by that number anyway.
+/// bringing a token up. Everything else stays numeric, since the vendor
+/// manual indexes by that number anyway.
 fn rv_name(rv: CkRv) -> String {
     let known = match rv {
         0x0005 => "CKR_GENERAL_ERROR",
@@ -235,7 +235,7 @@ pub enum TokenSelector {
 
 /// [`Sealer`] over a PKCS#11 module: the key never enters this process.
 ///
-/// One login, one session, held for the process lifetime — `run` mode must
+/// One login, one session, held for the process lifetime: `run` mode must
 /// not re-authenticate every pass, because each wrong PIN presented in a
 /// retry loop walks the token toward `CKR_PIN_LOCKED`. Construction is where
 /// credentials are checked; a failure there is fatal by design, never
@@ -407,8 +407,8 @@ impl Pkcs11Signer {
     }
 
     /// The raw public key, 32 bytes. Callers wrap it in a role-specific
-    /// `PublicKeyEntry` — a sealing key for the ledger, an identity key for
-    /// the gateway — so this crate stays free of the obsign-audit-core role type.
+    /// `PublicKeyEntry` (a sealing key for the ledger, an identity key for the
+    /// gateway), so this crate stays free of the obsign-audit-core role type.
     pub fn public_key_bytes(&self) -> [u8; 32] {
         self.public_key_bytes
     }
@@ -599,8 +599,8 @@ fn token_label(raw: &[u8; 32]) -> String {
     String::from_utf8_lossy(raw).trim_end().to_string()
 }
 
-/// Finds the object of `class` labelled `label`. `Ok(None)` when absent;
-/// two candidates is an error — sealing must never sign with "whichever".
+/// Finds the object of `class` labelled `label`. `Ok(None)` when absent, and
+/// two candidates is an error. Sealing must never sign with "whichever".
 fn find_key(
     funcs: &CkFunctionList,
     session: CkSession,
@@ -727,7 +727,8 @@ fn check_is_ed25519(
 
 /// CKA_EC_POINT for Edwards keys: the standard says DER OCTET STRING around
 /// the 32-byte compressed point; some tokens hand back the bare point.
-/// Anything else is refused — guessing at key material is not an option.
+/// Anything else is refused, because guessing at key material is not an
+/// option.
 fn parse_ec_point(der: &[u8]) -> Result<[u8; 32], Error> {
     let raw: &[u8] = match der {
         [0x04, 0x20, rest @ ..] if rest.len() == 32 => rest,

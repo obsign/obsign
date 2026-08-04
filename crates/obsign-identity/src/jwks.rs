@@ -9,7 +9,7 @@ use crate::Error;
 /// **Loaded from a file, never from the network.** The gateway sits on the
 /// critical path and must be able to run air-gapped: it makes no outbound
 /// call. The control plane fetches the JWKS from the provider and ships it
-/// inside the signed identity bundle — same channel, same rotation cadence,
+/// inside the signed identity bundle: same channel, same rotation cadence,
 /// and one less network surface to justify in a security review.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct JwkSet {
@@ -46,7 +46,7 @@ pub struct KeyStore {
 }
 
 /// Manual `Debug`: `DecodingKey` does not implement it, and that is a good
-/// thing — we expose only `kid` values and algorithms, never key material in
+/// thing; we expose only `kid` values and algorithms, never key material in
 /// a log.
 impl std::fmt::Debug for KeyStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

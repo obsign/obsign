@@ -6,12 +6,12 @@ back after losing a machine.
 
 Two properties shape the whole workflow, and both are deliberate:
 
-* **The source of truth is a git checkout, not a running server.** Policies
-  are text files reviewed like code, compiled into a signed bundle stamped
-  with the commit sha. Nothing is edited in place on a production host.
+* **The source of truth is a git checkout.** Policies are text files
+  reviewed like code, compiled into a signed bundle stamped with the commit
+  sha. Nothing is edited in place on a production host.
 * **Compilation is byte-for-byte deterministic.** The same tree, the same
-  ref, the same key produce the same bundle — so a release can be
-  reproduced, compared by hash, and rebuilt from scratch after a disaster.
+  ref, the same key produce the same bundle, so a release can be reproduced,
+  compared by hash, and rebuilt from scratch after a disaster.
 
 ## The source tree
 
@@ -32,15 +32,15 @@ my-policies/                   ← a git repository
 ```
 
 Only `policies/` and `tools.json` are mandatory. Numeric filename prefixes
-are a convention, not a requirement — but since files are concatenated in
+are a convention; nothing requires them. But since files are concatenated in
 lexicographic order, they keep the order readable and stable. Only `*.cedar`
 files are read as rules, so the generated schema sits beside them harmlessly.
 
-**Every field of every one of those files** — type, whether it is required,
-its default, the values an enum accepts, and the compile error a mistake
-produces — is documented in
-[policy-source-reference.md](policy-source-reference.md). This page stays the
-narrative: how to think about the rules and how to operate them.
+**Every field of every one of those files** is documented in
+[policy-source-reference.md](policy-source-reference.md), with its type,
+whether it is required, its default, the values an enum accepts, and the
+compile error a mistake produces. This page stays the narrative: how to
+think about the rules and how to operate them.
 
 ## The model your rules see
 
@@ -55,9 +55,9 @@ obsign-control schema --source ./my-policies    # → policies/obsign.cedarschem
 ```
 
 Commit it. `obsign-control compile` type-checks every rule against it and
-**refuses to sign a rule that reads something the gateway does not expose** —
-and pointing your editor at the same file gives you that check as you type.
-See [Your editor](#your-editor) below. Regenerate it whenever `tools.json`
+**refuses to sign a rule that reads something the gateway does not expose**.
+Pointing your editor at the same file gives you that check as you type. See
+[Your editor](#your-editor) below. Regenerate it whenever `tools.json`
 changes; `--check` fails instead of writing, which is what you want in CI.
 
 **Principals.** `User::"<subject>"`, with `Group::"<name>"` as parents — so
@@ -78,11 +78,11 @@ group membership or by scopes, never by `principal.<something>`.
 | `elicitation` | server-initiated `elicitation/create` | `Server::"mcp://wrapped"` |
 | `notify` | server-initiated `notifications/message` | `Server::"mcp://wrapped"` |
 
-`Server::"mcp://wrapped"` is a fixed literal, not the deployment's server
-name: these channels are granted per server, and the request names no stable
-object to key on. The operator's `--server-id` reaches rules as
-`context.server` and lands in every record, but **no resource is keyed on
-it** — nothing an operator types on a command line decides a verdict the
+`Server::"mcp://wrapped"` is a fixed literal; the deployment's server name
+never appears in it. These channels are granted per server, and the request
+names no stable object to key on. The operator's `--server-id` reaches rules
+as `context.server` and lands in every record, but **no resource is keyed on
+it**. Nothing an operator types on a command line decides a verdict the
 signed bundle did not already decide. Match on `context.server` if you want
 a rule that only applies to one deployment; do not expect a
 `Server::"mcp://crm.internal"` entity to exist.
@@ -153,7 +153,7 @@ permit (principal in Group::"support", action == Action::"sampling", resource);
 ```
 
 Cedar is default-deny: an act nobody permits is refused. You never need a
-catch-all `forbid`, and you should not write one — it makes every later
+catch-all `forbid`, and you should not write one. It makes every later
 `permit` look conditional when it is not.
 
 ## The catalogue (`tools.json`)
@@ -190,8 +190,9 @@ protect every dangerous tool at once, including the ones added later.
 ## Arguments (`obsign-policy/2`)
 
 `policy_args` declares which call arguments the policy may read. That
-allowlist is a privacy boundary, not a convenience: **anything not declared
-never reaches the engine**, and the log keeps `args_hash`, never the values.
+allowlist is a privacy boundary before anything else: **anything not
+declared never reaches the engine**, and the log keeps `args_hash`, never
+the values.
 
 ```cedar
 @id("support_channel_only")
@@ -206,14 +207,14 @@ when { context.args.channel != "#support" };
 | `at` | JSON pointer into the call's `arguments`; defaults to `/<name>` |
 | `default` | injected when the call omits the argument |
 
-`context.args` is one namespace for the whole catalogue — every tool call is
-the same Cedar action — so two tools cannot give one name two types.
+`context.args` is one namespace for the whole catalogue (every tool call is
+the same Cedar action), so two tools cannot give one name two types.
 Declaring `amount` as `long` on one tool and `string` on another is a
 compile error naming both; rename one of them, and use `at` if the wire name
 must stay as it is.
 
 An argument declared **without** a default is required: a call that omits it
-is refused before Cedar runs. That is the safe direction — a rule that reads
+is refused before Cedar runs. That is the safe direction. A rule that reads
 a missing field would otherwise fail-closed anyway, but with a much worse
 error message.
 
@@ -240,15 +241,15 @@ Cedar is a language with an editor already. AWS publishes the [Cedar
 extension for VS Code][vscode-cedar] (`cedar-policy.vscode-cedar`), built on
 the same Cedar 4.x engine Obsign links against: syntax highlighting,
 formatting, an outline of your rules, go-to-definition on entity types and
-action names — and, once it can see a schema, **essentially the validation
-`obsign-control compile` runs**, live, as you type. (Essentially, not
-exactly: the extension is strict about two expression forms that `compile`
-accepts with a warning — see [Testing before you
-deploy](#testing-before-you-deploy). It errs toward refusing, never toward
-accepting, so a rule it likes is always one that can be signed.)
+action names. Once it can see a schema, it also gives you **essentially the
+validation `obsign-control compile` runs**, live, as you type. That
+"essentially" is doing work: the extension is strict about two expression
+forms that `compile` accepts with a warning, described under [Testing before
+you deploy](#testing-before-you-deploy). It errs toward refusing, never
+toward accepting, so a rule it likes is always one that can be signed.
 
-That last part is the reason the schema is a committed file. Generate it,
-then point the extension at it — in `.vscode/settings.json`, inside the
+That validation is the reason the schema is a committed file. Generate it,
+then point the extension at it from `.vscode/settings.json` inside the
 policy repository:
 
 ```json
@@ -262,17 +263,18 @@ Commit that too. A colleague who clones the repository gets a working setup
 with nothing to configure, which is the whole point.
 
 What you get, concretely: `context.enviroment` and `principal.department`
-are underlined in red rather than discovered as a fail-mode event in
-production; `context.args.` completes with the arguments your catalogue
-actually declares, and their types; `Server::"mcp://crm.internal"` is
-refused, because the only entity of that type is the fixed literal.
+are underlined in red as you type, long before they could surface as a
+fail-mode event in production; `context.args.` completes with the arguments
+your catalogue actually declares, and their types;
+`Server::"mcp://crm.internal"` is refused, because the only entity of that
+type is the fixed literal.
 
 Two things to know:
 
 * **The editor is not the authority.** It reads the schema on disk, which is
   a generated file: if it is stale, the extension is confidently wrong.
   `obsign-control schema --source . --check` in CI is the guard, and the
-  signing path — `compile` — regenerates the model from `tools.json` itself
+  signing path (`compile`) regenerates the model from `tools.json` itself
   and never trusts the file.
 * **Air-gapped sites: take the `.vsix`.** The Marketplace is not reachable
   from a segregated network. Download the extension package once, carry it
@@ -280,7 +282,7 @@ Two things to know:
   `code --install-extension cedar-*.vsix`. It makes no network calls of its
   own; validation is local.
 
-Neither the extension nor the schema is required to author policies —
+Neither the extension nor the schema is required to author policies;
 `compile` catches the same mistakes, and it is the one that decides. The
 editor just moves the discovery from minutes to seconds.
 
@@ -300,20 +302,19 @@ obsign-control publish --source ./my-policies --key ./ops-key.hex --dist /srv/ob
 ```
 
 `schema` needs no signing key: it derives the model from `tools.json` and
-writes a file, nothing more. In CI, run it with `--check` — it writes
-nothing and exits non-zero if the committed schema no longer matches the
-catalogue, which is the only way a stale schema can quietly mislead an
-editor.
+writes a file, nothing more. In CI, run it with `--check`. It writes nothing
+and exits non-zero if the committed schema no longer matches the catalogue,
+which is the only way a stale schema can quietly mislead an editor.
 
 The version label defaults to the short sha of `HEAD`, and **compile refuses
-to stamp that sha onto a dirty working tree** — a `policies@<sha>` citation
+to stamp that sha onto a dirty working tree**. A `policies@<sha>` citation
 in an audit record must mean the bytes that commit contains. Use `--label`
 for a tree that is not in git.
 
 `policies/obsign.cedarschema` is exempt from that refusal, and only it: the
 schema is derived, its bytes never enter the signed bundle, and `compile`
 rebuilds the model from `tools.json` rather than reading the file. So the
-two commands above work back to back — regenerate, then compile — without a
+two commands above work back to back (regenerate, then compile) without a
 commit in between. An edited `.cedar` rule is still a dirty tree.
 
 The distribution directory:
@@ -329,9 +330,8 @@ dist/
 ```
 
 Publishing the same tree twice is idempotent. A version directory is written
-once and never rewritten; **rollback is republishing an older sha**, not
-editing anything. A key id cannot be rebound to different key material —
-rotation means a new id.
+once and never rewritten, so **rollback is republishing an older sha**. A key
+id cannot be rebound to different key material; rotation means a new id.
 
 ### A policy change needs a gateway restart
 
@@ -340,29 +340,29 @@ signature against `--trusted-keys` before loading it. Publishing a new
 bundle does not change the behaviour of a running gateway: restart it (or
 roll your containers) to pick the change up.
 
-This is the opposite of the identity bundle, which *is* re-read at runtime —
+This is the opposite of the identity bundle, which *is* re-read at runtime:
 an IdP key rotation must not require a restart, and every reload, applied or
 rejected, lands in the log as a `config_reload` record.
 
-Plan changes accordingly: policy rollouts are deployments, not hot edits.
+Plan changes accordingly: a policy rollout is a deployment.
 
 ### Order matters when you first declare arguments
 
 The control plane emits bundle format `/2` the moment one tool declares
-`policy_args`, and a pre-upgrade gateway **refuses a `/2` bundle at startup**
-rather than silently enforcing less than the bundle says. So: upgrade every
+`policy_args`, and a pre-upgrade gateway **refuses a `/2` bundle at startup**;
+it will not silently enforce less than the bundle says. So: upgrade every
 gateway image first, publish the bundle that declares arguments second. A
 fleet that never declares arguments keeps receiving `/1` and needs nothing.
 
 ## Testing before you deploy
 
-Compile first — most mistakes are compile errors by design: a rule without
+Compile first. Most mistakes are compile errors by design: a rule without
 `@id`, a duplicate tool, a fail-mode override naming a tool that does not
 exist, an unusable JWKS, and every rule that reads an attribute the model
 does not carry.
 
 That last class used to be invisible until production. A rule saying
-`when { principal.department == "eng" }` parses, compiles, ships — and then
+`when { principal.department == "eng" }` parses, compiles, ships, and then
 raises an evaluation error on every call it guards, which falls to the fail
 mode. Under `"default": "open"` that is a `forbid` which never forbids, and
 the log records `AllowFailOpen` for a rule its author believes is enforcing.
@@ -372,12 +372,12 @@ meaningless"*.
 
 The refusal always means the rule does nothing today: it raises on every
 call it guards, so removing or fixing it changes no enforcement you
-currently have. That matters when you hit this mid-incident — the repository
+currently have. That matters when you hit this mid-incident: the repository
 is not stuck, the rule was already inert.
 
 The check is Cedar's own strict validation, with **two findings deliberately
 downgraded to warnings**, because strict mode also constrains the *shape* of
-an expression so policies stay amenable to automated analysis — and a rule
+an expression so policies stay amenable to automated analysis, and a rule
 can fail that while evaluating perfectly:
 
 ```cedar
@@ -389,13 +389,13 @@ when { !ip(context.args.src).isInRange(ip("10.0.0.0/8")) };
 
 The same goes for an empty set literal `[]`. Both compile, both are printed
 as `[control] warning: …`, and neither is silent. The alternative would have
-been to delete a working capability — `like "10.*"` is not CIDR-equivalent,
-it cannot express a /12 or a /24 boundary.
+been to delete a working capability: `like "10.*"` is not CIDR-equivalent,
+and it cannot express a /12 or a /24 boundary.
 
 One consequence for the editor: the Cedar extension validates strictly and
 will underline these two forms where `obsign-control compile` accepts them.
-The disagreement only ever runs that way — the editor is stricter than the
-signer, never the reverse — so a rule your editor accepts is always one that
+The disagreement only ever runs that way (the editor is stricter than the
+signer, never the reverse), so a rule your editor accepts is always one that
 can be signed.
 
 Then exercise the real binaries against a scratch WAL, which is what the
@@ -442,7 +442,7 @@ What you lose is the ability to sign *new* bundles.
 Its public entry carries `"role": "ops"`, which admits it to neither the
 sealing nor the origin set: it signs bundles and releases, and nothing the
 auditor verifies directly. Earlier builds emitted it with the default `seal`
-role, for want of anything better to say — which meant the key that publishes
+role, for want of anything better to say. That meant the key that publishes
 the rules could also mint checkpoints certifying the history those rules
 produced. Nothing ever signed a checkpoint with it, so **no existing pack
 loses a proof**, and files already in the field keep working: the bundle's ops
@@ -452,25 +452,25 @@ One caveat: a `trusted-keys.json` containing `"role": "ops"` is refused
 wholesale by an `obsign` binary older than that role, so upgrade the auditor's
 verifier before shipping a regenerated file.
 
-Recovery is a rotation, not a restore: generate a new key under a **new key
-id** (re-binding an old id is refused), republish, and distribute the updated
+Recovery is a rotation: generate a new key under a **new key id**
+(re-binding an old id is refused), republish, and distribute the updated
 `trusted-keys.json` to the fleet. Budget for this being a fleet-wide config
-change — which is exactly why the key belongs in a KMS/HSM in production,
-and why the file-seed form is documented as development-grade.
+change. That is exactly why the key belongs in a KMS/HSM in production, and
+why the file-seed form is documented as development-grade.
 
 ### Recommended layout
 
 1. **The source tree lives in a git repository with at least one remote.**
-   Not "a copy on the VM" — a remote, on infrastructure that fails
-   independently. In an air-gapped site, that is a second machine and a
-   documented mirroring step, not an excuse to skip it.
+   A copy on the VM does not count; the remote has to sit on infrastructure
+   that fails independently. In an air-gapped site, that means a second
+   machine and a documented mirroring step, and the constraint is no excuse
+   to skip it.
 2. **The ops key never lives only on the machine that uses it.** HSM in
    production. If a file seed is unavoidable during a pilot, keep a sealed
-   offline copy, and treat losing it as a rotation drill rather than a
-   catastrophe.
-3. **`dist/` is backed up with your configuration** — small, slow-changing,
-   and it lets you answer "what was published on that date?" without a
-   rebuild.
+   offline copy, and treat losing it as a rotation drill.
+3. **`dist/` is backed up with your configuration.** It is small and
+   slow-changing, and it lets you answer "what was published on that date?"
+   without a rebuild.
 4. **The WAL, the ledger store and the evidence packs** have their own
    procedure: [runbook-backup-restore.md](runbook-backup-restore.md). Those
    protect the proof; this page protects the ability to *explain* it.
@@ -485,7 +485,7 @@ sha256sum rebuilt/policy-bundle.json
 ```
 
 Because compilation is deterministic, that hash matches the artifact that
-was originally published — which is what turns "we think the rule said this"
+was originally published, which is what turns "we think the rule said this"
 into a checkable claim. Do this once as a drill, before you need it: it
 proves your remote, your key custody and your version labels all work
 together.

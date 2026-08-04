@@ -1,7 +1,7 @@
 # Deploying with Docker
 
-Day-2 operations — backing up the WAL and the store, restoring after a
-loss, long-term retention: [runbook-backup-restore.md](runbook-backup-restore.md).
+Day-2 operations (backing up the WAL and the store, restoring after a loss,
+long-term retention): [runbook-backup-restore.md](runbook-backup-restore.md).
 
 Four images, one binary each, distroless (no shell, nonroot, glibc):
 
@@ -10,7 +10,7 @@ Four images, one binary each, distroless (no shell, nonroot, glibc):
 | `ghcr.io/obsign/obsign-proxy` | `obsign-proxy` | the gateway |
 | `ghcr.io/obsign/obsign-ledger` | `obsign-ledger` | sealing, anchoring, evidence export |
 | `ghcr.io/obsign/obsign-control` | `obsign-control` | compile, publish, export, console |
-| `ghcr.io/obsign/obsign` | `obsign` | offline verifier (convenience — see below) |
+| `ghcr.io/obsign/obsign` | `obsign` | offline verifier (convenience, see below) |
 
 Built by `.github/workflows/docker.yml` on every `v*` tag: multi-arch
 (amd64/arm64), signed with cosign (keyless), tagged with the semver and the
@@ -60,16 +60,16 @@ docker run -d \
 fsync-before-forward; it is only as good as the volume under it. A local
 named volume or a directly attached disk qualifies. A network filesystem
 that acknowledges writes before they are durable (NFS with `async`, some
-overlay drivers) silently voids the guarantee — treat the WAL volume like
-you would a database's.
+overlay drivers) silently voids the guarantee. Treat the WAL volume like you
+would a database's.
 
-**The ledger runs in a separate container — ideally a separate host.** The
+**The ledger runs in a separate container, ideally a separate host.** The
 whole point of the split is that whoever compromises the gateway cannot
 re-seal history. Same rule in Docker: the gateway container gets the WAL
 volume read-write and no key material; the ledger container gets the WAL
 read-only and the key (or the HSM), and writes its own store volume.
 Do not give the ledger container a `restart: always` policy: it exits
-non-zero on divergence so that someone is told — see
+non-zero on divergence so that someone is told. See
 [alerting.md](alerting.md) for the supervisor pattern.
 
 ```bash
@@ -83,13 +83,13 @@ docker run --rm \
 ```
 
 **The gateway's HTTP port is plaintext.** Tokens travel in the
-`Authorization` header, so the port is published on loopback above — never
-on a routable address. In front of real clients, terminate TLS in a reverse
+`Authorization` header, so the port is published on loopback above, never on
+a routable address. In front of real clients, terminate TLS in a reverse
 proxy on the same host or compose network: [deploy-tls.md](deploy-tls.md).
 
 **The console has no authentication.** Publish its port on loopback or a
 private network only (auth on the console is the commercial layer). The
-compose file in this repo binds it to `127.0.0.1` — keep that property.
+compose file in this repo binds it to `127.0.0.1`. Keep that property.
 
 **Both runtime users are `nonroot` (uid 65532).** Pre-created host
 directories mounted as volumes must be writable by that uid.
@@ -97,8 +97,8 @@ directories mounted as volumes must be writable by that uid.
 ## Rolling out argument rules (`obsign-policy/2`)
 
 The control plane emits bundle format `/2` the moment one tool in
-`tools.json` declares `policy_args` — and a pre-upgrade gateway **refuses a
-`/2` bundle at startup** rather than silently enforcing less than the bundle
+`tools.json` declares `policy_args`, and a pre-upgrade gateway **refuses a
+`/2` bundle at startup** instead of silently enforcing less than the bundle
 says. The cutover order is therefore fixed: upgrade every gateway image
 first, publish the first bundle that declares arguments second. A fleet that
 never declares arguments keeps receiving `/1` and needs nothing.
@@ -106,8 +106,8 @@ never declares arguments keeps receiving `/1` and needs nothing.
 ## Rolling out display labels (`obsign-identity/3`)
 
 Same rule, one bundle over, with one difference that makes it sharper: the
-control plane emits `obsign-identity/3` **unconditionally**, not only when
-something new is configured. A gateway that only knows `/1` and `/2` refuses
+control plane emits `obsign-identity/3` **unconditionally**, even when
+nothing new is configured. A gateway that only knows `/1` and `/2` refuses
 it at startup (`unknown identity bundle format`), so upgrading the control
 plane alone takes the fleet down.
 
@@ -116,13 +116,13 @@ order is an outage, not a degradation.
 
 Bundles already published stay valid: `/1` and `/2` remain verifiable, their
 signed bytes are unchanged, and either format still refuses to carry a claim
-path its own signature never covered (`UnsignedLabelPaths`) — an unsigned
+path its own signature never covered (`UnsignedLabelPaths`); an unsigned
 label path would choose the name an investigation reads.
 
 ## HSM (PKCS#11) and TPM
 
 The vendor's PKCS#11 module is loaded at runtime with `dlopen`: mount the
-`.so` (and whatever it needs — sockets, config, its own libraries) into the
+`.so` (and whatever it needs: sockets, config, its own libraries) into the
 ledger container and pass `--hsm-module`:
 
 ```bash
@@ -139,13 +139,13 @@ docker run --rm \
 ```
 
 TPM enrollment (`obsign-tpm-enroll`) needs the kernel resource manager:
-`--device /dev/tpmrm0`. It is an operator ceremony, not a service — run it
-from the source tree on the enrolling host (`scripts/real-tpm-enroll.sh`),
-not from a long-lived container.
+`--device /dev/tpmrm0`. It is an operator ceremony. Run it from the source
+tree on the enrolling host (`scripts/real-tpm-enroll.sh`), never from a
+long-lived container.
 
 ## Air-gapped delivery
 
-The registry is a convenience, not a dependency. For an air-gapped site:
+The registry is a convenience that nothing depends on. For an air-gapped site:
 
 ```bash
 # Connected side: pull by digest, save, hash.
@@ -176,4 +176,4 @@ docker compose run --rm demo    # drives the gateway, seals, verifies: exit 0
 ```
 
 The demo image (shell, token minter, file seed) is compose-only and never
-published — the means to forge tokens has no business in a shipped artifact.
+published: the means to forge tokens has no business in a shipped artifact.

@@ -38,9 +38,9 @@ compile error in CI rather than a surprise on a gateway.
 | `deployment/attestation.json` | no | array of attestations | `deployment-bundle.json` | no TPM enrollment (v3 unused) |
 
 `identity/` and `deployment/` are all-or-nothing: create the directory and
-its mandatory file becomes mandatory too — half an identity configuration
-verifies nothing, and an empty `deployment/` deserves an explicit file rather
-than a silent empty set.
+its mandatory file becomes mandatory too. Half an identity configuration
+verifies nothing, and an empty `deployment/` deserves an explicit file
+instead of a silent empty set.
 
 Any other file in the tree (a `README.md`, a CI config, a test fixture) is
 never read. Only the seven paths above reach a bundle.
@@ -62,7 +62,7 @@ There is no schema file to write: the entity model (`User`, `Group`, `Tool`,
 is fixed by the gateway and documented in
 [policies-cedar.md](policies-cedar.md#the-model-your-rules-see). Declaring
 entities the model does not have compiles, then fails at evaluation and lands
-under your fail mode — which is why the compile-time smoke check exists (see
+under your fail mode, which is why the compile-time smoke check exists (see
 `tools.json` below).
 
 ---
@@ -97,9 +97,8 @@ wins would depend on file order); malformed JSON.
 
 ### 2.1 `policy_args[]` — the argument allowlist
 
-The allowlist is a **privacy boundary**, not a convenience: an argument not
-declared here never reaches the engine, and the audit log keeps `args_hash`,
-never the values.
+The allowlist is a **privacy boundary**: an argument not declared here never
+reaches the engine, and the audit log keeps `args_hash`, never the values.
 
 ```json
 {
@@ -121,10 +120,9 @@ never the values.
 | `at` | string | no | `/<name>` | RFC 6901 JSON pointer into the call's `arguments` object, for a value that is nested or named differently. Must start with `/`. When derived from `name`, the name is escaped (`~`→`~0`, `/`→`~1`), so an argument literally named `path/glob` reads the key `path/glob` and not `arguments.path.glob`. |
 | `default` | any | no | *absent* | Injected when the call omits the argument. Must itself coerce to `kind`. **An argument with no default is required**: a call omitting it is refused before Cedar runs, with an explicit message. |
 
-An explicit JSON `null` in the call counts as *absent*, not as a value — MCP
-client SDKs routinely serialize an omitted optional field as `null`, and
-treating that as present would deny a call that omitting the key entirely
-would have allowed.
+An explicit JSON `null` in the call counts as *absent*. MCP client SDKs
+routinely serialize an omitted optional field as `null`, and treating that as
+present would deny a call that omitting the key entirely would have allowed.
 
 #### `kind` values
 
@@ -144,10 +142,10 @@ would have allowed.
 | Set elements | 64 |
 
 **Refused at compile:** `policy_args` on a bundle that is not
-`obsign-policy/2` (cannot happen from a source tree — the control plane picks
-the format automatically); more than 16 args; an empty or duplicate arg name;
-an `at` that does not start with `/`; a `default` that does not coerce to its
-`kind`.
+`obsign-policy/2` (cannot happen from a source tree, since the control plane
+picks the format automatically); more than 16 args; an empty or duplicate arg
+name; an `at` that does not start with `/`; a `default` that does not coerce
+to its `kind`.
 
 #### The smoke check
 
@@ -157,16 +155,16 @@ your declared defaults (or the zero value: `""`, `0`, `false`, `[]`). A
 typo'd `context.args.chanel` therefore fails in CI, naming the rule, instead
 of surfacing months later as a fail-mode event on a live gateway.
 
-Trees that declare no arguments keep compiling without this check — blocking
+Trees that declare no arguments keep compiling without this check. Blocking
 their publish over a synthetic input would override the fail-mode choice they
 already made.
 
 #### Ordering warning
 
 The control plane emits `obsign-policy/2` as soon as one tool declares
-`policy_args`, and a pre-upgrade gateway **refuses a `/2` bundle at startup**
-rather than silently enforcing less than the bundle says. Upgrade every
-gateway image first, publish the bundle that declares arguments second.
+`policy_args`, and a pre-upgrade gateway **refuses a `/2` bundle at startup**;
+it will not silently enforce less than the bundle says. Upgrade every gateway
+image first, publish the bundle that declares arguments second.
 
 ---
 
@@ -192,8 +190,8 @@ denies is a decision, and fail mode never applies to it.
 | `tools` | object | no | `{}` | Per-tool overrides: tool name → behaviour. |
 
 Omitting the whole file gives `{"default": "closed", "tools": {}}`. But a
-file containing `{}` is **refused** — `default` has no default inside the
-file, on purpose: writing the file is declaring a position.
+file containing `{}` is **refused**, because `default` has no default inside
+the file. That is on purpose: writing the file is declaring a position.
 
 #### `default` / `tools.*` values
 
@@ -207,8 +205,8 @@ search breaks production for nothing, letting a deletion through is
 indefensible.
 
 **Refused at compile:** an override naming a tool that is not in
-`tools.json`. A typo there would not fail, it would silently apply the
-default to the tool the author meant to override — the worst possible
+`tools.json`. A typo there would not fail; it would silently apply the
+default to the tool the author meant to override, the worst possible
 outcome for a fail-*open* declaration.
 
 > **Overrides apply to catalogued tools only.** The capability actions
@@ -223,9 +221,9 @@ outcome for a fail-*open* declaration.
 ## 4. `identity/provider.json`
 
 Who may mint identities, and where to read them inside the token. This file
-plus `jwks.json` becomes the signed identity bundle — signed because whoever
-can write it can mint an identity for themselves, and because moving a claim
-path changes which groups get assigned, hence which Cedar rules apply.
+plus `jwks.json` becomes the signed identity bundle. It is signed because
+whoever can write it can mint an identity for themselves, and because moving a
+claim path changes which groups get assigned, hence which Cedar rules apply.
 
 ```json
 {
@@ -302,15 +300,15 @@ an object or array.
 
 There is **no `~0`/`~1` escaping here** (unlike `policy_args.at`): a claim
 whose name literally contains `/` is not addressable. A path that resolves to
-nothing is not an error — it simply does not answer, and the next path is
+nothing is not an error; it simply does not answer, and the next path is
 tried.
 
 ### 4.3 `machine` — machine markers
 
 These decide `PrincipalKind`, hence which Cedar rules apply, which is why
-they travel inside the signed bundle rather than as a plain file option. Every
-marker only ever **adds** a Machine verdict, so broadening this can never
-downgrade a real human to a robot — only the reverse, which is the safe
+the signed bundle carries them and a plain file option cannot. Every marker
+only ever **adds** a Machine verdict, so broadening this can never downgrade
+a real human to a robot; only the reverse can happen, and that is the safe
 direction.
 
 | Field | Type | Required | Default | Meaning |
@@ -351,7 +349,7 @@ the current format is one `obsign-control compile` away.
 
 ## 5. `identity/jwks.json`
 
-The IdP's public keys, **loaded from a file, never from the network** — the
+The IdP's public keys, **loaded from a file, never from the network**. The
 gateway sits on the critical path and makes no outbound call. Fetch it from
 your provider's `jwks_uri` and commit it verbatim, like a rule:
 
@@ -394,15 +392,15 @@ curl -s https://idp.example.com/realms/corp/protocol/openid-connect/certs \
 | `OKP` | `EdDSA` | `EdDSA` (the field is not consulted — an Ed25519 key signs EdDSA) |
 
 **HMAC algorithms (`HS256` …) and `none` are deliberately absent.** A
-symmetric key in a published JWKS is a vulnerability, not a configuration.
+symmetric key in a published JWKS is a vulnerability.
 
-**Refused at compile** — the same checks the gateway runs, moved to CI: an
+**Refused at compile** (the same checks the gateway runs, moved to CI): an
 empty or all-unusable key set; a duplicate `kid` (two keys for one id means we
 can no longer tell which one signed); a missing component for the declared
 `kty`; an unsupported `kty` or `alg`.
 
 **Rotation does not need a restart.** The identity bundle is re-read at
-runtime, and every reload — applied or rejected — lands in the log as a
+runtime, and every reload (applied or rejected) lands in the log as a
 `config_reload` record. This is the opposite of the policy bundle. Publish
 the new JWKS *before* the IdP starts signing with the new key, and keep the
 old key in the file until every issued token has expired.
@@ -434,16 +432,16 @@ republishing.
 | `role` | enum | **in practice yes** | `seal` | `origin` \| `seal` \| `ops`. **Must be `origin` here**, and the default is `seal`, so omitting it is refused. |
 
 > **This file rejects unknown fields.** A misspelled key is a hard parse
-> error, not a silent omission — the one place in the tree where that
-> protection exists, because these entries decide who may write the log.
+> error, and this is the one place in the tree where that protection exists,
+> because these entries decide who may write the log.
 
 Why `role` is not optional in practice: origin keys authenticate the *writer*
 (the gateway signs each record as it writes it), sealing keys certify the
 *log* (the ledger signs checkpoints over it), and ops keys sign the deployment
 bundle that names the origin keys. A sealing key certifying its own writer, or
 the ops key that enrolled a gateway also speaking as one, is exactly the
-cohabitation the roles prevent — so the deployment bundle carries origin keys
-only, and `obsign verify` resolves every key within its role.
+cohabitation the roles prevent. The deployment bundle therefore carries origin
+keys only, and `obsign verify` resolves every key within its role.
 
 ### Where the values come from
 
@@ -455,16 +453,16 @@ object verbatim:
 ```
 
 Two-tier deployments (`--identity-key`, or `--identity-hsm-module` in
-production) print the same line for the identity key — `[obsign] identity key
-… — certifies a session key per chain — public entry: {…}`. Enroll *that*
-entry: the identity key is what the bundle must trust, and the per-session
-keys it certifies are derived and verified from it.
+production) print the same line for the identity key, which reads `[obsign]
+identity key … — certifies a session key per chain — public entry: {…}`.
+Enroll *that* entry: the identity key is what the bundle must trust, and the
+per-session keys it certifies are derived and verified from it.
 
 An absent file with `deployment/` present is refused; an empty array `[]` is
-accepted and means "no gateway trusted yet" — legitimate before the first
-enrollment, and honest rather than silent. Under default-require the ledger
-will then refuse to seal anything, which is correct: no trusted writer, no
-proof.
+accepted and means "no gateway trusted yet", a legitimate state before the
+first enrollment and one the file states out loud. Under default-require the
+ledger will then refuse to seal anything, which is correct: no trusted writer,
+no proof.
 
 ---
 
@@ -472,7 +470,7 @@ proof.
 
 TPM enrollments: proof that a gateway's identity key is resident in real
 hardware running measured software. Optional, and only meaningful with a TPM
-2.0 — see [real-tpm-interop.md](real-tpm-interop.md) and
+2.0. See [real-tpm-interop.md](real-tpm-interop.md) and
 [design/attestation-v3.md](design/attestation-v3.md).
 
 Top level is an **array**, one entry per enrolled key.
@@ -487,7 +485,7 @@ Top level is an **array**, one entry per enrolled key.
 | `expected_pcrs` | array | **yes** | — | The PCR values the quote must report — this is the policy, and it is under the ops signature. |
 | `expected_pcrs[].index` | integer | **yes** | — | PCR index. The gateway-binary measurement conventionally goes in 16. |
 | `expected_pcrs[].digest` | hex | **yes** | — | Expected value of that PCR. |
-| `identity_pub` | hex | no | *absent* | The identity key's marshalled `TPMT_PUBLIC`. **Present** in everything a real TPM emits: the verifier recomputes the Name the certify must match (`alg ‖ H(these bytes)`) and extracts the raw public key, which must equal the enrolled entry — so entry → public area → Name → AK signature closes with no gap. **Absent** falls back to the earlier synthetic binding, kept so pre-hardware attestations keep verifying. |
+| `identity_pub` | hex | no | *absent* | The identity key's marshalled `TPMT_PUBLIC`. **Present** in everything a real TPM emits: the verifier recomputes the Name the certify must match (`alg ‖ H(these bytes)`) and extracts the raw public key, which must equal the enrolled entry, so the chain from that entry through the public area and the Name to the AK signature closes with no gap. **Absent** falls back to the earlier synthetic binding, kept so pre-hardware attestations keep verifying. |
 
 All hex fields are lowercase hex with no `0x` prefix.
 
@@ -505,9 +503,9 @@ obsign-tpm-enroll \
 
 Two things to know:
 
-1. **`--out` writes one bare object; the file must be an array.** Wrap it —
-   `jq -s '.' one-attestation.json > deployment/attestation.json` — or paste
-   the object into the existing array.
+1. **`--out` writes one bare object; the file must be an array.** Wrap it
+   with `jq -s '.' one-attestation.json > deployment/attestation.json`, or
+   paste the object into the existing array.
 2. **If the tool warns that your TPM produced an `ecdsa-p256` identity key,
    do not paste its `identity_entry` into `origin-keys.json`.** Deployment
    bundles accept only Ed25519 origin keys today, and a P-256 entry takes the
@@ -515,8 +513,8 @@ Two things to know:
    fine; the entry waits for P-256 origin-key support.
 
 **Refused at compile:** an attestation whose `key_id` is not an enrolled
-origin key — a copy-paste slip worth catching in review rather than at the
-verifier.
+origin key, a copy-paste slip that review should catch before the verifier
+does.
 
 ---
 
@@ -648,4 +646,4 @@ obsign-control compile --source . --key ./ops-key.hex --out ./out
 | refusal to stamp a dirty tree | — | a `policies@<sha>` citation must mean the bytes that commit contains |
 
 See also [policies-cedar.md](policies-cedar.md#failure-modes-worth-knowing)
-for the failures that happen at *runtime* rather than at compile time.
+for the failures that happen at *runtime*, once compile has already passed.

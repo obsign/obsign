@@ -1,7 +1,7 @@
 //! Sealing service CLI: the counterpart of the gateway.
 //!
-//! The gateway writes the WAL and forwards calls; this binary — running on
-//! another host, or at least under another identity — seals that log with a
+//! The gateway writes the WAL and forwards calls; this binary (running on
+//! another host, or at least under another identity) seals that log with a
 //! key the gateway never holds, anchors the seals at a TSA, and assembles the
 //! evidence pack. `seal` does one pass and exits (cron- and air-gap-
 //! friendly); `run` loops for hosts that prefer a daemon.
@@ -113,7 +113,7 @@ struct SealArgs {
 
     /// Restore v0 rollout tolerance under --deployment-bundle: unsigned
     /// records seal with a warning instead of being refused. The deliberately
-    /// unlovely opt-out from the v1 default — the operator accepting the
+    /// unlovely opt-out from the v1 default. The operator accepting the
     /// asterisk types it; nobody carries it silently.
     #[arg(long, requires = "deployment_bundle")]
     allow_unsigned_legacy_chains: bool,

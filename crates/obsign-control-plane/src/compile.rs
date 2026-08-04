@@ -1,6 +1,6 @@
 //! Compilation: a validated source tree becomes signed bundles.
 //!
-//! Compilation is deterministic — the same tree, ref and key always produce
+//! Compilation is deterministic. The same tree, ref and key always produce
 //! byte-identical artifacts (Ed25519 is deterministic per RFC 8032, and the
 //! source tree is read in a fixed order). This is what makes `publish`
 //! idempotent and releases comparable by hash.
@@ -20,10 +20,10 @@ pub struct Compiled {
     pub policy: SignedBundle,
     pub identity: Option<SignedIdentityBundle>,
     pub deployment: Option<SignedDeploymentBundle>,
-    /// Cedar validator warnings — a rule that can never fire, an identifier
-    /// built from confusable characters. Worth showing the author, not worth
-    /// refusing to sign over: none of them makes a decision wrong, and a
-    /// warning that blocks a release is a warning people learn to route
+    /// Cedar validator warnings, such as a rule that can never fire or an
+    /// identifier built from confusable characters. Worth showing the author,
+    /// not worth refusing to sign over: none of them makes a decision wrong,
+    /// and a warning that blocks a release is a warning people learn to route
     /// around.
     pub warnings: Vec<String>,
 }
@@ -31,9 +31,9 @@ pub struct Compiled {
 /// The bundle format a catalogue requires.
 ///
 /// v2 only when some tool declares argument policy: a fleet that never uses
-/// the feature keeps emitting v1, which pre-upgrade gateways still load —
-/// the cutover is self-serve, per repository. Shared with `schema`, which
-/// must load a catalogue exactly the way `compile` will.
+/// the feature keeps emitting v1, which pre-upgrade gateways still load. The
+/// cutover is self-serve, per repository. Shared with `schema`, which must
+/// load a catalogue exactly the way `compile` will.
 pub(crate) fn format_for(tools: &[obsign_policy::ToolDef]) -> &'static str {
     if tools.iter().any(|t| !t.policy_args.is_empty()) {
         obsign_policy::FORMAT_V2
