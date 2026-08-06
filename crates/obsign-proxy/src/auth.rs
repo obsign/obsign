@@ -66,7 +66,7 @@ impl Auth {
                 // behaviour.
                 kind: PrincipalKind::Machine,
                 // No claim to read one from, and the declared subject is
-                // already the readable string — a label here would only
+                // already the readable string. A label here would only
                 // repeat it.
                 label: None,
             },
@@ -414,7 +414,7 @@ mod tests {
     fn a_token_exchange_hop_is_signalled_even_with_identical_expiry() {
         // RFC 8693 token exchange: a service obtains a token to act on
         // behalf of the same principal, bounded by the parent token's
-        // expiry. Subject, scopes, groups and expiry are all identical —
+        // expiry. Subject, scopes, groups and expiry are all identical:
         // only the actor chain and the principal kind change. That change
         // decides which Cedar rules apply and who the log attributes the
         // acts to: it must be signalled as a renewal.
@@ -501,7 +501,7 @@ mod rotation_tests {
     #[test]
     fn rotation_recovered_mid_session() {
         // The real sequence: the token expires, whoever holds the OIDC
-        // session gets a new one — signed with the freshly rotated key.
+        // session gets a new one, signed with the freshly rotated key.
         // Without reloading, the gateway would refuse everything until
         // restart.
         let (bp, tp) = paths("midsession");
@@ -537,7 +537,7 @@ mod rotation_tests {
     fn a_rejected_reload_is_kept_for_the_log() {
         // Mid-session, an unverifiable file lands where the bundle lives and
         // a token with an unknown kid arrives. The reload is refused, the
-        // token too — and the refusal itself must reach the caller, because
+        // token too, and the refusal itself must reach the caller, because
         // dropping a rogue bundle on disk is the event an investigation
         // wants to see.
         let (bp, tp) = paths("rejected-event");

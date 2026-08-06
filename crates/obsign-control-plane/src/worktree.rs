@@ -71,8 +71,8 @@ pub fn worktree_divergence(source_root: &Path) -> Result<Vec<String>, Error> {
     // The generated Cedar schema lives beside the rules but is not one of
     // them: `read_cedar` takes only `*.cedar`, so its bytes provably never
     // reach the signed bundle. Refusing to stamp a sha because a *derived*
-    // file is uncommitted would fail the documented sequence — regenerate
-    // the schema after a catalogue change, then compile — over something the
+    // file is uncommitted would fail the documented sequence, regenerate
+    // the schema after a catalogue change, then compile, over something the
     // compilation does not read. `compile` derives the model from
     // `tools.json` itself and never trusts this file.
     let generated_schema = format!("policies/{}", obsign_policy::SCHEMA_FILE);
@@ -133,7 +133,7 @@ pub fn worktree_divergence(source_root: &Path) -> Result<Vec<String>, Error> {
 
     // Disk -> index: every file the compilation reads must be tracked. A
     // stray file `compile` never reads (a .DS_Store in policies/) is not
-    // divergence — the citation stays honest without it.
+    // divergence. The citation stays honest without it.
     for path in compiled_inputs(source_root, &prefix)? {
         if !tracked.contains(path.as_str()) {
             divergence.push(format!("{path}: read by compile but not tracked in git"));
@@ -345,7 +345,7 @@ fn parse_index(b: &[u8], oid_len: usize) -> Result<Index, Error> {
         let mut intent_to_add = false;
         if flags & 0x4000 != 0 {
             // Extended entry: one more u16 of flags. Skip-worktree (sparse
-            // checkout) needs no special case — if the file is absent, the
+            // checkout) needs no special case. If the file is absent, the
             // content check reports it, which is the honest verdict for a
             // file the compilation would fail to read anyway.
             if version < 3 {
@@ -382,7 +382,7 @@ fn parse_index(b: &[u8], oid_len: usize) -> Result<Index, Error> {
                 .ok_or_else(|| corrupt("unterminated path"))?;
             let p = b[off..off + nul].to_vec();
             // NUL-terminated, then NUL-padded to a multiple of eight bytes
-            // from the start of the entry — git's ce_size formula.
+            // from the start of the entry, git's ce_size formula.
             off = start + ((off - start + nul + 8) & !7);
             if off > end {
                 return Err(corrupt("truncated entry"));

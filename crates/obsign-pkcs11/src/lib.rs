@@ -34,7 +34,7 @@ pub enum Error {
 
 // ---------------------------------------------------------------------------
 // Types and constants, transcribed from the OASIS headers. CK_ULONG is
-// `unsigned long` — pointer-sized on every Unix ABI this project targets.
+// `unsigned long`: pointer-sized on every Unix ABI this project targets.
 // ---------------------------------------------------------------------------
 
 type CkRv = libc::c_ulong;
@@ -346,7 +346,7 @@ impl Pkcs11Signer {
             })?;
         check_is_ed25519(funcs, session, private_key, key_label)?;
 
-        // The public half comes from the token too — pasting it from config
+        // The public half comes from the token too, pasting it from config
         // would let a config editor decide which key seals "verify". The
         // private object usually hides its attributes, so read the point off
         // the public object of the same label, falling back to the private

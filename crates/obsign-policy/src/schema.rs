@@ -79,14 +79,14 @@ pub fn schema_source(tools: &[ToolDef]) -> Result<String, Error> {
     s.push_str(
         "// The Obsign authorization model, as Cedar sees it.\n\
          //\n\
-         // GENERATED — do not edit. Regenerate after any change to tools.json:\n\
+         // GENERATED, do not edit. Regenerate after any change to tools.json:\n\
          //\n\
          //     obsign-control schema --source .\n\
          //\n\
          // `obsign-control compile` type-checks the rules against this model\n\
          // and refuses to sign a rule that reads something the gateway does\n\
          // not expose. Point your editor at this file to get the same check\n\
-         // while you type — see docs/policies-cedar.md.\n\n",
+         // while you type, see docs/policies-cedar.md.\n\n",
     );
 
     s.push_str(
@@ -172,7 +172,7 @@ pub fn schema_source(tools: &[ToolDef]) -> Result<String, Error> {
     // Parse what we just printed, and refuse to return it otherwise. Every
     // caller either writes this text to a file an editor will trust or feeds
     // it to the validator, and neither can tell a generator bug from a bad
-    // catalogue afterwards. Cheap — the callers are one-shot CLI paths — and
+    // catalogue afterwards. Cheap (the callers are one-shot CLI paths) and
     // it makes "the schema on disk is parseable Cedar" true by construction
     // rather than by review of the string building above.
     cedar_policy::Schema::from_str(&s).map_err(|e| {
@@ -205,7 +205,7 @@ fn args_record(args: &BTreeMap<&str, (ArgKind, &str)>) -> String {
     // fields are joined rather than terminated. Both details are load-bearing:
     // Cedar's grammar has no trailing comma, and an earlier version put the
     // comment after it and then deleted the last comma by searching the
-    // rendered text for ", //" — which a tool named `a, //b` defeats.
+    // rendered text for ", //", which a tool named `a, //b` defeats.
     let fields: Vec<String> = args
         .iter()
         .map(|(name, (kind, tool))| {

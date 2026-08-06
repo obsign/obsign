@@ -293,8 +293,8 @@ impl Engine {
             // request, so the customer can knowingly trade caution for
             // availability on a read-only tool. But once a tool's verdict
             // depends on arguments, an evaluation error becomes
-            // input-*dependent* and attacker-triggerable — a well-typed value
-            // that overflows an i64 arithmetic expression, say — and must not
+            // input-*dependent* and attacker-triggerable, a well-typed value
+            // that overflows an i64 arithmetic expression, say, and must not
             // reach the open path. Extraction already denies malformed input
             // before Cedar (§3.3); this extends the same rule one layer, to
             // the errors a crafted-but-well-typed value can raise *inside*
@@ -401,7 +401,7 @@ impl Engine {
 
         let mut pairs = self.context_pairs(req);
         let strict = args.is_some();
-        // Total by construction: every declared arg is present — extracted,
+        // Total by construction: every declared arg is present, extracted,
         // or defaulted, or the call was refused before reaching this point.
         // A policy reading `context.args.<name>` can therefore never hit a
         // missing attribute because of anything the agent did; the only
@@ -427,8 +427,8 @@ impl Engine {
         // Server-initiated channels are keyed on the fixed literal, never on
         // text the caller supplied. The generated schema declares `Server` as
         // an enumerated type holding exactly this one id, and an entity
-        // outside that set would make a rule written against the literal —
-        // the only form the docs describe — silently never match: the
+        // outside that set would make a rule written against the literal,
+        // the only form the docs describe, silently never match: the
         // `permit` stops permitting, with no evaluation error and nothing in
         // the log to tell it apart from a clean default deny.
         //
@@ -630,7 +630,7 @@ impl Engine {
         // Sorted and deduped throughout: two runs over the same bundle must
         // report the same thing in the same order, or compile output would
         // flap between machines. Cedar's own messages already name the
-        // offending rule — the `@id` the audit log will cite — so they are
+        // offending rule (the `@id` the audit log will cite) so they are
         // passed through as is.
         let (broken, tolerated): (Vec<_>, Vec<_>) = result
             .validation_errors()
@@ -695,7 +695,7 @@ impl Engine {
 /// *shape* of an expression so that policies stay amenable to automated
 /// analysis, and a rule can fail that constraint while evaluating perfectly:
 ///
-/// * `NonLitExtConstructor` — `ip(context.args.src)`. The constructor must
+/// * `NonLitExtConstructor`, `ip(context.args.src)`. The constructor must
 ///   take a literal. But this is precisely the argument rule the argument
 ///   feature was designed for; `docs/design/argument-policy-v1.md` treats
 ///   `ip()` over an argument as supported, and the runtime handles its
@@ -704,7 +704,7 @@ impl Engine {
 ///   effect of adding a type checker, and the obvious substitute
 ///   (`like "10.*"`) is not CIDR-equivalent, since it cannot express a /12
 ///   or a /24 boundary;
-/// * `EmptySetForbidden` — a literal `[]`, whose element type strict mode
+/// * `EmptySetForbidden`: a literal `[]`, whose element type strict mode
 ///   cannot infer. It evaluates fine.
 ///
 /// Both are reported as warnings instead, so nothing is silent. The cost is
@@ -819,7 +819,7 @@ fn coerce(kind: ArgKind, v: &serde_json::Value) -> Result<RestrictedExpression, 
             _ => Err("expected a string".to_string()),
         },
         // `as_i64` is exactly the contract: integral JSON numbers in i64
-        // range. A float — even 2.0 — comes back None and is refused, not
+        // range. A float, even 2.0, comes back None and is refused, not
         // rounded: an amount check that rounds is an amount check with a
         // hole.
         ArgKind::Long => match v.as_i64() {
@@ -882,12 +882,12 @@ mod tests {
     ///
     /// Both directions matter, and they fail differently:
     ///
-    /// * declared in the schema, absent from what the engine builds — a
+    /// * declared in the schema, absent from what the engine builds, a
     ///   rule reading it type-checks, then raises on every call it guards
     ///   and falls to the fail mode. On a fail-open tool that is a `forbid`
     ///   which never forbids, recorded as `AllowFailOpen`. Exactly the
     ///   failure the schema exists to eliminate, reintroduced by the schema;
-    /// * built by the engine, absent from the schema — `compile` refuses a
+    /// * built by the engine, absent from the schema; `compile` refuses a
     ///   rule that would have worked, blaming the author.
     #[test]
     fn the_schema_and_the_engine_agree_on_the_context() {

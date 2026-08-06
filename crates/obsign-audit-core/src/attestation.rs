@@ -224,7 +224,7 @@ pub fn verify_attestation(entry: &PublicKeyEntry, att: &KeyAttestation) -> Resul
         }
     }
 
-    // The quote must report the ops-expected PCR values — and must have
+    // The quote must report the ops-expected PCR values, and must have
     // signed over exactly the expected PCRs. Comparing the digest alone
     // would let a quote over a *different* PCR holding the same value pass,
     // and with resettable PCRs that value is reproducible at will.
@@ -285,10 +285,10 @@ pub fn verify_attestation(entry: &PublicKeyEntry, att: &KeyAttestation) -> Resul
 ///
 /// Two forms (documented on [`KeyAttestation::identity_pub`]):
 ///
-/// * `identity_pub` present — the real-TPM form: parse the public area,
+/// * `identity_pub` present, the real-TPM form: parse the public area,
 ///   require the raw key inside it to equal the bundle entry (same bytes,
 ///   consistent `algo`), and return `alg || H(TPMT_PUBLIC)`.
-/// * absent — the legacy synthetic form: `alg || H(raw ed25519 key)`.
+/// * absent, the legacy synthetic form: `alg || H(raw ed25519 key)`.
 fn expected_identity_name(entry: &PublicKeyEntry, att: &KeyAttestation) -> Result<Vec<u8>, Error> {
     let Some(tp_hex) = &att.identity_pub else {
         return Ok(identity_name(&entry.to_verifying_key()?));
@@ -506,7 +506,7 @@ fn parse_attest(b: &[u8]) -> Result<Attested, Error> {
             // TPML_PCR_SELECTION: count, then that many TPMS_PCR_SELECTION.
             // The selection is part of what the AK signed: it names WHICH
             // PCRs the digest covers, so it is surfaced for the caller to
-            // match against the ops-expected indices — a digest alone would
+            // match against the ops-expected indices. A digest alone would
             // verify against the same value sitting in a different PCR.
             let count = r.u32()?;
             let mut selected = Vec::new();
@@ -692,7 +692,7 @@ mod tests {
 
     #[test]
     fn a_quote_over_a_different_pcr_with_the_same_value_is_rejected() {
-        // The digest matches — same value, wrong register. With resettable
+        // The digest matches, same value, wrong register. With resettable
         // PCRs (16, 23) that value is reproducible by anyone with TPM
         // access, so the *selection* the AK signed must name the enrolled
         // index, not merely hash to the enrolled value.
@@ -802,7 +802,7 @@ mod tests {
 
     #[test]
     fn a_tpmt_public_of_another_key_is_rejected() {
-        // The certify honestly names the key inside the carried TPMT_PUBLIC —
+        // The certify honestly names the key inside the carried TPMT_PUBLIC:
         // but that key is not the enrolled one. The substitution attack the
         // pubkey-equality check exists for.
         let enrolled = SigningKey::from_bytes(&[1u8; 32]);

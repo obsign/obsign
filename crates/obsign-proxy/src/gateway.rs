@@ -188,15 +188,15 @@ pub(crate) fn handle_from_agent(
 ) -> Result<Forward> {
     let raw = msg.to_string();
 
-    // No method: a *response* — the agent answering a server-initiated
+    // No method: a *response*, the agent answering a server-initiated
     // request. Only two kinds are legitimate: the answer to an arbitrated
-    // request (sampling, elicitation — closes the recorded effect, with the
+    // request (sampling, elicitation: closes the recorded effect, with the
     // hash of what actually crossed back) and the answer to relayed
-    // machinery (ping, roots/list — passes like the request did). Anything
+    // machinery (ping, roots/list, passes like the request did). Anything
     // else is an arbitrary payload aimed at the server wearing a response's
     // shape, exactly the channel default-deny exists for: recorded, then
     // refused, never forwarded. A `method` that exists but is not a string
-    // is not a response either — it flows into the out-of-scope refusal.
+    // is not a response either, it flows into the out-of-scope refusal.
     let method: String = match msg.get("method") {
         Some(Value::String(m)) => m.clone(),
         Some(_) => "(non-string method)".to_string(),
@@ -229,7 +229,7 @@ pub(crate) fn handle_from_agent(
             }
 
             // Unsolicited. The record is written before the refusal, and a
-            // WAL failure refuses too — the `?` propagates like any act's.
+            // WAL failure refuses too, the `?` propagates like any act's.
             let call_id = s.next_call_id();
             let parent = s.agent_record_id.clone();
             let decision_id = format!("dec-{}", s.counter);
@@ -280,7 +280,7 @@ pub(crate) fn handle_from_agent(
     let method = method.as_str();
     let params = msg.get("params").cloned().unwrap_or(Value::Null);
 
-    // What gets arbitrated: the acts that move data — a tool call, a
+    // What gets arbitrated: the acts that move data, a tool call, a
     // resource read or subscription, a prompt fetch, a completion.
     // Discovery (`tools/list`, `resources/list`, `prompts/list`) is
     // filtered on the response path instead; the machinery allowlist
@@ -310,7 +310,7 @@ pub(crate) fn handle_from_agent(
         },
         // A completion enumerates the values of the object it references:
         // argument values for a prompt, expansions for a resource template.
-        // Left unarbitrated it walks around the `resources/list` filter —
+        // Left unarbitrated it walks around the `resources/list` filter:
         // what the listing hides, the completer spells out. It is therefore
         // held to the permission of the object itself: complete only what
         // you could read. A ref of any other shape names an object this
@@ -363,7 +363,7 @@ pub(crate) fn handle_from_agent(
     // the identity snapshot and the attribution parent (`agent_record_id`)
     // must be one atomic step. Released between the two, a concurrent request
     // on the same session presenting a different token records its delegation
-    // and moves `agent_record_id` in the gap — and this call, whose token did
+    // and moves `agent_record_id` in the gap, and this call, whose token did
     // not change, attaches under the other principal's subtree. Lock order is
     // session then auth, everywhere: auth is only ever taken alone or nested
     // inside the session lock, never the other way around.
@@ -408,7 +408,7 @@ pub(crate) fn handle_from_agent(
 
     // The call's arguments, extracted once and reused: the engine reads the
     // declared subset for the verdict below, and the *same* value is hashed
-    // into the record, so the log pins exactly what the policy saw — no
+    // into the record, so the log pins exactly what the policy saw, no
     // Null-vs-`{}` divergence between the two. Absent → an empty object.
     let arguments = params
         .get("arguments")
@@ -427,7 +427,7 @@ pub(crate) fn handle_from_agent(
             reason: Some(e.to_string()),
         },
         None => match &act {
-            // `arguments` is moved into the request here — the only arm that
+            // `arguments` is moved into the request here, the only arm that
             // reads it; `arguments_hash` was taken above for the record.
             Act::Tool { tool } => ctx.engine.evaluate(&request(
                 &deleg,
@@ -657,7 +657,7 @@ pub(crate) fn handle_from_server(
     session_id: &str,
 ) -> Downstream {
     // A method means this is not a response: the server is speaking first.
-    // Routed before the response-matching below — a server-initiated request
+    // Routed before the response-matching below, a server-initiated request
     // carries an id from the *server's* id space, and matching it against
     // `pending` (agent-side ids) would close an unrelated call's effect.
     if msg.get("method").is_some() {
@@ -697,7 +697,7 @@ pub(crate) fn handle_from_server(
     // to tools/list, resources/list and prompts/list alike.
     //
     // More than a convenience: a tool an agent cannot see is a tool it will
-    // not attempt — that many fewer refusals to handle, and that much less
+    // not attempt: that many fewer refusals to handle, and that much less
     // surface offered to a prompt injection. (Resource *templates* are not
     // filtered: a template is a pattern, not a readable target; whatever URI
     // it expands to is arbitrated at read time.)
@@ -851,7 +851,7 @@ fn handle_server_initiated(
     };
 
     // Same lock discipline as `handle_from_agent`: session first, auth
-    // nested inside. No bearer arrives from the server — the delegation in
+    // nested inside. No bearer arrives from the server, the delegation in
     // force is the one the agent's traffic last established.
     let mut s = state.lock().unwrap();
     let deleg = ctx.auth.lock().unwrap().delegation().clone();
@@ -1123,7 +1123,7 @@ mod tests {
     fn a_reused_in_flight_id_is_refused_and_no_effect_record_is_lost() {
         // Regression: `pending.insert` used to overwrite the slot when the
         // agent reused a JSON-RPC id, so the displaced call's Effect record
-        // was never written — a forwarded act with no recorded outcome.
+        // was never written: a forwarded act with no recorded outcome.
         let dir = std::env::temp_dir().join(format!(
             "obsign-gw-id-collision-{}",
             std::process::id()
@@ -1225,8 +1225,8 @@ mod tests {
         // The regression this closes: `--server-id` briefly fed the Cedar
         // *resource* for server-initiated channels, so `Server::"…"` named
         // whatever the operator typed. A rule keyed on the server then
-        // stopped matching the moment the flag changed — and a `forbid`
-        // keyed that way stopped forbidding — with no bundle re-signed.
+        // stopped matching the moment the flag changed, and a `forbid`
+        // keyed that way stopped forbidding, with no bundle re-signed.
         // Authorization moves only when the signed bundle moves.
         let (dir, state) = open_state("cap-entity");
         let mut ctx = ctx_with(
@@ -1270,7 +1270,7 @@ mod tests {
     #[test]
     fn an_unsolicited_response_is_refused_and_recorded() {
         // The bypass this closes: a message with no `method` matching no
-        // in-flight server request was "just relayed" — an arbitrary
+        // in-flight server request was "just relayed", an arbitrary
         // payload to the server wearing a response's shape, with no policy
         // and no record.
         let (dir, state) = open_state("unsolicited-resp");
@@ -1339,7 +1339,7 @@ mod tests {
     #[test]
     fn a_resource_read_nobody_permitted_is_refused_and_recorded() {
         // The scope gap this closes: resources/* used to pass through with
-        // neither policy nor record — a read channel invisible to the proof.
+        // neither policy nor record, a read channel invisible to the proof.
         let (dir, state) = open_state("resource-deny");
         let ctx = ctx(); // permits tool_call only: capabilities stay refused
 
@@ -1552,9 +1552,9 @@ mod tests {
     fn an_unknown_method_is_refused_and_recorded_not_forwarded() {
         // Decision: the method space is default-deny. A vendor method passes
         // only by being added to the machinery allowlist or given an
-        // arbitration path — never silently.
+        // arbitration path, never silently.
         let (dir, state) = open_state("unknown-method");
-        let ctx = ctx(); // permits every tool_call — irrelevant here
+        let ctx = ctx(); // permits every tool_call, irrelevant here
 
         let call = json!({
             "jsonrpc": "2.0", "id": 4, "method": "vendor/exfiltrate",
@@ -1600,7 +1600,7 @@ mod tests {
     fn sampling_is_refused_by_default_and_the_refusal_recorded() {
         // Decision: server-initiated channels are inside the perimeter.
         // Absent an explicit permit, the server's request never reaches the
-        // agent — the gateway answers in its place, and the log keeps the
+        // agent: the gateway answers in its place, and the log keeps the
         // attempt.
         let (dir, state) = open_state("sampling-deny");
         let ctx = ctx(); // permits tool_call only
@@ -1755,7 +1755,7 @@ mod tests {
         // Regression: any server message with an id used to be matched
         // against the agent-side pending map. A server-initiated request
         // whose id collided with an in-flight agent call closed that call's
-        // effect as Ok — an outcome nobody observed.
+        // effect as Ok, an outcome nobody observed.
         let (dir, state) = open_state("id-spaces");
         let ctx = ctx_with(
             "@id(\"allow_all\")\n\

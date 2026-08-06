@@ -157,7 +157,7 @@ impl Bundle {
         // tool). The v1 encoding is frozen: it omits the declarations so
         // existing signatures keep verifying. Everything from v2 onward
         // appends them unconditionally (an empty list encodes as length 0)
-        // — a canonical encoding with optional segments is how two bundles
+        //: a canonical encoding with optional segments is how two bundles
         // end up sharing bytes, and the format string opens the encoding,
         // so the layouts cannot collide.
         //
@@ -237,7 +237,7 @@ impl SignedBundle {
     pub fn verify(&self, key: &VerifyingKey) -> Result<&Bundle, Error> {
         // Format first, signature second. `signing_bytes` is format-shaped
         // (v2 appends the policy_args segment), so a peer that computed bytes
-        // for the wrong format would otherwise fail with BadSignature — a
+        // for the wrong format would otherwise fail with BadSignature, a
         // misdiagnosis indistinguishable from tampering. Checking the format
         // up front lets a version this build does not know report
         // UnknownFormat cleanly (both encodings open with the format string,

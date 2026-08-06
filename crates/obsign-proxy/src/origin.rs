@@ -98,7 +98,7 @@ impl OriginSigner for FileOriginSigner {
 }
 
 // ===========================================================================
-// v2: two-tier keys — a hardware identity key certifies ephemeral session keys
+// v2: two-tier keys, a hardware identity key certifying ephemeral session keys
 // ===========================================================================
 
 /// The long-lived gateway identity key. Signs session certificates, never

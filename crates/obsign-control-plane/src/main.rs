@@ -180,7 +180,7 @@ fn load_and_compile(args: &CompileArgs) -> Result<(obsign_control_plane::Compile
         None => {
             let sha = git_head(&args.source)?;
             // The version will cite this sha. Refuse to sign bytes the
-            // commit does not contain — an explicit --label is the way to
+            // commit does not contain, an explicit --label is the way to
             // compile a tree that is not exactly a commit.
             let divergence = worktree_divergence(&args.source)?;
             if !divergence.is_empty() {
@@ -321,8 +321,8 @@ fn do_export(
         out.join("export-manifest.json").display()
     );
 
-    // The dossier is written either way — a failing pack is exactly the one
-    // you want on disk — but the exit code must not pretend it verified.
+    // The dossier is written either way, a failing pack is exactly the one
+    // you want on disk, but the exit code must not pretend it verified.
     if !all_valid {
         bail!("some packs do not verify — see findings above");
     }

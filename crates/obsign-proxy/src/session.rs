@@ -212,7 +212,7 @@ pub fn record_delegation(
     // are often the same string, and a record repeating it would be noise in
     // the one place noise is expensive.
     //
-    // Same rule as the actor chain below — an additional payload type, never
+    // Same rule as the actor chain below, an additional payload type, never
     // a field on `Delegation`.
     if let Some((label, claim)) = &deleg.label {
         if label != &deleg.subject {

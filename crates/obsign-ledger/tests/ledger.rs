@@ -192,8 +192,8 @@ fn restart_resumes_sealing_without_gap_or_reseal() {
 #[test]
 fn rewritten_wal_is_refused_before_any_new_seal() {
     // The attack the ledger exists for: a compromised gateway host rewrites
-    // the WAL and recomputes every hash. The log is internally consistent —
-    // obsign_wal::read is happy — but it is no longer the history the checkpoints
+    // the WAL and recomputes every hash. The log is internally consistent,
+    // obsign_wal::read is happy, but it is no longer the history the checkpoints
     // certify.
     let wal_dir = tmpdir("rewrite-wal");
     let store_dir = tmpdir("rewrite-store");
@@ -557,8 +557,8 @@ mod origin {
     #[test]
     fn a_forged_tail_is_never_sealed_and_raises_the_alarm() {
         // The headline scenario of the gap: sealed head, then a fabricated
-        // record. The pass must seal the authentic records — refusing them
-        // too would turn the forgery into an anti-durability attack — and
+        // record. The pass must seal the authentic records, refusing them
+        // too would turn the forgery into an anti-durability attack, and
         // error on the forgery, loudly.
         let wal_dir = tmpdir("og-forged-wal");
         let store_dir = tmpdir("og-forged-store");
@@ -705,7 +705,7 @@ mod origin {
 
         // Republish a bundle that enrolls a DIFFERENT gateway: gw-origin is
         // revoked. Under require-origin its records no longer seal. (A key
-        // simply absent under rollout tolerance would still seal — revocation
+        // simply absent under rollout tolerance would still seal, revocation
         // bites precisely when origin is required.)
         let other = SigningKey::from_bytes(&[77u8; 32]);
         let other_entry = obsign_audit_core::checkpoint::PublicKeyEntry {

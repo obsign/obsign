@@ -33,7 +33,7 @@ fn engine(cedar: &str) -> Engine {
 
 #[test]
 fn a_resource_nobody_permitted_is_refused_by_default() {
-    // An empty policy set allows tools nothing — and capabilities nothing.
+    // An empty policy set allows tools nothing, and capabilities nothing.
     let e = engine("");
     let v = e.evaluate_capability(
         Capability::ResourceRead,
@@ -135,7 +135,7 @@ fn prompts_are_their_own_action_and_entity_type() {
 fn capability_evaluation_failures_follow_the_fail_mode_under_their_action_key() {
     // A policy that evaluates with an error (unknown context attribute on
     // this request shape) falls under the fail mode, keyed by the Cedar
-    // action name — the same identifier the customer writes in rules.
+    // action name: the same identifier the customer writes in rules.
     let broken = r#"@id("broken")
         permit (principal, action == Action::"resource_read", resource)
         when { context.no_such_attribute == "x" };"#;
@@ -168,8 +168,8 @@ fn capability_evaluation_failures_follow_the_fail_mode_under_their_action_key() 
 fn server_initiated_channels_are_keyed_on_the_literal_whatever_the_caller_says() {
     // `Server` is an enumerated entity type in the generated schema: it holds
     // exactly one id. Minting `Server::<caller text>` would put a runtime
-    // entity outside that set, and a rule written against the literal — the
-    // only form the docs describe — would then silently never match: the
+    // entity outside that set, and a rule written against the literal, the
+    // only form the docs describe, would then silently never match: the
     // `permit` stops permitting, with no evaluation error and nothing in the
     // log to tell it apart from a clean default deny.
     let e = engine(&format!(
@@ -187,7 +187,7 @@ fn server_initiated_channels_are_keyed_on_the_literal_whatever_the_caller_says()
     assert_eq!(v.outcome, Outcome::Allow);
     assert_eq!(v.policy_id.as_deref(), Some("allow_sampling"));
 
-    // A caller naming the deployment instead — an embedder passing
+    // A caller naming the deployment instead, an embedder passing
     // `--server-id`, or a future server-initiated path. The rule must still
     // decide, because the resource is the model's literal either way.
     let v = e.evaluate_capability(

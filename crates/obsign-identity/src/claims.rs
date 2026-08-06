@@ -317,7 +317,7 @@ pub fn actor_chain(
     chain.push(subject.to_string());
 
     // Is there a human at the end of the chain, or is this a keyless robot?
-    // The distinction is the reason `PrincipalKind` exists — a destructive
+    // The distinction is the reason `PrincipalKind` exists, a destructive
     // action with no identifiable human behind it is defensible to no auditor,
     // and Cedar rules gate on it. Getting it wrong in the machine→human
     // direction is a bypass, so detection is additive and fail-safe: any one
@@ -462,7 +462,7 @@ mod tests {
 
     #[test]
     fn custom_equals_marker_adds_a_machine_verdict() {
-        // An IdP marking its service tokens with `token_use: "m2m"` — none of
+        // An IdP marking its service tokens with `token_use: "m2m"`, none of
         // the built-in markers fire, the configured one must.
         let c = json!({ "sub": "svc-42", "azp": "some-client", "token_use": "m2m" });
         assert_eq!(chain(&c, "svc-42", Some("some-client")).1, PrincipalKind::Human);

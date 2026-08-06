@@ -57,7 +57,7 @@ pub fn enroll(tpm: &mut Tpm, req: &EnrollmentRequest) -> Result<Enrollment, Erro
     };
 
     let result = ceremony(tpm, req, algorithm, &ak, &identity);
-    // Flush unconditionally: a failed ceremony must not leak loaded keys —
+    // Flush unconditionally: a failed ceremony must not leak loaded keys:
     // TPM object slots are scarce and a retry would hit TPM_RC_OBJECT_MEMORY.
     let _ = tpm.flush(ak.handle);
     let _ = tpm.flush(identity.handle);

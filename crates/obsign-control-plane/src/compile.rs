@@ -54,13 +54,13 @@ pub fn compile(tree: &SourceTree, source_ref: &str, ops: &OpsKey) -> Result<Comp
         fail_mode: tree.fail_mode.clone(),
     };
     // Cedar syntax, mandatory @id on every rule, unique ids, argument
-    // declarations — exactly the checks the gateway runs at startup, moved
+    // declarations: exactly the checks the gateway runs at startup, moved
     // to compile time.
     let engine = obsign_policy::Engine::load(&bundle)
         .map_err(|e| Error::Source(format!("policies: {e}")))?;
     // Type-check every rule against the model the gateway exposes, derived
     // from this bundle's own catalogue. `load` only proves the rules parse;
-    // this proves they can *evaluate* — a rule reading `principal.roles` or
+    // this proves they can *evaluate*, a rule reading `principal.roles` or
     // `context.enviroment` raises an evaluation error at runtime and falls to
     // the fail mode, which on a fail-open tool means the rule meant to stop a
     // call quietly stops stopping it.
@@ -68,7 +68,7 @@ pub fn compile(tree: &SourceTree, source_ref: &str, ops: &OpsKey) -> Result<Comp
     // This replaced a per-tool "smoke evaluation" that ran the real policies
     // against synthetic zero-valued arguments. That check existed to catch a
     // typo'd `context.args.<name>`, which the type checker now catches
-    // outright — whatever guards the rule carries, rather than only when a
+    // outright. Whatever guards the rule carries, rather than only when a
     // zero-valued context happened to reach it. What the smoke evaluation
     // alone still caught was an expression that raises *at zero* (an i64
     // overflow, say); it missed the same defect at realistic values, and for

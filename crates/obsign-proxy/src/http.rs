@@ -323,7 +323,7 @@ fn handle_post(
 
     // Requests the gateway does not arbitrate never reach the auth path
     // inside `handle_from_agent`, but their *responses* consult the
-    // delegation — discovery filtering above all. Present the token here so
+    // delegation, discovery filtering above all. Present the token here so
     // a renewal takes effect before the request is forwarded, not one call
     // later. Arbitrated methods present it themselves, under the session
     // lock, where it belongs.
@@ -333,7 +333,7 @@ fn handle_post(
 
     // No method: the agent is *answering* a server-initiated request
     // (sampling, elicitation). The server does not respond to a response,
-    // so there is nothing to wait for — `forward_and_wait` would block
+    // so there is nothing to wait for; `forward_and_wait` would block
     // this POST forever. `handle_from_agent` closes the pending effect
     // with the response's hash; the bytes are then relayed. 202 per spec.
     if method.is_none() && has_id {
@@ -359,7 +359,7 @@ fn handle_post(
     if !has_id {
         // An arbitrated method with no id is not machinery: JSON-RPC calls
         // the shape a notification, but a lenient server parser may execute
-        // it anyway — and a `resources/subscribe` processed that way has a
+        // it anyway, and a `resources/subscribe` processed that way has a
         // lasting effect. It goes through arbitration like any other act,
         // exactly as the stdio path does; only the transport answer differs
         // (nothing to wait for on a pass, the refusal carries a null id).
@@ -623,7 +623,7 @@ fn open_session(
     let chain_id = format!("{}-{}", gw.chain_id, sid);
     let opened = (|| -> Result<Arc<McpSession>> {
         // A session chain is always fresh (the id is random), so the
-        // authenticated open has nothing to verify — but it must still be
+        // authenticated open has nothing to verify, but it must still be
         // the authenticated one: a pre-created file squatting this chain id
         // would otherwise be adopted as history. Under the two-tier scheme
         // the session key is generated and certified here, per chain.
@@ -777,7 +777,7 @@ fn dispatch_from_server(
 
         if out.get("method").is_some() {
             // Server-initiated request or notification: only the GET stream
-            // can carry it. No stream, no delivery — said out loud, because a
+            // can carry it. No stream, no delivery, said out loud, because a
             // lost `tools/list_changed` is a debugging session.
             let delivered = {
                 let mut events = sess.events.lock().unwrap();
@@ -905,7 +905,7 @@ fn handle_delete(
     // Closing stdin is the whole termination protocol: the server exits, its
     // stdout reaches EOF, and the dispatcher closes the log after the last
     // buffered response. We only wait for that close so the client can rely
-    // on the WAL holding the complete session when DELETE returns — the
+    // on the WAL holding the complete session when DELETE returns, the
     // ledger's next pass then seals a finished chain, not a moving one.
     *sess.child_stdin.lock().unwrap() = None;
 

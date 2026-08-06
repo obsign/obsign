@@ -107,7 +107,7 @@ fn main() -> anyhow::Result<()> {
     // The bundle's origin keys are ed25519-only today: a P-256 identity
     // entry pasted into deployment/origin-keys.json fails
     // active_origin_keys() and takes the WHOLE bundle down as
-    // deployment_bundle_invalid. The attestation itself is fine — only the
+    // deployment_bundle_invalid. The attestation itself is fine, only the
     // entry must wait for P-256 origin-key support.
     if enrollment.algorithm.as_str() != "ed25519" {
         eprintln!(

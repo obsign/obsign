@@ -147,7 +147,7 @@ impl SignedIdentityBundle {
             FORMAT_V1 => {
                 // A v1 signature does not cover the markers. Accepting a v1
                 // file that carries non-default ones would let unsigned JSON
-                // decide who counts as human — exactly the threat the signed
+                // decide who counts as human, exactly the threat the signed
                 // bundle exists to close.
                 if self.bundle.claims.machine != crate::claims::MachineMarkers::default() {
                     return Err(Error::UnsignedMachineMarkers);

@@ -275,7 +275,7 @@ fn main() -> Result<()> {
         ),
         // The signed catalogue already declares which server each tool
         // lives on. Naming one it never mentions is a typo far more often
-        // than it is a fleet whose bundle covers other gateways — and a
+        // than it is a fleet whose bundle covers other gateways, and a
         // typo caught here costs nothing, while the same typo caught later
         // is sealed into a year of records.
         Some(id) => {
@@ -509,8 +509,8 @@ fn run_stdio(
     // Resuming refuses a tail no trusted origin key signed: adopting it would
     // chain authentic records on top of a forgery. Under the two-tier scheme
     // the trusted set is rebuilt from the certificates already in the chain,
-    // so a tail signed by a *previous* session key — which this process no
-    // longer holds — is adopted iff the identity key vouched for it.
+    // so a tail signed by a *previous* session key, which this process no
+    // longer holds, is adopted iff the identity key vouched for it.
     let existing = obsign_wal::read(&cli.wal, &cli.chain_id).context("reading the log")?;
     let setup = keys.open_session(&cli.chain_id, &existing, now_ms())?;
     let (wal, chain) = match &setup.resume_trust {
@@ -569,7 +569,7 @@ fn run_stdio(
     // The child's stdin is shared: the upstream loop forwards the agent's
     // traffic, and the downstream thread answers the server in the agent's
     // place when a server-initiated request is refused. The `Option` is the
-    // shutdown lever — clearing it closes the pipe even while the other
+    // shutdown lever: clearing it closes the pipe even while the other
     // holder keeps its clone.
     let mut child = spawn_server(&cli.server_cmd)?;
     let child_stdin = Arc::new(Mutex::new(Some(

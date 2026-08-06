@@ -682,7 +682,7 @@ mod tests {
     #[test]
     fn an_unfinished_capability_list_is_an_error_not_a_truncation() {
         // moreData still set when the page budget runs out: the list is
-        // provably incomplete, and an incomplete list must not be returned —
+        // provably incomplete, and an incomplete list must not be returned:
         // pick_algorithm would silently choose off missing data.
         let mut tpm = scripted_tpm(vec![algs_page(true, &[ALG_ECDSA], None); 8]);
         match tpm.algorithms() {
@@ -739,7 +739,7 @@ mod tests {
 
     #[test]
     fn a_template_roundtrips_through_public_key_extraction() {
-        // The template has an empty unique — extraction must still walk it,
+        // The template has an empty unique. Extraction must still walk it,
         // yielding an empty point (a real response carries the coordinates).
         let t = identity_template(KeyAlg::Ed25519);
         let (alg, raw) = public_key_bytes(&t).unwrap();
@@ -787,7 +787,7 @@ mod tests {
     #[test]
     fn open_dispatches_paths_to_the_device_transport() {
         // An absolute path that is not a TPM device must fail to open as
-        // one — and must not be tried as a TCP address.
+        // one, and must not be tried as a TCP address.
         match Tpm::open("/nonexistent/tpmrm0") {
             Err(Error::Io(_)) => {}
             Err(e) => panic!("expected an I/O error, got {e}"),

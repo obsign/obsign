@@ -206,7 +206,7 @@ pub fn parse_timestamp_response(der: &[u8]) -> Result<TimestampInfo, Error> {
 
     // genTime is mandatory in RFC 3161 and sits right after serialNumber; a
     // token where something else parses at that position is malformed, not a
-    // token without a time — `None` stays reserved for the anchor formats
+    // token without a time; `None` stays reserved for the anchor formats
     // that never carried one.
     let gen_time = Some(String::from_utf8_lossy(
         tst.expect(TAG_GENERALIZED_TIME, "TSTInfo.genTime")?,
@@ -345,7 +345,7 @@ mod tests {
     #[test]
     fn indefinite_length_is_rejected() {
         // 0x80 length is BER. Accepting it would open the door to
-        // multiple encodings of the same content — exactly what DER exists
+        // multiple encodings of the same content, exactly what DER exists
         // to prevent.
         let err = parse_timestamp_response(&[0x30, 0x80, 0x00, 0x00]).unwrap_err();
         assert!(matches!(err, Error::BadDer(_)));
@@ -355,7 +355,7 @@ mod tests {
     fn decoy_encap_content_info_is_rejected() {
         // A TSTInfo-shaped SEQUENCE smuggled in where digestAlgorithms
         // belongs. The shape-scanning parser this module used to have
-        // returned the decoy's imprint and time — diverging from the
+        // returned the decoy's imprint and time, diverging from the
         // eContent the CMS layer verifies. Positional parsing refuses
         // the token outright.
         let decoy = tst_encap(&[0xEEu8; 32], b"19990101000000Z");
@@ -410,7 +410,7 @@ mod tests {
         let mut der = granted_response(&[0x01u8; 32], b"20260101000000Z");
         let mid = der.len() / 2;
         der[mid] ^= 0xFF;
-        // Either a parse error or a clean result — never a panic. (If the
+        // Either a parse error or a clean result, never a panic. (If the
         // flipped byte lands in the imprint, the mismatch is caught by the
         // evidence layer comparing it to the checkpoint hash.)
         let _ = parse_timestamp_response(&der);

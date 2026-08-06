@@ -66,7 +66,7 @@ impl DeploymentBundle {
         // Attestations are appended only when present, so a bundle without
         // any (every v1 bundle) produces byte-identical signing bytes and
         // keeps verifying. A verifier reaches this branch under the same
-        // condition — the field is deterministic from the parsed bundle.
+        // condition. The field is deterministic from the parsed bundle.
         if !self.attestations.is_empty() {
             let mut atts: Vec<&KeyAttestation> = self.attestations.iter().collect();
             atts.sort_by(|a, b| a.key_id.cmp(&b.key_id));

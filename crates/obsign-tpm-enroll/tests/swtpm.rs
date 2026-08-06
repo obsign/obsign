@@ -57,7 +57,7 @@ fn enrolls_against_a_real_software_tpm_and_the_verifier_accepts_it() {
         enrollment.attestation.quote.len() / 2,
     );
 
-    // The algorithm must be what the TPM's capabilities dictate — on
+    // The algorithm must be what the TPM's capabilities dictate, on
     // libtpms without EdDSA that is P-256, and the choice must agree with
     // the capability the enroller read, not an assumption baked in here.
     let eddsa = tpm.algorithms().expect("capabilities").contains(&0x0060);

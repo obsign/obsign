@@ -3,20 +3,20 @@
 //! Everything the gateway trusts (the policy bundle, the identity bundle)
 //! arrives as a signed file. This crate is where those files come from:
 //!
-//! * **compile** — reads a policy source tree out of a git checkout,
+//! * **compile**: reads a policy source tree out of a git checkout,
 //!   validates it (Cedar syntax, mandatory `@id` annotations, catalogue
 //!   consistency, usable JWKS) and signs the bundles. The version carries the
 //!   commit sha, so a rule change is a dated, reviewed pull request and never
 //!   a click in a UI. A working tree that has drifted from HEAD is refused:
 //!   the sha never stamps bytes its commit does not contain;
-//! * **publish** — places a release into a distribution directory,
+//! * **publish**: places a release into a distribution directory,
 //!   immutably (`releases/<sha>/` is never rewritten) and atomically (the
 //!   current files the gateways watch are replaced by rename). Rolling back
 //!   is republishing an old sha;
-//! * **export** — assembles the audit dossier: one evidence pack per chain,
+//! * **export**, assembles the audit dossier: one evidence pack per chain,
 //!   verified on the way out, listed in a signed export manifest whose file
 //!   hashes are checkable with nothing but `sha256sum`;
-//! * **console** — a read-only, server-rendered view of the log and the
+//! * **console**: a read-only, server-rendered view of the log and the
 //!   current release. GET-only by construction: there is no handler that
 //!   mutates anything, so the console cannot become a second write path
 //!   around git.

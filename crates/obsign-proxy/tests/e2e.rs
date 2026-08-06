@@ -107,7 +107,7 @@ fn mint_full(exp_offset: i64, scopes: &str, act: Option<&str>, service: bool) ->
         "realm_access": { "roles": ["support-n2"] },
         "resource_access": { "obsign-proxy": { "roles": ["ticket-writer"] } },
         // The display claim every mainstream IdP sends beside the opaque
-        // subject — the shape a real token has.
+        // subject, the shape a real token has.
         "preferred_username": "marie.dupont",
     });
     if let Some(a) = act {
@@ -423,7 +423,7 @@ fn destructive_tool_in_prod_is_blocked_before_the_server() {
     assert_eq!(r.pointer("/result/isError"), Some(&Value::Bool(true)));
 
     // And crucially: the server never executed the call. This is the only
-    // assertion that really counts — blocking after the fact is useless.
+    // assertion that really counts. Blocking after the fact is useless.
     assert!(
         !f.stderr.contains("[server] EXECUTING delete_production_db"),
         "the call reached the MCP server:\n{}",
@@ -437,7 +437,7 @@ fn destructive_tool_in_prod_is_blocked_before_the_server() {
 
 #[test]
 fn argument_rule_blocks_before_the_server() {
-    // "send_message, but only to #support" — the refusal class that lives
+    // "send_message, but only to #support", the refusal class that lives
     // in the arguments, not the tool name. Same crucial assertion as the
     // destructive test: the non-conforming calls never reach the server.
     let cedar = r##"
@@ -497,7 +497,7 @@ fn argument_rule_blocks_before_the_server() {
     );
 
     // The rule denial carries its @id; the two malformed-argument refusals
-    // come from the gate itself — policy_id absent, like an
+    // come from the gate itself, policy_id absent, like an
     // out-of-catalogue tool.
     let d = f.decisions();
     assert_eq!(d[0], ("allow".to_string(), Some("allow_all".to_string())));
@@ -752,8 +752,8 @@ fn proven_identity_is_recorded_with_its_real_issuer() {
 
 #[test]
 fn a_pack_carries_both_the_stable_subject_and_a_readable_name() {
-    // What this closes: with a real IdP, `sub` is opaque — Keycloak issues
-    // UUIDs — so a pack naming only the subject is unreadable to the auditor
+    // What this closes: with a real IdP, `sub` is opaque, Keycloak issues
+    // UUIDs, so a pack naming only the subject is unreadable to the auditor
     // it exists for, who by construction cannot query the issuer's directory.
     // Recording the label instead would have traded one problem for another,
     // since a display name is renameable and an audit trail needs an
@@ -781,7 +781,7 @@ fn a_pack_carries_both_the_stable_subject_and_a_readable_name() {
         })
         .expect("a principal label record");
 
-    // The label joins to the delegation on the full OIDC identity — issuer
+    // The label joins to the delegation on the full OIDC identity, issuer
     // *and* subject. A subject is only unique within its issuer, and the
     // gateway hot-reloads identity bundles, so a join on the subject alone
     // would eventually name the wrong human.
@@ -792,7 +792,7 @@ fn a_pack_carries_both_the_stable_subject_and_a_readable_name() {
     // and a `name` the user typed do not carry the same weight.
     assert_eq!(label.claim, "/preferred_username");
 
-    // Sealed and signed like any other record — a label an attacker could
+    // Sealed and signed like any other record. A label an attacker could
     // append after the fact would be a way to rename history.
     let keys = f.evidence.keys.clone();
     assert!(
@@ -982,7 +982,7 @@ fn a_service_account_is_marked_machine() {
 fn a_service_account_is_blocked_on_a_destructive_tool() {
     // The product rule: "no agent destroys anything without an identifiable
     // human at the end of the chain". Here the tool is not even in
-    // production — it really is the missing human that blocks.
+    // production. It really is the missing human that blocks.
     let f = run(
         "service-deny",
         CEDAR_HUMAIN,
@@ -1049,13 +1049,13 @@ fn origin_signed_gateway_yields_a_require_origin_proof() {
     // The whole v0 loop through the real binary: the gateway signs every
     // record it writes; the operator copies the public entry off stderr into
     // the ledger's trust file; the ledger seals under --require-origin; the
-    // auditor verifies with --require-origin. No step below is optional —
+    // auditor verifies with --require-origin. No step below is optional:
     // each is one of the three enforcement points.
     let f = run_with("origin", CEDAR, declared(), TRAFFIC, KeyMode::Origin([0x44; 32]));
 
     // The public entry is printed for the operator: parse it exactly as they
     // would copy it. This is deliberately the only source of the key in this
-    // test — re-deriving it from the seed would bypass the flow under test.
+    // test: re-deriving it from the seed would bypass the flow under test.
     let entry: obsign_audit_core::checkpoint::PublicKeyEntry = {
         let line = f
             .stderr
@@ -1067,7 +1067,7 @@ fn origin_signed_gateway_yields_a_require_origin_proof() {
     };
     assert_eq!(entry.role, obsign_audit_core::checkpoint::KeyRole::Origin);
 
-    // Every record the gateway wrote is signed — including delegation and
+    // Every record the gateway wrote is signed, including delegation and
     // reload records, not just tool calls.
     let records = obsign_wal::read(&f.dir.join("wal"), "test").unwrap();
     assert!(!records.is_empty());
@@ -1156,8 +1156,8 @@ fn two_tier_gateway_certifies_a_session_key_and_never_writes_it() {
     let session_vk = obsign_audit_core::verify_session_cert("test", cert, &id_vk)
         .expect("the identity key must have certified the session key");
 
-    // Every record is signed by the certified session key — including the
-    // certificate itself — and by nothing that ever touched disk as a seed.
+    // Every record is signed by the certified session key, including the
+    // certificate itself, and by nothing that ever touched disk as a seed.
     let session_id = obsign_audit_core::key_id_for(&session_vk);
     assert!(
         records.iter().all(|r| r.is_signed()),
@@ -1180,7 +1180,7 @@ fn two_tier_gateway_certifies_a_session_key_and_never_writes_it() {
     );
 
     // Seal enrolling the identity key, then verify under require-origin with
-    // only the ops+seal roots — the session key is never supplied out of band.
+    // only the ops+seal roots. The session key is never supplied out of band.
     use obsign_ledger::Sealer as _;
     let ops = obsign_ledger::FileSealer::from_seed([0x21; 32], "ops-key");
     let mut identity_bundle_entry = identity_entry.clone();
@@ -1229,7 +1229,7 @@ fn resource_and_prompt_accesses_are_arbitrated_and_leave_records() {
     // The scope gap this locks down: resources/* and prompts/* used to
     // traverse the gateway with neither policy nor record. An agent could
     // read any resource the server exposes without leaving a trace in the
-    // proof — the one sentence the product cannot survive.
+    // proof: the one sentence the product cannot survive.
     let cedar = r#"
 @id("allow_docs_resources")
 permit (principal, action == Action::"resource_read", resource)
@@ -1264,7 +1264,7 @@ when { resource.required_scope == "" };
         .collect();
     assert_eq!(listed, vec!["docs://runbook"]);
 
-    // The permitted read reaches the server; the refused one never does —
+    // The permitted read reaches the server; the refused one never does:
     // blocking after the fact is useless.
     assert!(
         f.reply(3).pointer("/result/contents").is_some(),
@@ -1285,7 +1285,7 @@ when { resource.required_scope == "" };
     assert!(f.reply(5).get("error").is_some());
     assert!(!f.stderr.contains("[server] SERVING PROMPT"));
 
-    // Every attempt — allowed or refused — is in the sealed evidence, with
+    // Every attempt (allowed or refused) is in the sealed evidence, with
     // its verdict and its outcome.
     let accesses: Vec<_> = f
         .evidence

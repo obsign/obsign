@@ -247,7 +247,7 @@ mod tests {
     fn seal_interval_and_chain_writer_agree() {
         // The gateway seals through ChainWriter, the ledger through
         // seal_interval. If the two ever diverge, the export and the verifier
-        // stop talking about the same object — this test is the tripwire.
+        // stop talking about the same object. This test is the tripwire.
         let (records, mut chain) = build_records(5);
         let from_writer = chain.seal(42, "k1").unwrap();
         let from_records = seal_interval("c1", &records, None, 42, "k1").unwrap();

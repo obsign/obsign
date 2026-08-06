@@ -7,10 +7,10 @@
 //! by the same hands and could agree on a shared mistake. This test closes
 //! that gap in both directions:
 //!
-//! * **our encoder, their decoder** — everything we marshal (templates, the
+//! * **our encoder, their decoder**, everything we marshal (templates, the
 //!   enrolled `TPMT_PUBLIC`, certify and quote `TPMS_ATTEST`) must decode
 //!   under go-tpm, re-encode byte-identically, and yield the same Name.
-//! * **their encoder, our decoder** — a full enrollment ceremony performed
+//! * **their encoder, our decoder**, a full enrollment ceremony performed
 //!   by go-tpm's own marshalling must assemble into a `KeyAttestation` that
 //!   `obsign_audit_core::verify_attestation` accepts.
 //!
@@ -37,7 +37,7 @@ use obsign_tpm_enroll::{enroll, tpm, EnrollmentRequest, Tpm};
 /// no network, which must not fail an unprovisioned machine.
 fn build_go_harness(dir: &std::path::Path) -> Option<std::path::PathBuf> {
     let bin = std::env::temp_dir().join(format!("obsign-tpm-interop-{}", std::process::id()));
-    // Two attempts: a default build, then external linking — Go toolchains
+    // Two attempts: a default build, then external linking, Go toolchains
     // before 1.20 emit Mach-O without LC_UUID, which recent macOS dyld
     // refuses to load; the system linker adds it.
     for flags in [&[][..], &["-ldflags", "-linkmode=external"][..]] {

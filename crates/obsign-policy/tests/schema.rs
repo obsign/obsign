@@ -118,7 +118,7 @@ fn a_typo_in_a_context_attribute_fails_at_compile_time() {
 
 #[test]
 fn a_typo_in_a_declared_argument_fails_at_compile_time() {
-    // Caught whatever guards the rule carries — the check is over the rule's
+    // Caught whatever guards the rule carries. The check is over the rule's
     // text, not over one synthetic evaluation that may never reach it.
     let mut send = tool("send_message");
     send.policy_args = vec![arg("channel", ArgKind::String)];
@@ -148,7 +148,7 @@ fn an_unconstrained_action_reading_a_tool_attribute_fails() {
     // Reads `resource.destructive` for `resource_read` too, where the
     // resource is a `Resource` and has no attributes. At runtime this rule
     // raises an evaluation error on every capability access and falls to the
-    // fail mode — silently, on a fail-open deployment.
+    // fail mode, silently, on a fail-open deployment.
     let err = validate(
         r#"@id("no_destructive") forbid (principal, action, resource)
            when { resource.destructive };"#,
@@ -161,7 +161,7 @@ fn an_unconstrained_action_reading_a_tool_attribute_fails() {
 #[test]
 fn a_server_entity_named_after_the_deployment_fails() {
     // docs/policies-cedar.md warns that `Server::"mcp://crm.internal"` is not
-    // a thing — the resource key is a literal. The enum makes it an error
+    // a thing. The resource key is a literal. The enum makes it an error
     // rather than a rule that never matches.
     let err = validate(
         &format!(
@@ -184,7 +184,7 @@ fn an_ip_test_over_an_argument_compiles_and_is_reported() {
     // Strict validation refuses `ip()` on a non-literal, but the rule
     // evaluates perfectly and is exactly what the argument feature was
     // designed for. Refusing it would delete a working capability as a side
-    // effect of adding a type checker — and `like "10.*"`, the obvious
+    // effect of adding a type checker, and `like "10.*"`, the obvious
     // substitute, cannot express a /12 or a /24.
     let mut connect = tool("connect");
     connect.policy_args = vec![arg("src", ArgKind::String)];
@@ -203,7 +203,7 @@ fn an_ip_test_over_an_argument_compiles_and_is_reported() {
     assert!(warnings[0].contains("private_ranges_only"), "{warnings:?}");
     assert!(warnings[0].contains("accepted"), "{warnings:?}");
 
-    // And it really does evaluate — the whole justification for tolerating it.
+    // And it really does evaluate: the whole justification for tolerating it.
     let engine = Engine::load(&bundle(
         r#"@id("private_ranges_only")
            forbid (principal, action == Action::"tool_call", resource == Tool::"connect")

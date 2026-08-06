@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! <dist>/
-//!   policy-bundle.json      current — atomically replaced, gateways watch these
+//!   policy-bundle.json      current: atomically replaced, gateways watch these
 //!   identity-bundle.json    current
 //!   manifest.json           current, signed
 //!   trusted-keys.json       accumulated ops public keys
@@ -13,11 +13,11 @@
 //!
 //! Two invariants carry this module:
 //!
-//! * **a version is immutable** — `releases/<sha>/` is written once; a
+//! * **a version is immutable**, `releases/<sha>/` is written once; a
 //!   publish that would change its content is refused. Decisions in the audit
 //!   log cite `policies@<sha>`: replaying them months later requires that the
 //!   sha still designate the same rules;
-//! * **the current files change atomically** — write-then-rename, so a
+//! * **the current files change atomically**, write-then-rename, so a
 //!   gateway hot-reloading mid-publish reads the old release or the new one,
 //!   never a torn file. Rollback needs no tooling: republish the old sha.
 
@@ -150,7 +150,7 @@ pub fn publish(
 
     // Immutability check, with crash repair: an artifact missing from an
     // existing release directory (a publish that died halfway) is rewritten;
-    // an artifact with *different* content is a refusal — the author changed
+    // an artifact with *different* content is a refusal, the author changed
     // the source without committing, and the sha would lie.
     let mut reused = true;
     for (name, bytes) in &artifacts {

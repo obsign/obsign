@@ -102,7 +102,7 @@ fn main() {
         // Every tool declares the one server the demo gateway wraps, and the
         // demo passes the same string as `--server-id`. A catalogue naming
         // servers the gateway does not front would make its own evidence
-        // pack contradict its own bundle — the first thing anyone reads.
+        // pack contradict its own bundle, the first thing anyone reads.
         tools: vec![
             ToolDef {
                 name: "delete_production_db".into(),
@@ -134,7 +134,7 @@ fn main() {
             },
             // Argument-restricted: callable by everyone (rule 3), but rule 5
             // pins the channel. `policy_args` is the allowlist of what the
-            // policy may read — the message text is never extracted.
+            // policy may read. The message text is never extracted.
             ToolDef {
                 name: "send_message".into(),
                 server: "mcp://mock.demo".into(),

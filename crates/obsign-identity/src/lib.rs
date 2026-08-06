@@ -11,7 +11,7 @@
 //!
 //! Two design choices:
 //!
-//! * **no network calls** — the JWKS comes from a signed bundle distributed by
+//! * **no network calls**. The JWKS comes from a signed bundle distributed by
 //!   the control plane, like the policy bundle. The gateway stays deployable
 //!   air-gapped and adds no outbound surface. Key rotation happens by
 //!   reloading that file, with no query to the IdP;

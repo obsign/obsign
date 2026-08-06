@@ -291,7 +291,7 @@ fn overview(console: &Console) -> Option<String> {
                  <th>last seq</th><th>sealed to</th><th>checkpoints</th>\
                  <th>anchors</th><th>status</th></tr>",
             );
-            // Most recent first. `list_chains` sorts by id — right for the
+            // Most recent first. `list_chains` sorts by id, right for the
             // export's stable manifest order, wrong here: a session id is
             // random hex, so alphabetical order is chronologically
             // meaningless, and an investigator reads the top row as "what
@@ -335,7 +335,7 @@ fn release_summary(dist: &Path) -> String {
         Err(e) => return format!("<p class=\"bad\">manifest unreadable: {}</p>", esc(&e)),
     };
 
-    // Verified against the published trusted keys — and the outcome is shown
+    // Verified against the published trusted keys, and the outcome is shown
     // either way. An unverifiable current release is front-page news.
     let verdict = match load_keys(&dist.join("trusted-keys.json"))
         .iter()

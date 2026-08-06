@@ -147,7 +147,7 @@ fn reordering_is_visible() {
 fn rewriting_the_whole_chain_is_stopped_by_the_signature() {
     // The serious attack: whoever holds the database rebuilds a fully
     // consistent chain. It is internally consistent, so the hash chain alone
-    // is not enough — the signature stops it, because the key is not in the
+    // is not enough: the signature stops it, because the key is not in the
     // database.
     let (_, keys) = sample();
 
@@ -188,7 +188,7 @@ fn rewriting_the_whole_chain_is_stopped_by_the_signature() {
     assert!(!r.is_valid());
     assert!(codes(&r).contains(&"invalid_signature"));
 
-    // And with no key anchoring, the same pack would pass — hence the
+    // And with no key anchoring, the same pack would pass, hence the
     // mandatory warning AND the self_referential flag, which callers use to
     // refuse presenting the run as proof (obsign exits 3, not 0).
     let unanchored = evidence::verify(&forged, &[]);
@@ -320,8 +320,8 @@ fn payload_types_are_not_confusable() {
 /// without any of the earlier hashes below moving.
 #[test]
 fn a_payload_from_a_newer_gateway_is_readable_and_named() {
-    // What this buys: an auditor building the verifier from source — the
-    // channel this product tells them to use — against a log written by a
+    // What this buys: an auditor building the verifier from source, the
+    // channel this product tells them to use, against a log written by a
     // gateway that has since gained a payload type used to get
     // "unreadable record at line 3" and nothing else. That reads as
     // corruption and names no remedy.
@@ -394,20 +394,20 @@ fn a_payload_from_a_newer_gateway_is_readable_and_named() {
 fn renaming_a_payload_kind_cannot_hide_tampering() {
     // The attack an earlier cut of this feature allowed. `kind` is plaintext
     // chosen by whoever wrote the record, so if an unreadable payload
-    // suppressed the checks that depend on its hash — link, origin signature,
-    // checkpoint root — then renaming the kind of a record you just rewrote
+    // suppressed the checks that depend on its hash, link, origin signature,
+    // checkpoint root, then renaming the kind of a record you just rewrote
     // would erase the evidence. The verifier would print
     // "Nothing here is evidence of tampering" over a flipped verdict.
     //
     // The rule that closes it: being unable to read a record never removes a
     // finding. This build cannot tell an honest new payload from a forged one
-    // dressed as it — the discriminator would be the origin signature, which
-    // is precisely what it cannot check — so it accuses in both cases and
+    // dressed as it, the discriminator would be the origin signature, which
+    // is precisely what it cannot check, so it accuses in both cases and
     // says what to rebuild.
     let (ev, keys) = sample();
     assert!(evidence::verify(&ev, &keys).is_valid());
 
-    // Flip a Deny into an Allow — the record an investigation exists to find.
+    // Flip a Deny into an Allow: the record an investigation exists to find.
     let mut tampered = serde_json::to_value(&ev).unwrap();
     tampered["records"][3]["payload"]["outcome"] = serde_json::json!("allow");
     let caught: Evidence = serde_json::from_value(tampered.clone()).unwrap();
@@ -609,7 +609,7 @@ fn record_format_is_frozen() {
 fn every_payload_survives_a_json_round_trip() {
     // Regression: `Payload` is serialized with `#[serde(tag = "kind")]`. A
     // field called `kind` inside a variant collides with the discriminant
-    // serde injects — the value gets written twice and reading it back fails
+    // serde injects: the value gets written twice and reading it back fails
     // with `duplicate field`.
     //
     // The bug shows up neither at compile time nor on write: only when the WAL
@@ -695,7 +695,7 @@ fn every_payload_survives_a_json_round_trip() {
 // =====================================================================
 //
 // The gap these tests pin down: every input to a record's hash is public,
-// so the hash chain never proved WHO wrote a record — only that the set is
+// so the hash chain never proved WHO wrote a record. Only that the set is
 // internally consistent. The origin signature is the one element a disk
 // attacker cannot regenerate.
 
@@ -768,7 +768,7 @@ fn a_fully_signed_chain_verifies_clean_under_require_origin() {
 fn a_fabricated_record_cannot_carry_a_valid_origin_signature() {
     // Exit-0 gap #2, the record-level half: an attacker with disk write
     // appends a well-formed record after the head. Without origin auth the
-    // pack verified clean; now the forgery is visible — as an absence under
+    // pack verified clean; now the forgery is visible, as an absence under
     // the default posture, as an error when the deployment mandates origin.
     let (mut ev, trusted) = origin_sample();
     let last = ev.records.last().unwrap();
@@ -821,7 +821,7 @@ fn a_tampered_signature_under_a_trusted_key_is_always_an_error() {
 #[test]
 fn stripping_signatures_downgrades_the_proof_visibly() {
     // The attacker cannot forge a signature, so they remove them all and
-    // hope the pack reads like a pre-origin-auth log. It does — and that
+    // hope the pack reads like a pre-origin-auth log. It does, and that
     // downgrade is exactly what the warning (or the error, under
     // require_origin) surfaces.
     let (mut ev, trusted) = origin_sample();
@@ -843,7 +843,7 @@ fn stripping_signatures_downgrades_the_proof_visibly() {
 
 #[test]
 fn a_signed_record_transplanted_from_another_chain_is_refused() {
-    // Same position, same content, honestly signed — but for another chain.
+    // Same position, same content, honestly signed, but for another chain.
     // Only the chain id in the signed message stops the transplant, because
     // the record itself does not carry its chain id (the WAL filename does,
     // and filenames are what a disk attacker rewrites).
@@ -893,7 +893,7 @@ fn key_roles_do_not_substitute_for_each_other() {
 }
 
 // =====================================================================
-// Deployment bundle — the origin chain of trust
+// Deployment bundle, the origin chain of trust
 // =====================================================================
 //
 // v1: origin keys arrive through an ops-signed bundle embedded in the pack,
@@ -987,7 +987,7 @@ mod deployment {
         let ops = SigningKey::from_bytes(&[22u8; 32]);
         let ev = pack_with_bundle(&gw, &seal, &ops, "gw-1");
 
-        // No origin key supplied out of band — only seal + ops. The bundle
+        // No origin key supplied out of band, only seal + ops. The bundle
         // provides the origin key, and the whole chain verifies.
         let r = evidence::verify_with(&ev, &trust(&seal, &ops), &REQUIRE);
         assert!(r.is_valid(), "findings: {:?}", r.findings);
@@ -1013,7 +1013,7 @@ mod deployment {
     fn an_ops_key_cannot_seal() {
         // The separation this role exists for: whoever publishes the rules
         // must not be able to mint a checkpoint certifying the history those
-        // rules produced. The ops key is trusted — for signing bundles — and
+        // rules produced. The ops key is trusted (for signing bundles) and
         // a checkpoint bearing its id is still refused.
         let gw = SigningKey::from_bytes(&[21u8; 32]);
         let seal = signing_key();
@@ -1119,7 +1119,7 @@ mod deployment {
         let ev = pack_with_bundle(&gw, &seal, &ops, "gw-1");
 
         // Trust only the seal key: the bundle cannot be anchored, so its
-        // origin keys prove nothing — a warning, and the records fall to
+        // origin keys prove nothing, a warning, and the records fall to
         // unverified.
         let r = evidence::verify_with(&ev, &[pubkey_entry(&seal)], &REQUIRE);
         assert!(!r.is_valid());
@@ -1130,7 +1130,7 @@ mod deployment {
 }
 
 // =====================================================================
-// Session certificates (v2) — two-tier keys
+// Session certificates (v2), two-tier keys
 // =====================================================================
 //
 // Records are signed by an ephemeral session key; a session certificate,
@@ -1350,7 +1350,7 @@ fn an_unknown_payloads_hash_does_not_depend_on_key_order() {
     // it in through serde_with), so a `Map` iterates in insertion order and
     // the same logical payload read from two files with different key order
     // would hash differently. Two honest verifiers must never disagree about
-    // a record's hash — and the README's invariant is explicit that JSON is
+    // a record's hash, and the README's invariant is explicit that JSON is
     // "the transport and reading format, never the computation one".
     let one = r#"{"seq":0,"ts_ms":1,"prev_hash":"0000000000000000000000000000000000000000000000000000000000000000","id":"r","parent_id":null,"session_id":"s","payload":{"kind":"future","alpha":"1","beta":{"y":[1,2],"x":true}}}"#;
     let two = r#"{"seq":0,"ts_ms":1,"prev_hash":"0000000000000000000000000000000000000000000000000000000000000000","id":"r","parent_id":null,"session_id":"s","payload":{"beta":{"x":true,"y":[1,2]},"alpha":"1","kind":"future"}}"#;

@@ -133,7 +133,7 @@ fn an_eval_error_over_arguments_denies_even_fail_open() {
     // failures. Once a verdict depends on arguments, an evaluation error is
     // attacker-triggerable (a well-typed value that overflows an i64
     // arithmetic expression), so it must deny rather than reach the open
-    // path — the extension of §3.3 from malformed input to in-policy errors
+    // path, the extension of §3.3 from malformed input to in-policy errors
     // a crafted-but-well-typed value can raise.
     let cedar = r##"
     @id("cap_amount")
@@ -225,7 +225,7 @@ fn default_makes_an_absent_arg_total() {
 #[test]
 fn explicit_null_without_a_default_is_still_required_absent() {
     // Null is absent, so a required (no-default) arg is refused exactly as a
-    // missing key would be — not as a type error.
+    // missing key would be, not as a type error.
     let v = engine().evaluate(&call(json!({"channel": null})));
     assert_eq!(v.outcome, Outcome::Deny);
     assert_eq!(v.policy_id, None);
@@ -237,7 +237,7 @@ fn arg_names_with_pointer_metacharacters_read_the_literal_key() {
     // A name containing '/' or '~' must resolve to the literal argument key,
     // not be interpreted as a JSON-pointer nesting path (RFC 6901). Without
     // escaping, an arg named "path/glob" would read args["path"]["glob"] and
-    // the real "path/glob" key would go unchecked — a silent restriction
+    // the real "path/glob" key would go unchecked, a silent restriction
     // bypass.
     let cedar = r##"
     @id("only_safe_path")
@@ -273,7 +273,7 @@ fn arg_names_with_pointer_metacharacters_read_the_literal_key() {
 fn permit_only_argument_rules_hide_the_tool_from_listings() {
     // Documented limitation (design §3.8): the "argument-restricted tools
     // stay listed" guarantee holds for a forbid paired with a broad permit,
-    // NOT for a tool whose only permit is argument-conditional — that permit
+    // NOT for a tool whose only permit is argument-conditional, that permit
     // is dropped on the listing path (context.args absent) and the tool
     // falls to default-deny. This test pins the current behavior so the
     // constraint is a conscious choice, not a silent surprise.
@@ -294,7 +294,7 @@ fn permit_only_argument_rules_hide_the_tool_from_listings() {
         Outcome::Allow
     );
     // Listing path: the permit is dropped, so the tool is hidden. This is
-    // the documented gap — prefer a forbid + blanket permit.
+    // the documented gap, prefer a forbid + blanket permit.
     assert_eq!(
         e.evaluate_listing(&ToolRequest::new("u:marie", "send_message")).outcome,
         Outcome::Deny
@@ -453,7 +453,7 @@ fn argument_restricted_tools_stay_listed() {
 #[test]
 fn listing_still_applies_tool_level_rules() {
     // Leniency is scoped to what cannot be evaluated without arguments.
-    // A rule that needs none — destructive without a human — still hides.
+    // A rule that needs none (destructive without a human) still hides.
     let cedar = r#"
     @id("destructive_requires_human")
     forbid (principal, action == Action::"tool_call", resource)

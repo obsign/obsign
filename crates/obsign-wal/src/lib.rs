@@ -126,7 +126,7 @@ impl Wal {
         // Verification before any mutation of the file (the trim below), so
         // a refused open leaves the evidence exactly as found. Each record is
         // checked against the key its envelope names, resolved in the trusted
-        // set — a record naming an untrusted (or no) key is foreign.
+        // set: a record naming an untrusted (or no) key is foreign.
         if let Some(trusted) = origin {
             for rec in &records {
                 let vk = rec
@@ -329,7 +329,7 @@ mod tests {
         // later; *extending* one is not. The gateway would chain its next
         // record on a hash it cannot compute correctly, and every honest
         // record written afterwards would carry a prev_hash that a build
-        // knowing the type recomputes differently — `broken_link` forever on
+        // knowing the type recomputes differently, `broken_link` forever on
         // a log nobody touched. Cheaper to refuse and be upgraded.
         let dir = tmpdir("unreadable-tail");
         std::fs::create_dir_all(&dir).unwrap();
@@ -348,7 +348,7 @@ mod tests {
             Ok(_) => panic!("a chain with an unreadable tail must not be extended"),
         }
 
-        // But reading it for verification still works — that is the whole
+        // But reading it for verification still works. That is the whole
         // point of the tolerant parse.
         let records = read(&dir, "c1").expect("reading must stay tolerant");
         assert_eq!(records.len(), 1);
@@ -546,7 +546,7 @@ mod origin_tests {
     fn a_predecessor_key_in_the_active_set_still_resumes() {
         // Rotation mid-chain: the tail was written by key `og1`, the gateway
         // now signs as `og2`, and the deployment bundle lists both as active.
-        // Resume must accept the predecessor's records — the home v0 left
+        // Resume must accept the predecessor's records, the home v0 left
         // open for rotation.
         let dir = tmpdir("rotate-resume");
         let old = SigningKey::from_bytes(&[8u8; 32]);
@@ -602,7 +602,7 @@ mod origin_tests {
             matches!(err, Error::ForeignRecord { seq: 2, .. }),
             "expected ForeignRecord at the forged seq, got {err:?}"
         );
-        // And the legacy path still resumes — the refusal is the
+        // And the legacy path still resumes. The refusal is the
         // authenticated variant's, not the file's.
         let (_, chain) = Wal::open(&dir, "c1").unwrap();
         assert_eq!(chain.next_seq(), 3);

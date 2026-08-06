@@ -49,7 +49,7 @@ fn main() {
     };
 
     // The gateway's own key. Its id follows the convention the gateway prints
-    // at startup — `origin-<first 16 hex chars of the public key>` — so the
+    // at startup, `origin-<first 16 hex chars of the public key>`, so the
     // sample looks like something you could paste from a real deployment.
     let gw_key = SigningKey::from_bytes(&[11u8; 32]);
     let gw_public = hex::encode(gw_key.verifying_key().to_bytes());
@@ -62,7 +62,7 @@ fn main() {
     };
 
     // The control plane's key: it signs the bundle enrolling the gateway, and
-    // nothing the auditor verifies directly — hence role `ops`, which admits
+    // nothing the auditor verifies directly, hence role `ops`, which admits
     // it to neither the sealing nor the origin set.
     let ops_key = SigningKey::from_bytes(&[13u8; 32]);
     let ops_pubkey = PublicKeyEntry {
@@ -137,7 +137,7 @@ fn main() {
             args_hash: content_hash(br#"{"database":"customers","confirm":true}"#),
             // The hash, and nothing else. No component retains arguments, so
             // a sample carrying a `SealedRef` would advertise a capability
-            // the gateway cannot produce — see `ToolCall::args_sealed`.
+            // the gateway cannot produce, see `ToolCall::args_sealed`.
             args_sealed: None,
         }),
     ));

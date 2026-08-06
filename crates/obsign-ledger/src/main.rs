@@ -218,7 +218,7 @@ fn main() -> Result<()> {
             // The sealer outlives the loop on purpose: credentials are
             // presented exactly once, at startup. A retry loop that
             // re-presented a wrong PIN every interval would walk the HSM
-            // to CKR_PIN_LOCKED — a config mistake must not become a
+            // to CKR_PIN_LOCKED. A config mistake must not become a
             // locked token.
             let sealer = make_sealer(&args)?;
             let origin = origin_policy(&args)?;
@@ -453,7 +453,7 @@ fn do_export(
         }
     };
     let ev = export(records, &store, &origin_keys, deployment);
-    // The self-check runs with what the pack embeds — including the origin
+    // The self-check runs with what the pack embeds, including the origin
     // keys and the deployment bundle, so a signed log exports as verified
     // rather than "unverifiable because the keys travel out of band".
     let trusted = ev.keys.clone();
@@ -468,8 +468,8 @@ fn do_export(
         ev.anchors.len()
     );
 
-    // The pack is written either way — a failing export is exactly the one
-    // you want on disk for the investigation — but the exit code must not
+    // The pack is written either way, a failing export is exactly the one
+    // you want on disk for the investigation, but the exit code must not
     // pretend everything is fine.
     let report = obsign_audit_core::evidence::verify(&ev, &trusted);
     if !report.is_valid() {

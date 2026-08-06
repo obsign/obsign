@@ -127,8 +127,8 @@ impl<'de> Deserialize<'de> for SignedRecord {
     {
         use serde::de::Error as _;
 
-        // Split the two origin fields off by hand, then let `Record` — which
-        // does carry `deny_unknown_fields` — refuse whatever is left over.
+        // Split the two origin fields off by hand, then let `Record`, which
+        // does carry `deny_unknown_fields`, refuse whatever is left over.
         let mut map = serde_json::Map::deserialize(deserializer)?;
         let take_hex_field = |map: &mut serde_json::Map<String, serde_json::Value>,
                               name: &str|
@@ -292,7 +292,7 @@ mod tests {
         let back: SignedRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(back, sr);
 
-        // A pre-origin-auth line — a bare record — still deserializes.
+        // A pre-origin-auth line (a bare record) still deserializes.
         let legacy = serde_json::to_string(&sr.record).unwrap();
         let back: SignedRecord = serde_json::from_str(&legacy).unwrap();
         assert!(!back.is_signed());

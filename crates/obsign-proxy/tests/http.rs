@@ -388,8 +388,8 @@ fn http_records_name_the_server_the_operator_declared() {
     // The HTTP transport builds one `Ctx` per session out of the long-lived
     // `Gateway`, so `--server-id` reaches a record only if that hop copies
     // it. Asserted through the real binary and the real WAL: wiring the
-    // session's server id to any other field of `Gateway` — `agent_id`, say
-    // — compiles cleanly and passes every other test in this file.
+    // session's server id to any other field of `Gateway`, `agent_id`, say
+    //, compiles cleanly and passes every other test in this file.
     let gw = start(
         "server-id",
         false,
@@ -575,7 +575,7 @@ fn requests_without_a_session_are_refused() {
 #[test]
 fn an_id_less_act_is_arbitrated_not_smuggled() {
     // Regression: request-shaped messages sent without an id took the
-    // notification fast path and were forwarded raw — no policy, no record.
+    // notification fast path and were forwarded raw, no policy, no record.
     // JSON-RPC says a server should not execute them, but the invariant must
     // not depend on the wrapped server's parser.
     let gw = start("noid", false, &[]);
@@ -591,7 +591,7 @@ fn an_id_less_act_is_arbitrated_not_smuggled() {
     assert_eq!(r.status, 200);
     assert_eq!(r.body.pointer("/result/isError"), Some(&Value::Bool(true)));
 
-    // An allowed act forwards — records written first, nothing to wait for.
+    // An allowed act forwards: records written first, nothing to wait for.
     let r = post(
         &gw,
         &[("Mcp-Session-Id", &sid)],
@@ -771,8 +771,8 @@ fn the_get_stream_carries_server_notifications() {
 
 #[test]
 fn concurrent_identities_keep_their_own_attribution_subtrees() {
-    // Two principals share one MCP session — per-request bearers make that
-    // legal — and their calls race on separate connections. The gateway once
+    // Two principals share one MCP session, per-request bearers make that
+    // legal, and their calls race on separate connections. The gateway once
     // snapshotted the identity under the auth lock, released it, then took
     // the session lock to write the call: in that gap the other principal
     // could record its delegation and move `agent_record_id`, and a call

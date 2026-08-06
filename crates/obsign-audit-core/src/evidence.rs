@@ -191,7 +191,7 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     // One map per role. A key is only ever resolved within its role: a
     // sealing key that "validates" a record signature, or an origin key that
     // "validates" a checkpoint, would collapse writer and certifier into one
-    // authority — the exact confusion the roles exist to prevent.
+    // authority: the exact confusion the roles exist to prevent.
     //
     // Ops keys get a map of their own and feed neither pass. They are
     // resolved by `key_id` off `key_source` when a deployment bundle names
@@ -219,7 +219,7 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
 
     // --- Deployment bundle --------------------------------------------
     // The origin chain of trust: an ops-signed bundle names the origin keys.
-    // Verified here so its keys join the origin set before the origin pass —
+    // Verified here so its keys join the origin set before the origin pass:
     // one artifact and one root (the ops key) instead of hand-listed origin
     // keys. The ops key is resolved from the trusted set by the key id the
     // bundle names, whatever role it carries: `KeyRole::Ops` is what it
@@ -237,7 +237,7 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     // ephemeral session key; validating the certificate adds that session key
     // to the set records resolve against. So a v2 record verifies against a
     // key the identity key vouched for, while a v0/v1 record still verifies
-    // against a bundle key directly — the set is the union, which keeps older
+    // against a bundle key directly. The set is the union, which keeps older
     // packs working.
     resolve_session_certs(&ev.records, &ev.chain_id, &mut origin_keys, opts, &mut findings);
 
@@ -354,8 +354,8 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     // Severity is calibrated to what each state proves. An *invalid*
     // signature under a trusted key, or a key used outside its role, is
     // positive evidence of tampering: always an error. An *absent or
-    // unresolvable* signature is an absence of proof — indistinguishable
-    // from a log written before origin authentication existed — so it is a
+    // unresolvable* signature is an absence of proof, indistinguishable
+    // from a log written before origin authentication existed, so it is a
     // warning, upgraded to an error when the caller states the deployment
     // mandates origin (`require_origin`). Anything softer would let an
     // attacker strip signatures back into silence.
@@ -437,8 +437,8 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
             cp_ok = false;
         }
 
-        // Checkpoint chaining: without this check, a whole checkpoint — and
-        // therefore its whole interval — could be removed unnoticed.
+        // Checkpoint chaining: without this check, a whole checkpoint, and
+        // therefore its whole interval, could be removed unnoticed.
         if sc.checkpoint.prev_checkpoint_hash != prev_cp_hash {
             findings.push(Finding::error(
                 "broken_checkpoint_link",
@@ -573,8 +573,8 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     // --- Anchors -------------------------------------------------------
     // A checkpoint signature proves who sealed, not when: the key holder
     // could backdate ts_ms. An RFC 3161 token makes the date enforceable.
-    // The check here is structural — granted status, imprint equal to the
-    // checkpoint hash — and says so; presenting it as cryptographic
+    // The check here is structural, granted status, imprint equal to the
+    // checkpoint hash, and says so; presenting it as cryptographic
     // validation of the token would be a lie in the one place lying is
     // fatal.
     let checkpoint_labels: BTreeMap<Hash, String> = ev
@@ -999,7 +999,7 @@ mod tests {
         // A field nobody defined is not ignorable noise in a proof format:
         // two parsers that disagree on what a pack contains is exactly the
         // ambiguity an attacker wants. deny_unknown_fields makes the refusal
-        // uniform — at the top level, on a record, and inside a payload
+        // uniform: at the top level, on a record, and inside a payload
         // (the internally-tagged case, where serde strips only `kind`).
         let (ev, _) = sealed_pack();
 

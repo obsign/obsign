@@ -7,7 +7,7 @@
 //! * no network access, ever;
 //! * minimal dependencies, readable end to end;
 //! * script-friendly exit codes (0 proven, 1 invalid, 2 execution error,
-//!   3 consistent but unproven — self-referential verification).
+//!   3 consistent but unproven, self-referential verification).
 //!
 //! A log carrying a payload type this build cannot read exits 1, not 3.
 //! Nothing an unauthenticated field can trigger may soften the verdict: the
@@ -179,7 +179,7 @@ fn run(cmd: VerifyCmd) -> Result<ExitCode> {
         .with_context(|| format!("parsing {}", cmd.evidence.display()))?;
 
     // A deployment bundle supplied out of band fills in when the pack does
-    // not embed one; a pack that embeds its own is authoritative — that is
+    // not embed one; a pack that embeds its own is authoritative. That is
     // the bundle that was in force when it was sealed.
     if let Some(p) = &cmd.deployment_bundle {
         let raw =
@@ -253,7 +253,7 @@ fn print_report(r: &evidence::Report) {
             r.anchors_ok, r.anchors_total
         );
     }
-    // "0 signed" on a legacy pack is information, not noise — and under
+    // "0 signed" on a legacy pack is information, not noise, and under
     // --require-origin it is the headline.
     if r.records_total > 0 {
         println!(
@@ -301,7 +301,7 @@ fn print_report(r: &evidence::Report) {
         if r.records_unknown > 0 {
             // Said after the verdict, never instead of it. This build cannot
             // tell an honest log written by a newer gateway from a record
-            // rewritten to look like one — the discriminator would be the
+            // rewritten to look like one. The discriminator would be the
             // origin signature, which is exactly what it cannot check. So it
             // accuses, and names the one thing that would settle it.
             println!(

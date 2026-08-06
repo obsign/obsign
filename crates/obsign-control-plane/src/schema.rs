@@ -50,8 +50,8 @@ pub enum SchemaSync {
 /// `check` never writes: it is meant for CI, where the useful outcome is a
 /// red build and a diff, not a mutated working tree.
 pub fn sync_schema(tree: &SourceTree, path: &Path, check: bool) -> Result<SchemaSync, Error> {
-    // The catalogue's own validation — argument specs, JSON pointers,
-    // defaults that coerce, Cedar syntax, mandatory `@id` — lives in
+    // The catalogue's own validation, argument specs, JSON pointers,
+    // defaults that coerce, Cedar syntax, mandatory `@id`, lives in
     // `Engine::load`. `SourceTree::load` does none of it, so without this
     // call a tree that `compile` refuses would still get a committed schema
     // and a "point your editor at it" instruction.
@@ -73,7 +73,7 @@ pub fn sync_schema(tree: &SourceTree, path: &Path, check: bool) -> Result<Schema
         .map_err(|e| Error::Source(format!("tools.json: {e}")))?;
 
     if check {
-        // An absent file is staleness, not an error — that is the first run.
+        // An absent file is staleness, not an error. That is the first run.
         // Anything else (unreadable, not UTF-8) is reported as itself:
         // swallowing it into "out of date" would send the operator to
         // regenerate a file whose real problem is permissions.

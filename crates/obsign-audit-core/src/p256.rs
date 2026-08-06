@@ -145,7 +145,7 @@ impl Field {
             t[4] = v as u64;
             t[5] = (v >> 64) as u64;
 
-            // t = (t + mu * m) / 2^64 — mu chosen so the low limb cancels.
+            // t = (t + mu * m) / 2^64, mu chosen so the low limb cancels.
             let mu = (t[0].wrapping_mul(self.m0)) as u128;
             let v = t[0] as u128 + mu * (self.m.0[0] as u128);
             let mut carry = v >> 64;
@@ -315,11 +315,11 @@ const GY: &str = "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51
 
 /// Verifies an ECDSA-P256 signature over a SHA-256 digest.
 ///
-/// * `public` — the uncompressed point, `0x04 || x || y`, 65 bytes: the form
+/// * `public`: the uncompressed point, `0x04 || x || y`, 65 bytes, the form
 ///   a TPM's `TPMS_ECC_POINT` flattens to.
-/// * `digest` — SHA-256 of the signed message (a TPM signs the digest of the
+/// * `digest`: SHA-256 of the signed message (a TPM signs the digest of the
 ///   marshalled `TPMS_ATTEST`).
-/// * `sig` — raw `r || s`, each 32 bytes big-endian.
+/// * `sig`, raw `r || s`, each 32 bytes big-endian.
 ///
 /// Returns `true` only for a well-formed key on the curve and a signature
 /// that verifies; every malformation is a `false`, never a panic.
@@ -494,7 +494,7 @@ mod arithmetic_tests {
             fp.mul(&am, &am),
             "pow by two"
         );
-        // Fermat's little theorem: a^(p-1) == 1, 256 squarings deep — the
+        // Fermat's little theorem: a^(p-1) == 1, 256 squarings deep, the
         // whole multiplier is exercised, not just its friendly corners.
         let e = fp.m.sub(&U256::ONE).0;
         assert_eq!(fp.pow(&am, &e), fp.one, "fermat");

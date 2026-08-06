@@ -272,21 +272,21 @@ impl Payload {
             // resolves that session key against.
             Payload::SessionCert(_) => 9,
             // Added later, same rule: resource and prompt accesses used to
-            // traverse the gateway with no record at all — a read channel
+            // traverse the gateway with no record at all, a read channel
             // invisible to the proof.
             Payload::McpAccess(_) => 10,
             // Added later, same rule: a display name for an opaque subject.
             // A field on `Delegation` would have been the obvious place and
-            // is exactly what the rule forbids — it would rewrite the hash of
+            // is exactly what the rule forbids. It would rewrite the hash of
             // every delegation ever sealed.
             Payload::PrincipalLabel(_) => 11,
-            // Zero, never allocated to a real payload — tags start at 1 — so
+            // Zero, never allocated to a real payload (tags start at 1) so
             // this encoding cannot collide with any type, present or future.
             // It is deliberately *not* the producer's encoding: nothing here
             // knows the schema, so the hash it yields is this build's opinion
             // of an opaque blob, never a re-derivation of the original. The
             // verifier must therefore refuse to attest to such a record
-            // rather than compare hashes — see `is_understood`.
+            // rather than compare hashes, see `is_understood`.
             Payload::Unknown(_) => 0,
         }
     }
@@ -367,7 +367,7 @@ impl Payload {
             }
             Payload::Unknown(u) => {
                 // Through the canonical encoder, with object keys sorted at
-                // every level — not `to_string()`. The workspace enables
+                // every level, not `to_string()`. The workspace enables
                 // serde_json's `preserve_order` (cedar-policy pulls it in via
                 // serde_with), so a `Map` iterates in *insertion* order and
                 // the JSON text of one logical payload depends on the key
@@ -377,7 +377,7 @@ impl Payload {
                 // "no JSON for hashes ... JSON stays the transport and reading
                 // format, never the computation one".
                 //
-                // This hash is still not the producer's — nothing here knows
+                // This hash is still not the producer's, nothing here knows
                 // the schema. It only has to be total and stable.
                 e.str(&u.kind);
                 encode_json(e, &serde_json::Value::Object(u.raw.clone()));

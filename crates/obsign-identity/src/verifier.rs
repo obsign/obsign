@@ -142,7 +142,7 @@ impl Verifier {
         let scopes = self.claims.scopes(&claims);
         if scopes.is_empty() {
             // A token with no scope would only authorize tools requiring no
-            // scope. That is nearly always a configuration mistake — or a
+            // scope. That is nearly always a configuration mistake, or a
             // claim mapping pointing at the wrong place. Better to fail loudly
             // than to let an agent run with empty permissions.
             return Err(Error::NoScopes);

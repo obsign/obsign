@@ -166,7 +166,7 @@ pub fn export_all(
 ) -> Result<(Vec<ChainExport>, bool), Error> {
     if !store_dir.is_dir() {
         // Store::open would silently create an empty store, and every chain
-        // would export as "0 sealed" — technically true, operationally a
+        // would export as "0 sealed", technically true, operationally a
         // mistyped path. Refuse instead.
         return Err(Error::Source(format!(
             "store directory {} does not exist",
@@ -183,7 +183,7 @@ pub fn export_all(
     }
 
     // A sealed chain the store knows about but the WAL no longer holds is a
-    // removed WAL file — the exact way to make a whole session disappear from
+    // removed WAL file: the exact way to make a whole session disappear from
     // the dossier while every remaining pack still verifies. Refuse rather than
     // sign a manifest that silently omits it. (A chain in the WAL but not the
     // store is only unsealed, which the per-chain export already reports.)

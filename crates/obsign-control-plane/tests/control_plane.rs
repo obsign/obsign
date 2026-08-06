@@ -106,7 +106,7 @@ fn compilation_is_deterministic_and_verifiable() {
     );
     assert_eq!(a.policy.bundle.version, "policies@aaaa11112222");
 
-    // Signatures verify against the ops public key — and against nothing else.
+    // Signatures verify against the ops public key, and against nothing else.
     let vk = ops().signing_key().verifying_key();
     a.policy.verify(&vk).expect("policy bundle must verify");
     let idb = a.identity.expect("identity bundle expected");
@@ -128,7 +128,7 @@ fn argument_declarations_bump_the_bundle_format() {
     let compiled = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap();
     assert_eq!(compiled.policy.bundle.format, obsign_policy::FORMAT);
 
-    // One declaration: v2 — an old gateway must refuse this bundle rather
+    // One declaration: v2. An old gateway must refuse this bundle rather
     // than silently enforce less than it says.
     let dir = tmp("fmt-v2");
     write_source_tree(&dir);
@@ -155,7 +155,7 @@ fn argument_declarations_bump_the_bundle_format() {
 #[test]
 fn a_typoed_argument_rule_is_rejected_at_compile_time() {
     // A rule reading an argument nobody declares must fail in CI, naming the
-    // rule — not months later as a fail-mode event on a live gateway. The
+    // rule: not months later as a fail-mode event on a live gateway. The
     // schema type check catches it whatever guards the rule carries.
     let dir = tmp("arg-typo");
     write_source_tree(&dir);
@@ -213,8 +213,8 @@ fn a_typoed_argument_rule_is_rejected_at_compile_time() {
 
 #[test]
 fn a_rule_whose_verdict_depends_on_values_still_compiles() {
-    // The line the type check draws. It refuses a rule that can never work —
-    // one reading an attribute the model does not carry — and says nothing
+    // The line the type check draws. It refuses a rule that can never work,
+    // one reading an attribute the model does not carry, and says nothing
     // about a rule that is well-typed and whose *values* decide. Those raise
     // for some inputs and not others, which is the customer's fail-mode
     // question, not the signer's: refusing to publish them would override the
@@ -239,7 +239,7 @@ fn a_rule_whose_verdict_depends_on_values_still_compiles() {
     // overflows i64. Every operand really is a Long, so the type checker has
     // nothing to object to; only the values decide.
     //
-    // Under `"default": "open"` — set above deliberately — a customer may
+    // Under `"default": "open"` (set above deliberately) a customer may
     // legitimately want exactly this and take the degradation, which the log
     // records as `AllowFailOpen` rather than a clean allow.
     std::fs::write(
@@ -277,7 +277,7 @@ fn a_rule_that_can_never_evaluate_is_refused_whatever_the_fail_mode() {
     // checks. `principal.department` is not a rule whose verdict depends on
     // the input: the attribute does not exist in the model, so the rule
     // raises on *every* call it guards and decides nothing, ever. Under
-    // `"default": "open"` that means a `forbid` which never forbids — the
+    // `"default": "open"` that means a `forbid` which never forbids, the
     // failure is silent, and the log records `AllowFailOpen` for a rule the
     // author believes is enforcing.
     //
@@ -510,8 +510,8 @@ fn write_git_index(root: &Path, paths: &[&str], cache_tree_valid: bool, version:
 fn regenerating_the_committed_schema_does_not_make_the_tree_dirty() {
     // The schema is derived: `read_cedar` takes only `*.cedar`, so its bytes
     // never reach the signed bundle. Refusing to stamp a sha because it is
-    // uncommitted would break the documented sequence — regenerate after a
-    // catalogue change, then compile — over a file compilation does not read.
+    // uncommitted would break the documented sequence, regenerate after a
+    // catalogue change, then compile, over a file compilation does not read.
     let dir = tmp("schema-not-dirty");
     write_source_tree(&dir);
     let schema = obsign_control_plane::default_schema_path(&dir);
@@ -598,7 +598,7 @@ fn the_schema_is_written_then_reports_staleness_and_freshness() {
         SchemaSync::Stale
     );
     // check writes nothing: CI must fail with a diff, not a mutated tree.
-    // Matched on the declaration, not the bare name — "channel" also occurs
+    // Matched on the declaration, not the bare name, "channel" also occurs
     // in the header prose.
     let declaration = "\"channel\": String";
     assert!(!std::fs::read_to_string(&path).unwrap().contains(declaration));
@@ -631,7 +631,7 @@ fn no_schema_is_written_for_a_catalogue_compile_would_refuse() {
         dir.join("tools.json"),
         serde_json::json!([
             {"name": "send_message", "server": "mcp://chat",
-             // `at` is not a JSON pointer — refused by Engine::load, which
+             // `at` is not a JSON pointer, refused by Engine::load, which
              // SourceTree::load does not run.
              "policy_args": [{"name": "channel", "kind": "string", "at": "channel"}]}
         ])
@@ -694,7 +694,7 @@ fn a_tool_name_carrying_a_newline_still_yields_a_parseable_schema() {
 #[test]
 fn known_git_blob_ids_are_reproduced() {
     // Pinned to git's own answers (`git hash-object`), so the hand-rolled
-    // hashing is checked against git's arithmetic — not against itself.
+    // hashing is checked against git's arithmetic, not against itself.
     assert_eq!(
         hex::encode(blob_oid(b"", 20).unwrap()),
         "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
@@ -728,7 +728,7 @@ fn a_clean_checkout_passes_and_an_edit_is_named() {
     assert!(d[0].contains("00-base.cedar"), "{d:?}");
 
     // Restored content is clean again: the comparison is by content, not by
-    // stat data — the mtime just changed and must not matter, or a tarball'd
+    // stat data: the mtime just changed and must not matter, or a tarball'd
     // checkout on the air-gapped host could never compile.
     std::fs::write(dir.join("policies/00-base.cedar"), CEDAR_OK).unwrap();
     assert!(worktree_divergence(&dir).unwrap().is_empty());
@@ -790,7 +790,7 @@ fn every_kind_of_divergence_is_caught() {
 
 #[test]
 fn unverifiable_checkouts_are_refused_not_trusted() {
-    // No index at all: nothing to verify against — refusal, not a pass.
+    // No index at all: nothing to verify against, refusal, not a pass.
     let dir = tmp("wt-no-index");
     write_source_tree(&dir);
     std::fs::create_dir_all(dir.join(".git")).unwrap();
@@ -877,7 +877,7 @@ fn a_published_version_is_immutable() {
     let in_release = std::fs::read(dist.join("releases/v1/policy-bundle.json")).unwrap();
     assert_eq!(current, in_release);
 
-    // The manifest verifies and names exactly these bytes — checkable with
+    // The manifest verifies and names exactly these bytes, checkable with
     // nothing but sha256sum.
     let signed: SignedManifest =
         serde_json::from_str(&std::fs::read_to_string(dist.join("manifest.json")).unwrap())
@@ -1073,7 +1073,7 @@ fn a_rewritten_wal_is_exported_but_flagged_invalid() {
     fill_chain(&wal_dir, "alpha", 4, 999);
 
     let (exports, all_valid) = export_all(&wal_dir, &store_dir, &out, &ops(), 9_000).unwrap();
-    // Written anyway — the failing pack is the one you want on disk — but
+    // Written anyway (the failing pack is the one you want on disk) but
     // never passed off as fine.
     assert!(!all_valid);
     assert!(!exports[0].report.is_valid());
@@ -1139,7 +1139,7 @@ fn http_get(addr: SocketAddr, request: &str) -> String {
 #[test]
 fn the_console_lists_chains_newest_first() {
     // A session id is random hex, so the id order `list_chains` returns says
-    // nothing about time — yet an investigator reads the top row as "what
+    // nothing about time, yet an investigator reads the top row as "what
     // happened last". Here `alpha` sorts first by id but `zulu` holds the
     // more recent record, so the two orders disagree and only one is right.
     let wal_dir = tmp("con-order-wal");
@@ -1263,7 +1263,7 @@ fn console_is_read_only_and_shows_the_log() {
 
 #[test]
 fn a_request_line_without_newline_cannot_exhaust_the_console() {
-    // Regression: the request line was read with an unbounded read_line — a
+    // Regression: the request line was read with an unbounded read_line, a
     // client streaming bytes with no newline grew the buffer without limit.
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1302,7 +1302,7 @@ fn a_request_line_without_newline_cannot_exhaust_the_console() {
 fn a_tampered_release_manifest_is_resigned_not_republished() {
     // A rollback reuses the manifest archived in releases/<version>/. Those
     // bytes become the *current* manifest the fleet trusts, so they must
-    // verify at republish time — a signature broken since the original
+    // verify at republish time, a signature broken since the original
     // publish is re-signed fresh, never propagated.
     let dist = tmp("tampered-manifest-dist");
     let src = tmp("tampered-manifest-src");
@@ -1378,7 +1378,7 @@ fn a_deployment_bundle_compiles_signs_and_verifies() {
 #[test]
 fn a_sealing_key_in_the_origin_file_is_a_compile_error() {
     // A seal-role key posing as a gateway origin key is the writer-certifier
-    // confusion — refused in CI, where it is a diff, not at the sealing host.
+    // confusion: refused in CI, where it is a diff, not at the sealing host.
     let dir = tmp("deploy-sealrole");
     write_source_tree(&dir);
     std::fs::create_dir_all(dir.join("deployment")).unwrap();
@@ -1417,7 +1417,7 @@ fn the_deployment_bundle_is_published_as_an_immutable_artifact() {
         std::fs::read(&release).unwrap()
     );
 
-    // The manifest names it — a released set the recipient checks by hash.
+    // The manifest names it: a released set the recipient checks by hash.
     let manifest: obsign_control_plane::SignedManifest = serde_json::from_slice(
         &std::fs::read(dist.join("manifest.json")).unwrap(),
     )
@@ -1433,7 +1433,7 @@ fn the_deployment_bundle_is_published_as_an_immutable_artifact() {
 fn a_hostile_payload_kind_cannot_inject_html() {
     // The `kind` column used to be one of ten compile-time literals, which is
     // why it was interpolated raw. An unknown payload's kind is whatever the
-    // record says it is — and the console is the page an operator opens to
+    // record says it is, and the console is the page an operator opens to
     // look at a log they already suspect.
     let wal_dir = tmp("con-xss-wal");
     std::fs::create_dir_all(&wal_dir).unwrap();

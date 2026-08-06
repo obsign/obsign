@@ -75,7 +75,7 @@ fn seals_through_a_real_token() {
     };
 
     // A wrong PIN must fail at construction, with the vendor code an
-    // operator can look up — and must be presented exactly once (a retried
+    // operator can look up, and must be presented exactly once (a retried
     // wrong PIN is how tokens get locked).
     let e = Pkcs11Sealer::open(
         &env.module,
@@ -163,7 +163,7 @@ fn seals_through_a_real_token() {
     assert_eq!(report.records_sealed, 3);
 
     // The signature came from the token, and verifies against the public
-    // half read off the token — not against anything this process invented.
+    // half read off the token: not against anything this process invented.
     let vk = sealer.public_key().to_verifying_key().unwrap();
     sc.verify(&vk).unwrap();
 

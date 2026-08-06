@@ -10,9 +10,9 @@
 //! selects the IdP signing key: changing it simulates a key rotation on the
 //! provider side. `mode` is one of:
 //!
-//! * `user`     — plain user token (default);
-//! * `exchange` — token from an RFC 8693 token exchange, with an `act` claim;
-//! * `service`  — `client_credentials` token: no human behind it.
+//! * `user`    , plain user token (default);
+//! * `exchange`, token from an RFC 8693 token exchange, with an `act` claim;
+//! * `service` , `client_credentials` token: no human behind it.
 //!
 //! The claims are deliberately emitted **in the Keycloak shape**: roles under
 //! `realm_access.roles` and `resource_access.<client>.roles`, no flat array.

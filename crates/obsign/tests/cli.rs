@@ -109,7 +109,7 @@ fn self_referential_run_exits_3_and_says_not_proven() {
 #[test]
 fn forged_pack_without_trusted_keys_must_not_exit_0() {
     // The attack from the review: the pack validates itself with the
-    // attacker's key. It stays internally consistent — but exit 0 would
+    // attacker's key. It stays internally consistent, but exit 0 would
     // turn that consistency into proof.
     let attacker = SigningKey::from_bytes(&[9u8; 32]);
     let ev = write_tmp(
