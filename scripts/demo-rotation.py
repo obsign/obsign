@@ -19,12 +19,12 @@ from pathlib import Path
 
 D = Path(sys.argv[1] if len(sys.argv) > 1 else "/tmp/rot")
 ROOT = Path(__file__).resolve().parent.parent
-GW = ROOT / "target/debug/probant-proxy"
+GW = ROOT / "target/debug/obsign-proxy"
 SRV = ROOT / "target/debug/mock-mcp-server"
 
 def mint(kid, exp):
     subprocess.run(
-        ["cargo", "run", "-q", "-p", "probant-proxy", "--example", "mint_demo_token",
+        ["cargo", "run", "-q", "-p", "obsign-proxy", "--example", "mint_demo_token",
          "--", str(D), str(exp), "user", kid],
         cwd=ROOT, check=True, stdout=subprocess.DEVNULL)
 
