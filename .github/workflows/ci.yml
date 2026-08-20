@@ -1,0 +1,103 @@
+# Runs the checks CONTRIBUTING asks a contributor to run before opening a pull
+# request, so that the answer is the same on their machine and here.
+#
+# Two things it deliberately does not do. It does not run `cargo fmt --check`:
+# the tree is not rustfmt-clean, a wholesale reformat is its own decision, and
+# a gate nobody can pass is not a gate. And it installs no toolchain action:
+# `rust-toolchain.toml` pins 1.97.1, rustup honours it on its own, and the
+# pinned compiler is part of what an auditor checks.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-test-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: cargo-test-
+
+      # The tests that need an environment we do not provision here (swtpm, a
+      # PKCS#11 token) skip loudly instead of failing, so this is honest but
+      # not complete: the TPM and HSM paths are exercised on a provisioned
+      # machine, not in this job.
+      - run: cargo test --workspace
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-clippy-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: cargo-clippy-
+
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # CONTRIBUTING says unsigned commits will not be merged. Checking that by
+  # hand on every pull request is the kind of chore that quietly stops
+  # happening, so it is checked here instead.
+  dco:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -eu
+          status=0
+          # Matched on the author's email rather than on the whole "Name
+          # <email>" string: the email is the identifying part, and a
+          # contributor whose git name is spelled two ways across machines is
+          # not the problem this check exists to catch.
+          for sha in $(git rev-list --no-merges "$BASE..$HEAD"); do
+            email=$(git show -s --format='%ae' "$sha" | tr 'A-Z' 'a-z')
+            # The trailer's address is extracted and compared as a fixed
+            # string, never interpolated into a pattern: a GitHub noreply
+            # address carries a '+', which a regexp would read as an operator.
+            if git show -s --format='%B' "$sha" |
+               sed -n 's/^Signed-off-by: .*<\(.*\)>[[:space:]]*$/\1/p' |
+               tr 'A-Z' 'a-z' |
+               grep -qxF "$email"; then
+              continue
+            fi
+            echo "::error::$(git show -s --format='%h %s' "$sha")"
+            echo "  no 'Signed-off-by:' trailer for <$email>. Commit with -s,"
+            echo "  or sign off what is there: git rebase --signoff $BASE"
+            status=1
+          done
+          exit $status

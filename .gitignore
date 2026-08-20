@@ -9,3 +9,7 @@
 /tmp-demo
 *.jwt
 .playwright-mcp/
+
+# Agent scratch space. Ignored here rather than only in .git/info/exclude, so
+# the rule travels with the clone instead of living on one machine.
+.context/

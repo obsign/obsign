@@ -922,7 +922,7 @@ dependencies = [
 
 [[package]]
 name = "obsign"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "ed25519-dalek",
@@ -933,7 +933,7 @@ dependencies = [
 
 [[package]]
 name = "obsign-audit-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -945,7 +945,7 @@ dependencies = [
 
 [[package]]
 name = "obsign-control-plane"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -965,7 +965,7 @@ dependencies = [
 
 [[package]]
 name = "obsign-identity"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -979,7 +979,7 @@ dependencies = [
 
 [[package]]
 name = "obsign-ledger"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -995,7 +995,7 @@ dependencies = [
 
 [[package]]
 name = "obsign-pkcs11"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hex",
  "libc",
@@ -1004,7 +1004,7 @@ dependencies = [
 
 [[package]]
 name = "obsign-policy"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cedar-policy",
  "ed25519-dalek",
@@ -1017,7 +1017,7 @@ dependencies = [
 
 [[package]]
 name = "obsign-proxy"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -1038,7 +1038,7 @@ dependencies = [
 
 [[package]]
 name = "obsign-tpm-enroll"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1051,7 +1051,7 @@ dependencies = [
 
 [[package]]
 name = "obsign-wal"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ed25519-dalek",
  "obsign-audit-core",

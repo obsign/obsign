@@ -792,7 +792,7 @@ docker compose run --rm demo    # the README demo, sealed and verified
 ## Tests
 
 ```bash
-cargo test --workspace     # 319 tests
+cargo test --workspace     # 357 tests
 ```
 
 Six families, each with a distinct role:
@@ -859,6 +859,8 @@ scoped to this project.
 
 Apache-2.0; see [LICENSE](LICENSE). Contributions are accepted under the
 [DCO](https://developercertificate.org/), sign-off required; see
-[CONTRIBUTING.md](CONTRIBUTING.md). The commercial layer (compliance report
+[CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities go through GitHub's private
+reporting rather than a public issue, and [SECURITY.md](SECURITY.md) states
+what is in scope, what is already known, and what to expect. The commercial layer (compliance report
 packs, console RBAC/SSO, long retention) is separate code under a separate
 license. This repository is complete and verifiable without it.
