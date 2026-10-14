@@ -63,7 +63,11 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.target }}
           cache-to: type=gha,scope=${{ matrix.target }},mode=max
 
-      - uses: sigstore/cosign-installer@v4
+      # Pinned to an exact version where its neighbours are majors, and not by
+      # preference: sigstore publishes a moving `v3` tag but no moving `v4`,
+      # so `@v4` resolves to nothing and fails the job before its first step
+      # runs. That is how v0.1.3 was tagged with no artefact published.
+      - uses: sigstore/cosign-installer@v4.1.2
 
       - name: Sign the manifest (keyless)
         env:
