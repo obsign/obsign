@@ -14,10 +14,12 @@ Four images, one binary each, distroless (no shell, nonroot, glibc):
 
 Built by `.github/workflows/docker.yml` on every `v*` tag: multi-arch
 (amd64/arm64), signed with cosign (keyless), tagged with the semver and the
-exact source sha. Verify before running:
+exact source sha. Verify before running -- the version below is the current
+release, and a release that bumps it and leaves this line behind sends the
+reader after a tag that does not exist:
 
 ```bash
-cosign verify ghcr.io/obsign/obsign-proxy:1.0.0 \
+cosign verify ghcr.io/obsign/obsign-proxy:0.1.4 \
     --certificate-identity-regexp 'github.com/obsign/obsign' \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
@@ -32,7 +34,7 @@ library.
 image ships without one. Extend it:
 
 ```dockerfile
-FROM ghcr.io/obsign/obsign-proxy:1.0.0
+FROM ghcr.io/obsign/obsign-proxy:0.1.4
 COPY --chown=nonroot:nonroot my-mcp-server /usr/local/bin/my-mcp-server
 # Config (signed bundles) is mounted, not baked: whoever can write the
 # identity bundle can mint identities.
