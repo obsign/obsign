@@ -32,7 +32,7 @@ getrandom = { workspace = true }
 # `ledger` lets the e2e tests seal what the gateway wrote, the way a
 # deployment would.
 [dev-dependencies]
-jsonwebtoken = "9"
+jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
 base64 = "0.22"
 obsign-policy = { path = "../obsign-policy" }
 obsign-ledger = { path = "../obsign-ledger" }

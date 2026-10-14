@@ -1,0 +1,67 @@
+# Checks the locked dependency tree against the RustSec advisory database.
+#
+# A separate workflow from `ci`, for a reason that is not organisational: the
+# other checks answer "did this change break something", and their trigger is
+# therefore the change. This one answers "is what we already shipped still
+# believed safe", and its trigger is the calendar -- an advisory is published
+# against code nobody touched.
+#
+# Know what this does NOT cover. `cargo audit` reads RustSec, and RustSec is
+# not exhaustive: CVE-2026-25537, the jsonwebtoken type confusion that sat in
+# a released 0.1.2 for weeks, has no RustSec advisory to this day. It was
+# published to the GitHub Advisory Database (GHSA-h395-gr6q-cpjc) and this
+# job, run against the 0.1.2 lockfile, exits 0. That gap is why
+# `dependabot.yml` sits next to this file: Dependabot reads the GitHub
+# database, cargo-audit reads RustSec, and neither one alone would have
+# surfaced the advisory that prompted both.
+#
+# Kept out of CONTRIBUTING's before-you-open-a-pull-request list on purpose:
+# a contributor cannot fix an advisory against a transitive dependency, and a
+# check they cannot act on does not belong in their loop.
+
+name: audit
+
+on:
+  schedule:
+    # Mondays, 06:00 UTC. Cron on GitHub is best-effort under load; a scan
+    # that slips by an hour is of no consequence.
+    - cron: "0 6 * * 1"
+  push:
+    branches: [main]
+    paths: ["**/Cargo.toml", "Cargo.lock", ".github/workflows/audit.yml"]
+  pull_request:
+    paths: ["**/Cargo.toml", "Cargo.lock", ".github/workflows/audit.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # cargo-audit is built from source rather than pulled as a prebuilt
+      # binary from a third-party action: the tool that vets our supply chain
+      # is part of that supply chain. Pinned and --locked for the same reason
+      # the compiler is pinned. The cache makes the cost a one-off.
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-0.22.2-${{ runner.os }}
+
+      - run: |
+          if ! command -v cargo-audit >/dev/null; then
+            cargo install cargo-audit --locked --version 0.22.2
+          fi
+
+      # Fails the job on any advisory, including unmaintained-crate warnings.
+      # If one of those turns out to be unactionable, record it in
+      # `audit.toml` with the reason, rather than loosening the gate: an
+      # ignore an auditor can read beats a flag they cannot see.
+      - run: cargo audit --deny warnings

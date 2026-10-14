@@ -105,6 +105,12 @@ impl Verifier {
     /// signature, issuer, audience, expiry. None of these steps is optional.
     /// Verifying the signature without verifying the audience lets through a
     /// valid token issued for another service.
+    ///
+    /// Each of `exp`, `iss` and `aud` must be present *and* well typed: a
+    /// claim jsonwebtoken cannot parse is indistinguishable from an absent
+    /// one, and an absent one skips its own check. See the comment on
+    /// `set_required_spec_claims` below -- that line carries the audience
+    /// check, it does not restate the two above it.
     pub fn verify(&self, token: &str) -> Result<Delegation, Error> {
         let header = decode_header(token)?;
         let kid = header.kid.ok_or(Error::MissingKid)?;
@@ -116,6 +122,39 @@ impl Verifier {
         let mut validation = Validation::new(*alg);
         validation.set_issuer(&[&self.issuer]);
         validation.set_audience(&[&self.audience]);
+        // Not redundant with the two lines above, and not decoration.
+        // jsonwebtoken ends its `aud` match on a catch-all: an audience that
+        // is absent *or carries the wrong JSON type* falls through it and has
+        // its check skipped in silence. Naming the claim here is the only
+        // thing that turns "absent or unparseable" into a refusal, because
+        // the required-claims loop tests for a parsed value and nothing else.
+        // Without this line a token minted by the same trusted issuer for
+        // another service is accepted -- precisely what the doc comment on
+        // this function says must never happen.
+        //
+        // Still true on 11.1.0, and checked by two tests at the bottom of
+        // tests/jwt.rs. CVE-2026-25537 (fixed in 10.3.0) covered the
+        // time-based claims; the audience behaviour described above is not
+        // part of that fix and did not change with it.
+        //
+        // `iss` is named for symmetry and for the absent case. A mistyped one
+        // would be caught a few lines down anyway, where the issuer is read
+        // back as a string -- but relying on that would make the refusal a
+        // side effect of needing the value, which is not a property to rest
+        // an authorization decision on.
+        //
+        // `sub` is deliberately absent: the subject path is configurable
+        // through the signed `ClaimMap`, and a deployment reading it from
+        // `/oid` carries no `sub` to require. `verify` demands a subject of
+        // its own accord a few lines down.
+        //
+        // `nbf` is absent for a different reason: requiring it would reject
+        // every provider that does not emit it, which is most of them. A
+        // mistyped one is refused by jsonwebtoken itself since 10.3.0
+        // (`InvalidClaimFormat`), which is the half of CVE-2026-25537 that
+        // the upgrade did close; tests/jwt.rs pins that, so a regression in a
+        // future release reopens as a red test rather than as a bypass.
+        validation.set_required_spec_claims(&["exp", "iss", "aud"]);
         validation.validate_exp = true;
         validation.validate_nbf = true;
         validation.leeway = self.leeway;

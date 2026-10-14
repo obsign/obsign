@@ -1,0 +1,54 @@
+# The other half of the supply-chain watch. `audit.yml` runs cargo-audit
+# against RustSec; this reads the GitHub Advisory Database. The two sets are
+# not the same, and the difference is not academic: CVE-2026-25537 is in the
+# GitHub database and has never been in RustSec, so cargo-audit alone exits 0
+# on a lockfile carrying it.
+#
+# Security updates are not configured here -- GitHub opens those on its own
+# once Dependabot alerts are enabled in the repository settings, which is a
+# setting and not a file. What follows is the version-update half.
+
+version: 2
+
+updates:
+  # Grouped into one pull request per ecosystem per week. Ungrouped, a
+  # workspace this size produces a stream of single-crate bumps that get
+  # rubber-stamped, and a rubber-stamped dependency review is worse than
+  # none: it spends the attention without buying the scrutiny.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    groups:
+      cargo:
+        patterns: ["*"]
+    # Majors stay out: they are a decision, not a chore. jsonwebtoken 9 to 11
+    # moved the crypto backend behind a feature flag and needed a cmake in
+    # the build image -- nothing a bot should open unattended. A major that
+    # fixes an advisory arrives through the security-update path instead,
+    # which this ignore does not gag.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    commit-message:
+      prefix: "deps"
+
+  # The actions are pinned by tag, so they drift silently and are worth the
+  # same weekly look as the crates.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 2
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
