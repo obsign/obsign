@@ -768,9 +768,11 @@ remaining lever, would leave ~26, nearly all of it the cryptography itself
 (`curve25519-dalek`, `sha2` and their arithmetic support). The gateway is a
 different story and deliberately so: `obsign-proxy` builds from 114 crates,
 dominated by two justified subtrees: Cedar (68 crates; a closed decision)
-and `jsonwebtoken` with `ring` under it (34; enterprise IdPs sign RS256/ES256,
-and hand-rolling RSA verification is not an option). Neither reaches the
-auditor's binary. Not a priority before the first design partner.
+and `jsonwebtoken` with aws-lc under it (37; enterprise IdPs sign RS256/ES256,
+and hand-rolling RSA verification is not an option). The backend was `ring`
+until jsonwebtoken 11 made it a feature and the choice became explicit: the
+pure-Rust alternative pulls `rsa`, carrying an unfixable advisory on a path
+`jwks.rs` genuinely reaches. Neither subtree reaches the auditor's binary. Not a priority before the first design partner.
 
 ## Docker
 
@@ -792,7 +794,7 @@ docker compose run --rm demo    # the README demo, sealed and verified
 ## Tests
 
 ```bash
-cargo test --workspace     # 357 tests
+cargo test --workspace     # 370 tests
 ```
 
 Six families, each with a distinct role:
@@ -854,6 +856,12 @@ Pinned to 1.97.1 via `rust-toolchain.toml`, for two reasons: Cedar's
 dependencies require rustc ≥ 1.89, and a proof product needs reproducible
 builds, since the compiler version is part of what will be audited. The pin is
 scoped to this project.
+
+One system dependency beyond the toolchain: `cmake`, which builds the aws-lc
+backend the JWT verification links against. Only the gateway needs it. The
+offline verifier — the binary an auditor builds to check an evidence pack
+without trusting us — does not, and `cargo build -p obsign` stays a rustup
+and nothing else.
 
 ## License
 

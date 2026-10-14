@@ -42,13 +42,22 @@ check is not retroactive, and commits predating it are not all signed off.
 
 ## Before opening a pull request
 
+Building the workspace needs `cmake` on the machine, next to the pinned
+toolchain: aws-lc, the crypto backend under `jsonwebtoken`, is built from
+source. `apt install cmake`, `brew install cmake`. Only the gateway pulls it
+in; `cargo build -p obsign`, the offline verifier, needs nothing but rustup.
+
 ```bash
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 Continuous integration runs exactly those two commands, so a green run here
-means a green run there.
+means a green run there. It also runs `cargo audit` against the RustSec
+advisory database, on a weekly schedule and whenever a manifest or the
+lockfile changes — that one is not in the list above because an advisory
+against a transitive dependency is not something a contributor can fix in
+their own pull request.
 
 Match the style of the surrounding code; the tree is not rustfmt-clean and a
 wholesale reformat is its own decision, not a side effect of your change.

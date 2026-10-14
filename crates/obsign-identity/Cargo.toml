@@ -7,7 +7,18 @@ description = "OIDC token verification and delegation extraction."
 
 [dependencies]
 obsign-audit-core = { path = "../obsign-audit-core" }
-jsonwebtoken = "9"
+# aws_lc_rs rather than rust_crypto: 11.x makes the crypto backend a feature
+# and refuses to start without exactly one of them. The alternative pulls
+# the `rsa` crate, which carries RUSTSEC-2023-0071 (Marvin) with no fixed
+# version and no prospect of one. `jwks.rs` accepts RSA keys, so that is a
+# reachable implementation and not dead weight -- the advisory itself is
+# about private-key operations, which a verifier never performs, but the
+# distinction is one a reader of the audit report has to be walked through.
+# A permanent entry in an ignore list, in the supply-chain report of a proof
+# product, is a worse trade than a C dependency that is already there: 9.x
+# linked `ring`, 11.x with this feature links aws-lc. The build image needs
+# a cmake for it (see docker/Dockerfile).
+jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

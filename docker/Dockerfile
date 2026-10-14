@@ -19,6 +19,15 @@
 
 FROM rust:1.97.1-slim-bookworm AS build
 WORKDIR /src
+# cmake builds aws-lc-sys, the crypto backend jsonwebtoken 11 links against.
+# Version-pinned and taken from the distribution, like the rest of this
+# stage: a build dependency fetched unpinned is a hole in the same argument
+# the pinned compiler and the --locked below are making. It leaves no trace
+# in the runtime images, which copy binaries out of this stage and nothing
+# else.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends cmake=3.25.1-1 \
+ && rm -rf /var/lib/apt/lists/*
 COPY . .
 # --locked: the lockfile is audited content; a build that would update it
 # must fail here, not drift silently. --bins AND --examples: naming only
