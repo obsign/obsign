@@ -17,7 +17,7 @@
 # than a static musl build because PKCS#11 modules are loaded with dlopen —
 # a fully static binary cannot host a vendor HSM library.
 
-FROM rust:1.97.1-slim-bookworm AS build
+FROM rust:1.99.1-slim-bookworm AS build
 WORKDIR /src
 # cmake builds aws-lc-sys, the crypto backend jsonwebtoken 11 links against.
 # Version-pinned and taken from the distribution, like the rest of this
