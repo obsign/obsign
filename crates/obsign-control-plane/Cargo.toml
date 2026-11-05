@@ -25,7 +25,7 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 
 [dev-dependencies]
-base64 = "0.22"
+base64 = { workspace = true }
 
 [[bin]]
 name = "obsign-control"

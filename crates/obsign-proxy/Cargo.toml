@@ -22,8 +22,9 @@ hex = { workspace = true }
 # authority and still never enters this binary — writer and certifier
 # stay separate hosts.
 ed25519-dalek = { workspace = true }
-# Session identifiers for the Streamable HTTP transport. Already in the tree
-# through obsign-audit-core's ed25519-dalek, so declaring it adds no crate.
+# Session identifiers for the Streamable HTTP transport, and the seed of the
+# per-session origin key. A direct dependency: ed25519-dalek 3 no longer
+# brings it in, and jsonwebtoken still pins the older 0.2 line.
 getrandom = { workspace = true }
 
 # Token minting for tests only. Deliberately in dev-dependencies rather than
@@ -33,7 +34,7 @@ getrandom = { workspace = true }
 # deployment would.
 [dev-dependencies]
 jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
-base64 = "0.22"
+base64 = { workspace = true }
 obsign-policy = { path = "../obsign-policy" }
 obsign-ledger = { path = "../obsign-ledger" }
 

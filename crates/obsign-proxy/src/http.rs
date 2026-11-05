@@ -1205,6 +1205,6 @@ fn rpc_error(id: &Value, code: i64, message: &str) -> Vec<u8> {
 /// else's audited session.
 fn new_session_id() -> std::result::Result<String, getrandom::Error> {
     let mut bytes = [0u8; 16];
-    getrandom::getrandom(&mut bytes)?;
+    getrandom::fill(&mut bytes)?;
     Ok(hex::encode(bytes))
 }
