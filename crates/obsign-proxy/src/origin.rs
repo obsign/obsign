@@ -233,7 +233,7 @@ impl SessionKey {
     /// Generates a fresh key from the OS CSPRNG.
     pub fn generate() -> Result<Self> {
         let mut seed = [0u8; 32];
-        getrandom::getrandom(&mut seed)
+        getrandom::fill(&mut seed)
             .map_err(|e| anyhow::anyhow!("generating a session key: {e}"))?;
         let key = SigningKey::from_bytes(&seed);
         let key_id = key_id_for(&key.verifying_key());
