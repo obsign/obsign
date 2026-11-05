@@ -245,7 +245,8 @@ fn sha1(data: &[u8]) -> [u8; 20] {
     }
     msg.extend_from_slice(&((data.len() as u64) * 8).to_be_bytes());
 
-    for chunk in msg.chunks_exact(64) {
+    // The padding above makes the length a multiple of 64: no remainder.
+    for chunk in msg.as_chunks::<64>().0 {
         let mut w = [0u32; 80];
         for i in 0..16 {
             w[i] = u32::from_be_bytes(chunk[i * 4..i * 4 + 4].try_into().unwrap());

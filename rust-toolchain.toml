@@ -6,5 +6,5 @@
 #
 # Scoped locally: does not affect the machine's default toolchain.
 [toolchain]
-channel = "1.97.1"
+channel = "1.99.1"
 components = ["clippy", "rustfmt"]

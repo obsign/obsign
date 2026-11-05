@@ -4,7 +4,7 @@
 # Two things it deliberately does not do. It does not run `cargo fmt --check`:
 # the tree is not rustfmt-clean, a wholesale reformat is its own decision, and
 # a gate nobody can pass is not a gate. And it installs no toolchain action:
-# `rust-toolchain.toml` pins 1.97.1, rustup honours it on its own, and the
+# `rust-toolchain.toml` pins 1.99.1, rustup honours it on its own, and the
 # pinned compiler is part of what an auditor checks.
 
 name: ci

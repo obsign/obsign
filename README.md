@@ -852,7 +852,7 @@ Six families, each with a distinct role:
 
 ## Toolchain
 
-Pinned to 1.97.1 via `rust-toolchain.toml`, for two reasons: Cedar's
+Pinned to 1.99.1 via `rust-toolchain.toml`, for two reasons: Cedar's
 dependencies require rustc ≥ 1.89, and a proof product needs reproducible
 builds, since the compiler version is part of what will be audited. The pin is
 scoped to this project.
