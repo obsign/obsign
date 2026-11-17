@@ -447,7 +447,9 @@ flag to get wrong. In the evidence pack, `obsign verify` re-checks both
 structurally and reports the anchors; the CMS signature of the token itself is
 validated against the TSA certificate with standard tooling (`openssl ts
 -verify`), and the report says so instead of passing a structural check off
-as a cryptographic one.
+as a cryptographic one. It says so as a `CAVEAT`, not a warning: the check is
+one this tool cannot do offline, so `--strict` does not fail an anchored pack
+for it, and the verdict line reminds you it is still yours to run.
 
 ## The control plane: from git to the fleet
 

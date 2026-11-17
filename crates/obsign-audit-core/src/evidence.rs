@@ -51,8 +51,24 @@ pub struct Evidence {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
+    /// Only tampering produces it. One error and the pack is not enforceable.
     Error,
+    /// Something the pack lacks or this run could not prove. `--strict`
+    /// turns it into a failure.
     Warning,
+    /// A check this tool cannot perform offline, named so the auditor
+    /// performs it elsewhere: the TSA's CMS signature behind an anchor, the
+    /// TPM vendor root behind an attestation. It is raised only once the
+    /// offline part has passed, so it describes the limit of the verifier,
+    /// not a defect of the pack.
+    ///
+    /// Kept apart from warnings because `--strict` would otherwise fail every
+    /// pack that carries more evidence: an anchored pack would fail where the
+    /// same pack with its anchor stripped passes. That is not a forger's
+    /// switch. Adding or removing an anchor gives nothing a stripped pack does
+    /// not already get, and a structurally wrong anchor or attestation is
+    /// still an error.
+    Caveat,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +91,13 @@ impl Finding {
     fn warning(code: &str, message: impl Into<String>) -> Self {
         Finding {
             severity: Severity::Warning,
+            code: code.to_string(),
+            message: message.into(),
+        }
+    }
+    fn caveat(code: &str, message: impl Into<String>) -> Self {
+        Finding {
+            severity: Severity::Caveat,
             code: code.to_string(),
             message: message.into(),
         }
@@ -151,6 +174,13 @@ impl Report {
         self.findings
             .iter()
             .filter(|f| f.severity == Severity::Warning)
+    }
+
+    /// Checks left to the auditor, out of band. Never counted by `--strict`.
+    pub fn caveats(&self) -> impl Iterator<Item = &Finding> {
+        self.findings
+            .iter()
+            .filter(|f| f.severity == Severity::Caveat)
     }
 }
 
@@ -645,7 +675,7 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     }
 
     if anchors_ok > 0 {
-        findings.push(Finding::warning(
+        findings.push(Finding::caveat(
             "anchor_not_validated",
             format!(
                 "{anchors_ok} timestamp token(s) are structurally consistent \
@@ -856,7 +886,7 @@ fn resolve_attestations(
     }
 
     if attested > 0 {
-        findings.push(Finding::warning(
+        findings.push(Finding::caveat(
             "attestation_not_rooted",
             format!(
                 "{attested} identity key(s) carry a structurally consistent \
@@ -955,8 +985,10 @@ mod tests {
         assert!(r.is_valid());
         assert_eq!((r.anchors_total, r.anchors_ok), (1, 1));
         // The degradation must stay visible: structural consistency is not
-        // cryptographic validation of the token.
-        assert!(r.warnings().any(|f| f.code == "anchor_not_validated"));
+        // cryptographic validation of the token. It is a caveat, not a
+        // warning: `--strict` must not fail a pack for carrying an anchor.
+        assert!(r.caveats().any(|f| f.code == "anchor_not_validated"));
+        assert!(!r.warnings().any(|f| f.code == "anchor_not_validated"));
     }
 
     #[test]
@@ -1105,8 +1137,9 @@ mod tests {
             !r.errors().any(|f| f.code.starts_with("attestation")),
             "a valid attestation must raise no error: {:?}", r.findings
         );
-        // The honest caveat is always surfaced.
-        assert!(r.warnings().any(|f| f.code == "attestation_not_rooted"));
+        // The honest caveat is always surfaced, and never as a warning.
+        assert!(r.caveats().any(|f| f.code == "attestation_not_rooted"));
+        assert!(!r.warnings().any(|f| f.code == "attestation_not_rooted"));
     }
 
     #[test]
