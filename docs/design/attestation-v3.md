@@ -74,7 +74,8 @@ tested:
 - **evidence**: `resolve_attestations` after the bundle resolution; findings
   `attestation_invalid` (error), `identity_not_attested` (a warning that
   becomes an error under `require_attestation`), `attestation_not_rooted`
-  (the standing out-of-band caveat, the `anchor_not_validated` shape).
+  (the standing out-of-band caveat, the `anchor_not_validated` shape,
+  severity `caveat`; see §5).
   `VerifyOptions.require_attestation`.
 - **control-plane**: `deployment/attestation.json` read and validated
   (each attestation must name an enrolled key), embedded at compile.
@@ -226,7 +227,7 @@ the report names, never silently skipped.
 **Out of band (named here, performed elsewhere):** the EK certificate chains
 to the TPM vendor root, and the AK is bound to that EK. This needs the vendor
 root CA and revocation state, which have no place in an air-gapped offline
-verifier by default. Finding `attestation_not_rooted` (**warning**): "the
+verifier by default. Finding `attestation_not_rooted` (**caveat**): "the
 quote is structurally consistent and matches the enrolled measurements; this
 tool does not validate the EK certificate against a TPM vendor root; do so
 with `tpm2_checkquote` / the vendor chain." The exact shape of
@@ -238,6 +239,13 @@ is bound to a TPM reporting these measurements*; the vendor-root check proves
 into the offline verifier would either drag a vendor PKI into an air-gapped
 tool or, worse, imply a guarantee it cannot make. The anchor pass already
 taught auditors to read this exact caveat.
+
+Both findings were first shipped as warnings, which made `--strict` fail
+every anchored or attested pack: the more evidence a pack carried, the
+surer it was to fail, while the same pack with its anchor and attestation
+stripped passed. They are now their own severity, `caveat`, which
+`--strict` does not count. The verdict line still names them, so passing
+strict does not mean the out-of-band check was done.
 
 ## 6. Rotation, revocation, and PCR churn
 

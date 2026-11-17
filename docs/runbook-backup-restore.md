@@ -178,7 +178,9 @@ Per chain (with the HTTP transport: per session), the lifecycle is:
    pack and self-verifies; a non-zero exit means do not archive.
 5. **Verify independently** — `obsign verify --strict --trusted-keys` with
    the *out-of-band* copy of the keys, exit 0 required. This is the check
-   an auditor would run; run it before they do.
+   an auditor would run; run it before they do. Exit 0 does not cover the
+   `CAVEAT` lines: validate the anchor's token against the TSA certificate
+   (`openssl ts -verify`) once, here, before archiving.
 6. **Archive** — pack plus its `sha256` into immutable storage (S3 Object
    Lock or equivalent), retention set to your window (here: 24 months)
    counted from the anchor's TSA time, two locations. A layout that ages

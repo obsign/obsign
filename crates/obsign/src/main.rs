@@ -50,7 +50,10 @@ Options:
                              remote attestation as an error, not a warning
                              (v3; the EK vendor-root check stays out of band).
       --json                 JSON output instead of the human-readable report
-      --strict               Treat warnings as errors
+      --strict               Treat warnings as errors. Caveats are not
+                             warnings: they name checks this tool cannot do
+                             offline (TSA signature, TPM vendor root), which
+                             the auditor still performs out of band.
   -h, --help                 Print help
 
 Exit codes: 0 proven, 1 invalid, 2 execution error,
@@ -219,18 +222,23 @@ fn run(cmd: VerifyCmd) -> Result<ExitCode> {
         print_report(&report);
     }
 
+    Ok(ExitCode::from(exit_code(&report, cmd.strict)))
+}
+
+fn exit_code(report: &evidence::Report, strict: bool) -> u8 {
+    // Caveats do not count here, by design: see `Severity::Caveat`.
     let has_warnings = report.warnings().next().is_some();
-    if !report.is_valid() || (cmd.strict && has_warnings) {
-        return Ok(ExitCode::from(1));
+    if !report.is_valid() || (strict && has_warnings) {
+        return 1;
     }
     // A self-referential run must not exit 0: a fully forged pack, signed
     // with the attacker's key embedded in the pack itself, passes every
     // internal check. Exit 0 is reserved for verification against keys the
     // auditor obtained through another channel.
     if report.self_referential {
-        return Ok(ExitCode::from(3));
+        return 3;
     }
-    Ok(ExitCode::SUCCESS)
+    0
 }
 
 fn print_report(r: &evidence::Report) {
@@ -270,6 +278,7 @@ fn print_report(r: &evidence::Report) {
             let tag = match f.severity {
                 Severity::Error => "ERROR  ",
                 Severity::Warning => "WARNING",
+                Severity::Caveat => "CAVEAT ",
             };
             println!("  [{tag}] {} — {}", f.code, f.message);
         }
@@ -294,6 +303,13 @@ fn print_report(r: &evidence::Report) {
             println!(
                 "         {} record(s) unsealed: consistent, but not proven.",
                 r.records_total - r.records_sealed
+            );
+        }
+        let caveats = r.caveats().count();
+        if caveats > 0 {
+            println!(
+                "         {caveats} check(s) left to do out of band (CAVEAT above): \
+                 this verdict does not cover them."
             );
         }
     } else {
@@ -400,6 +416,64 @@ mod tests {
         assert!(matches!(parse(&["--help"]), Ok(Cli::Help)));
         assert!(matches!(parse(&["-h"]), Ok(Cli::Help)));
         assert!(matches!(parse(&["verify", "--help"]), Ok(Cli::Help)));
+    }
+
+    fn report(findings: Vec<evidence::Finding>, self_referential: bool) -> evidence::Report {
+        evidence::Report {
+            chain_id: "c".into(),
+            records_total: 1,
+            records_sealed: 1,
+            checkpoints_total: 1,
+            checkpoints_valid: 1,
+            anchors_total: 0,
+            anchors_ok: 0,
+            records_origin_ok: 1,
+            records_unknown: 0,
+            first_seq: Some(0),
+            last_seq: Some(0),
+            self_referential,
+            findings,
+        }
+    }
+
+    fn finding(severity: Severity, code: &str) -> evidence::Finding {
+        evidence::Finding { severity, code: code.into(), message: String::new() }
+    }
+
+    #[test]
+    fn strict_does_not_fail_a_pack_for_its_out_of_band_caveats() {
+        // An anchored, attested pack: the most complete evidence there is.
+        // `--strict` used to fail it, while the same pack stripped of its
+        // anchor and attestation passed.
+        let r = report(
+            vec![
+                finding(Severity::Caveat, "anchor_not_validated"),
+                finding(Severity::Caveat, "attestation_not_rooted"),
+            ],
+            false,
+        );
+        assert_eq!(exit_code(&r, true), 0);
+        assert_eq!(exit_code(&r, false), 0);
+    }
+
+    #[test]
+    fn strict_still_fails_on_a_warning() {
+        let r = report(vec![finding(Severity::Warning, "identity_not_attested")], false);
+        assert_eq!(exit_code(&r, false), 0);
+        assert_eq!(exit_code(&r, true), 1);
+    }
+
+    #[test]
+    fn caveats_do_not_lift_a_self_referential_run_to_exit_0() {
+        let r = report(vec![finding(Severity::Caveat, "anchor_not_validated")], true);
+        assert_eq!(exit_code(&r, true), 3);
+    }
+
+    #[test]
+    fn an_error_fails_regardless_of_mode() {
+        let r = report(vec![finding(Severity::Error, "anchor_mismatch")], false);
+        assert_eq!(exit_code(&r, false), 1);
+        assert_eq!(exit_code(&r, true), 1);
     }
 
     #[test]
