@@ -205,11 +205,12 @@ done
 exit $fail
 ```
 
-Treat **any** non-zero exit as a failure, including 3: exit 3 means the
-verifier ran self-referentially, internally consistent but checked only
-against keys the pack itself supplied. In a scheduled job that is a
-misconfiguration (the trusted-keys file did not reach the verifier), and
-never a pass. The codes: 0 proven, 1 invalid, 2 execution error, 3 consistent
+Treat **any** non-zero exit as a failure, including 3. Without `--strict`,
+exit 3 means the pack is internally consistent but not proven: either the
+verifier ran self-referentially, checked only against keys the pack itself
+supplied, or some record is covered by no valid checkpoint. In a scheduled
+job the first is a misconfiguration (the trusted-keys file did not reach the
+verifier), and neither is ever a pass. With `--strict`, as above, both exit 1. The codes: 0 proven, 1 invalid, 2 execution error, 3 consistent
 but unproven.
 
 Two long-horizon points the quarterly run should carry:

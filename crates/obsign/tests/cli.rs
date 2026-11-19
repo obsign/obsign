@@ -164,3 +164,28 @@ fn json_report_carries_the_self_referential_flag() {
     let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(report["self_referential"], serde_json::Value::Bool(true));
 }
+
+#[test]
+fn anchored_pack_with_unsealed_records_exits_3_and_says_not_proven() {
+    // Trusted keys, no tampering, but no valid checkpoint covers the
+    // records: consistent with the chain, not proven. This used to exit 0.
+    let key = SigningKey::from_bytes(&[1u8; 32]);
+    let mut ev = pack(&key, "k1");
+    ev.checkpoints.clear();
+    let ev = write_tmp("unsealed.json", &serde_json::to_string(&ev).unwrap());
+    let keys = write_tmp(
+        "unsealed.keys.json",
+        &serde_json::to_string(&vec![entry(&key, "k1")]).unwrap(),
+    );
+
+    let out = obsign(&[
+        "verify",
+        "--allow-unsigned-legacy-chains",
+        "--trusted-keys",
+        keys.to_str().unwrap(),
+        ev.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(3), "stdout: {stdout}");
+    assert!(stdout.contains("NOT PROVEN"), "stdout: {stdout}");
+}

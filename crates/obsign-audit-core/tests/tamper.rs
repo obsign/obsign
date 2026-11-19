@@ -271,6 +271,23 @@ fn records_appended_after_sealing_are_reported() {
     assert_eq!(r.records_total, 5);
     assert_eq!(r.records_sealed, 2);
     assert!(r.warnings().any(|f| f.code == "unsealed_records"));
+    assert!(
+        !r.proves_every_record(),
+        "a consistent chain with an unsealed tail is not a proven one"
+    );
+}
+
+#[test]
+fn an_empty_pack_proves_no_record() {
+    let (mut ev, keys) = sample();
+    ev.records.clear();
+    ev.checkpoints.clear();
+    let r = evidence::verify(&ev, &keys);
+    assert!(r.warnings().any(|f| f.code == "empty_pack"));
+    assert!(
+        !r.proves_every_record(),
+        "nothing in the pack, nothing proven"
+    );
 }
 
 #[test]
@@ -1369,4 +1386,73 @@ fn an_unknown_payloads_hash_does_not_depend_on_key_order() {
     let three = two.replace(r#""alpha":"1""#, r#""alpha":"2""#);
     let c: Record = serde_json::from_str(&three).unwrap();
     assert_ne!(a.hash(), c.hash(), "a changed value must change the hash");
+}
+
+/// The sample's sealing key under its own id, plus another key under the
+/// same id: the shape of a trusted-key file that names one id twice.
+fn conflicting_trust() -> (Evidence, PublicKeyEntry, PublicKeyEntry) {
+    let (ev, keys) = sample();
+    let real = keys[0].clone();
+    let other = PublicKeyEntry {
+        public_key: hex::encode(
+            SigningKey::from_bytes(&[4u8; 32])
+                .verifying_key()
+                .to_bytes(),
+        ),
+        ..real.clone()
+    };
+    (ev, real, other)
+}
+
+#[test]
+fn a_key_id_bound_to_two_keys_fails_whatever_the_order() {
+    // Each role map kept the last entry for an id, and the bundle lookup
+    // the first, so before this check the real key listed first failed and
+    // listed last passed: same entries, opposite verdicts.
+    let (ev, real, other) = conflicting_trust();
+    let first = evidence::verify(&ev, &[real.clone(), other.clone()]);
+    let last = evidence::verify(&ev, &[other, real]);
+    for r in [&first, &last] {
+        assert!(!r.is_valid());
+        assert!(
+            codes(r).contains(&"conflicting_key_id"),
+            "findings: {:?}",
+            r.findings
+        );
+    }
+    let summary = |r: &evidence::Report| {
+        r.findings
+            .iter()
+            .map(|f| (f.severity, f.code.clone(), f.message.clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        summary(&first),
+        summary(&last),
+        "the order of the key set changed the report"
+    );
+}
+
+#[test]
+fn a_conflicting_key_id_embedded_in_the_pack_is_an_error_too() {
+    let (mut ev, real, other) = conflicting_trust();
+    ev.keys = vec![real, other];
+    let r = evidence::verify(&ev, &[]);
+    assert!(r.self_referential);
+    assert!(codes(&r).contains(&"conflicting_key_id"));
+}
+
+#[test]
+fn the_same_key_repeated_under_one_id_is_not_a_conflict() {
+    // Same id, same key: listed twice, or under two roles, it still names
+    // one key. Hex case does not make it another one.
+    let (ev, real, _) = conflicting_trust();
+    let upper = PublicKeyEntry {
+        public_key: real.public_key.to_ascii_uppercase(),
+        role: KeyRole::Ops,
+        ..real.clone()
+    };
+    let r = evidence::verify(&ev, &[real.clone(), real, upper]);
+    assert!(r.is_valid(), "findings: {:?}", r.findings);
+    assert!(r.proves_every_record());
 }

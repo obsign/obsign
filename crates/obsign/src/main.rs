@@ -7,7 +7,8 @@
 //! * no network access, ever;
 //! * minimal dependencies, readable end to end;
 //! * script-friendly exit codes (0 proven, 1 invalid, 2 execution error,
-//!   3 consistent but unproven, self-referential verification).
+//!   3 consistent but unproven: self-referential verification, or records
+//!   no valid checkpoint covers).
 //!
 //! A log carrying a payload type this build cannot read exits 1, not 3.
 //! Nothing an unauthenticated field can trigger may soften the verdict: the
@@ -57,7 +58,8 @@ Options:
   -h, --help                 Print help
 
 Exit codes: 0 proven, 1 invalid, 2 execution error,
-            3 consistent but unproven (no trusted keys supplied).";
+            3 consistent but unproven (no trusted keys supplied, or
+              records no valid checkpoint covers, or an empty pack).";
 
 enum Cli {
     Verify(VerifyCmd),
@@ -238,6 +240,14 @@ fn exit_code(report: &evidence::Report, strict: bool) -> u8 {
     if report.self_referential {
         return 3;
     }
+    // Same reasoning one level down: a record covered by no valid
+    // checkpoint is consistent with the chain but may have been appended
+    // after the fact, and an empty pack proves nothing. Exit 0 says every
+    // record in the pack is proven, so neither may reach it. Under
+    // `--strict` the matching warning has already made this a 1.
+    if !report.proves_every_record() {
+        return 3;
+    }
     0
 }
 
@@ -296,6 +306,10 @@ fn print_report(r: &evidence::Report) {
                 "         pack passes this check identically. Re-run with \
                  --trusted-keys."
             );
+        } else if r.records_total == 0 {
+            println!("VERDICT: empty pack — nothing to prove.");
+        } else if r.records_sealed < r.records_total {
+            println!("VERDICT: chain consistent — NOT PROVEN.");
         } else {
             println!("VERDICT: chain intact.");
         }
@@ -467,6 +481,26 @@ mod tests {
     fn caveats_do_not_lift_a_self_referential_run_to_exit_0() {
         let r = report(vec![finding(Severity::Caveat, "anchor_not_validated")], true);
         assert_eq!(exit_code(&r, true), 3);
+    }
+
+    #[test]
+    fn an_unsealed_record_keeps_an_anchored_run_off_exit_0() {
+        // Records covered by no valid checkpoint: consistent, not proven.
+        // Exit 0 used to say otherwise.
+        let mut r = report(vec![finding(Severity::Warning, "unsealed_records")], false);
+        r.records_total = 9;
+        r.records_sealed = 0;
+        assert_eq!(exit_code(&r, false), 3);
+        assert_eq!(exit_code(&r, true), 1);
+    }
+
+    #[test]
+    fn an_empty_pack_is_not_proven() {
+        let mut r = report(vec![finding(Severity::Warning, "empty_pack")], false);
+        r.records_total = 0;
+        r.records_sealed = 0;
+        assert_eq!(exit_code(&r, false), 3);
+        assert_eq!(exit_code(&r, true), 1);
     }
 
     #[test]
