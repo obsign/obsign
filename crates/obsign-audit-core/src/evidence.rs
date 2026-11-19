@@ -7,7 +7,7 @@ use crate::record::Record;
 use crate::rfc3161::{parse_timestamp_response, Anchor};
 use ed25519_dalek::VerifyingKey;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const FORMAT: &str = "obsign-evidence/1";
 
@@ -164,6 +164,15 @@ impl Report {
             .any(|f| f.severity == Severity::Error)
     }
 
+    /// Every record in the pack is covered by a valid checkpoint, and there
+    /// is at least one record. Without it, a valid report proves the chain
+    /// consistent, not the records proven: an unsealed record may have been
+    /// appended after the fact, and an empty pack proves nothing at all.
+    /// Mirrors the `unsealed_records` and `empty_pack` warnings.
+    pub fn proves_every_record(&self) -> bool {
+        self.records_total > 0 && self.records_sealed == self.records_total
+    }
+
     pub fn errors(&self) -> impl Iterator<Item = &Finding> {
         self.findings
             .iter()
@@ -217,6 +226,35 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     } else {
         trusted
     };
+
+    // A key id has to name one key. Each role map below keeps the last entry
+    // it is given for an id, and the bundle lookup takes the first, so an id
+    // bound to two keys would make the verdict depend on the order of the
+    // file: the same entries, shuffled, would pass or fail. An ambiguous id
+    // therefore resolves to nothing, whatever the order, and the run fails.
+    // Repeating an id with the same key (say, under two roles) is not
+    // ambiguous and stays accepted.
+    let conflicting = conflicting_key_ids(key_source);
+    for id in &conflicting {
+        findings.push(Finding::error(
+            "conflicting_key_id",
+            format!(
+                "key id \"{id}\" is bound to more than one key in {}: none of \
+                 them is used",
+                if trusted.is_empty() {
+                    "the keys embedded in the pack"
+                } else {
+                    "the trusted key set"
+                }
+            ),
+        ));
+    }
+    let key_source: Vec<PublicKeyEntry> = key_source
+        .iter()
+        .filter(|k| !conflicting.contains(&k.key_id))
+        .cloned()
+        .collect();
+    let key_source = key_source.as_slice();
 
     // One map per role. A key is only ever resolved within its role: a
     // sealing key that "validates" a record signature, or an origin key that
@@ -721,6 +759,30 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
         self_referential: trusted.is_empty(),
         findings,
     }
+}
+
+/// Key ids bound to more than one key in `entries`.
+///
+/// Two entries conflict when they share a `key_id` but not the key itself
+/// (`algo` and `public_key`, hex compared case-insensitively since both cases
+/// decode to the same bytes). The role is left out on purpose: the same key
+/// listed under two roles names one key, not two.
+fn conflicting_key_ids(entries: &[PublicKeyEntry]) -> BTreeSet<String> {
+    let mut seen: BTreeMap<&str, (&str, String)> = BTreeMap::new();
+    let mut conflicting = BTreeSet::new();
+    for e in entries {
+        let key = (e.algo.as_str(), e.public_key.to_ascii_lowercase());
+        match seen.get(e.key_id.as_str()) {
+            None => {
+                seen.insert(&e.key_id, key);
+            }
+            Some(first) if *first != key => {
+                conflicting.insert(e.key_id.clone());
+            }
+            Some(_) => {}
+        }
+    }
+    conflicting
 }
 
 /// Validates each session certificate and folds the session keys it

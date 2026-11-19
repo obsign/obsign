@@ -578,9 +578,17 @@ what the records recompute. Editing one field of a sealed log means forging
 three independent things held by three different keys.
 
 Exit codes: `0` proven, `1` tampered, `2` execution error, `3` consistent but
-unproven, meaning the pack was only checked against the keys it carries itself
-(no `--trusted-keys`), which a forged pack passes identically. Exit 0 is
-reserved for verification against keys obtained outside the pack.
+unproven. Exit 3 means one of two things. The pack was only checked against the
+keys it carries itself (no `--trusted-keys`), which a forged pack passes
+identically. Or some record in it is covered by no valid checkpoint (an
+unsealed tail, or an empty pack), so the chain is consistent but those records
+are not proven. Exit 0 is reserved for a pack whose every record is sealed and
+checked against keys obtained outside the pack. Under `--strict` both cases
+exit 1, since each raises a warning.
+
+A trusted-key file must bind each `key_id` to one key. An id listed twice with
+different key material is an error (`conflicting_key_id`), and neither key is
+used, whatever the order of the entries.
 
 ## What verification establishes
 
@@ -590,7 +598,8 @@ reserved for verification against keys obtained outside the pack.
    key outside the writing process (KMS/HSM), that close that hole.
 3. **No seal spirited away** — checkpoints are chained to each other.
 4. **What is not proven is said to be so** — a record that is consistent but
-   covered by no valid checkpoint is reported, never passed over in silence.
+   covered by no valid checkpoint is reported, never passed over in silence,
+   and keeps the run off exit 0.
 
 Without `--trusted-keys`, verification establishes internal consistency only,
 and the report says so explicitly. A forged pack signed with a made-up key
