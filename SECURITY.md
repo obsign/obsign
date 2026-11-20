@@ -68,7 +68,8 @@ Not because these do not matter, but because they are already known, already
 documented, or deliberate. Telling us about them is not a vulnerability
 report:
 
-- the exemptions listed under **Known debt** in the README:
+- the exemptions listed under **Known debt** in
+  [docs/design-notes.md](docs/design-notes.md#known-debt):
   `notifications/progress` and `notifications/cancelled` carry free text and
   are relayed unrecorded, in both directions;
 - `--insecure-declared-identity`. It is a development flag whose name says
@@ -77,7 +78,8 @@ report:
   signed with a made-up key. A pack that vouches for itself proves nothing,
   and the report says so;
 - an evidence pack not containing prompt or argument values. It holds their
-  hashes by design, and that corollary is stated in the README;
+  hashes by design, and that corollary is stated in
+  [docs/design-notes.md](docs/design-notes.md#design-decisions);
 - resource exhaustion caused by an already-authenticated agent, and the
   absence of rate limiting. The gateway arbitrates authority, not capacity;
 - the demonstration material: `examples/`, `mkbundle`, `mint_demo_token`, and
@@ -90,7 +92,8 @@ report:
 
 ## Threat model
 
-The README section **What verification establishes** states what a pack proves
+The section **What verification establishes** in
+[docs/walkthrough.md](docs/walkthrough.md#what-verification-establishes) states what a pack proves
 and, just as importantly, what it does not. `docs/design/` carries the design
 notes for attestation, session certificates, WAL origin authentication and the
 argument policy. A report that shows one of those documents to be wrong is as

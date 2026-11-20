@@ -4,7 +4,7 @@ Contributions are welcome. Two rules govern every change, and neither is a
 style preference. The product is a proof artifact, and its guarantees live
 in the invariants:
 
-1. **Read the invariants first** (see the README): frozen record format,
+1. **Read the invariants first** (see [Invariants](README.md#invariants) in the README): frozen record format,
    `obsign-audit-core` as the sole proof implementation, no JSON hashing, no network
    calls in the gateway, everything authorizing must be signed, fsync before
    forwarding, degradations stay visible. A pull request that weakens one of

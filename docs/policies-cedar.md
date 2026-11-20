@@ -399,7 +399,7 @@ signer, never the reverse), so a rule your editor accepts is always one that
 can be signed.
 
 Then exercise the real binaries against a scratch WAL, which is what the
-demo in the README does. Drive the calls you care about, and read the
+demo in the [walkthrough](walkthrough.md) does. Drive the calls you care about, and read the
 decisions out of the log:
 
 ```bash
