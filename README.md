@@ -1,885 +1,252 @@
-# Obsign — enforceable audit log of agent actions
+# Obsign
 
-Verifiable proof of what your AI agents did to your systems: which human
-delegated, to which agent, to call which tool, with which policy verdict.
-Cryptographically sealed, exportable, and verifiable **offline** by an auditor
-with access to neither your infrastructure nor ours.
+**Verifiable proof of what your AI agents did to your systems.**
 
-This is not an observability product. Observability answers "what happened?"
-for fifteen days. Here we answer "prove it", twenty-four months later, to
-someone with no reason to believe you.
+Obsign sits between your agents and their MCP servers. It checks every act
+against a signed Cedar policy and records who delegated, which agent acted,
+which tool it called and the verdict, in a sealed log. An auditor verifies
+that log **offline**, without access to your infrastructure or ours.
 
-## Current state
+> Observability answers "what happened?" for fifteen days. Obsign answers
+> "prove it", twenty-four months later, to someone with no reason to believe you.
 
-The critical path runs end to end: an agent speaks MCP to the gateway, the
-policy decides, the log is sealed, and the auditor verifies offline.
+| The auditor asks | The evidence pack answers with |
+|---|---|
+| Who authorized it? | The human behind the OIDC token, verified, plus the RFC 8693 actor chain (`agent → human`, or `machine`) |
+| What was attempted? | Tool, resource or prompt, with the hash of its arguments (values are never stored) |
+| Was it allowed? | The Cedar verdict, the rule's `@id` and the policy version (`policies@<git sha>`) |
+| Can the log have been rewritten? | No: hash chain, per-record gateway signature, checkpoints sealed by a key the gateway never holds (HSM), optional RFC 3161 timestamp |
+| Who can check it? | Anyone, offline, with one binary: `obsign verify` → exit `0` proven, `1` tampered, `3` consistent but unproven |
 
-| Crate | Role | State |
-|---|---|---|
-| `obsign-audit-core` | Record format, hash chain, Merkle, signed sealing, verification | done |
-| `obsign` | Offline verifier — the CLI the auditor runs | done |
-| `obsign-policy` | Signed bundles, Cedar evaluation, tool catalogue, argument rules (`context.args`) | done |
-| `obsign-identity` | Signed identity bundle, claim mapping, RFC 8693 actor chain, hot rotation | done |
-| `obsign-wal` | Durable local log, replay on startup | done |
-| `obsign-proxy` | MCP proxy (stdio and Streamable HTTP), discovery filtering (`tools/list`, `resources/list`, `prompts/list`), arbitration of every act (`tools/call`, `resources/read`, `prompts/get`, subscriptions, `completion/complete`, server-initiated `sampling`/`elicitation`), default-deny method space | done |
-| `obsign-ledger` | Sealing away from the gateway, checkpoint store, RFC 3161 anchoring, evidence export | done |
-| `obsign-control-plane` | Compiling policies from git, immutable signed releases, fleet evidence export, read-only console | done |
+## Architecture
 
-## The gateway at work
+<table>
+<tr>
+<td width="58%">
 
-```bash
-cargo build --workspace
-cargo run -p obsign-policy --example mkbundle -- /tmp/demo
-cargo run -p obsign-proxy --example mint_demo_token -- /tmp/demo 1800 user
-
-printf '%s\n' \
- '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
- '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"delete_production_db","arguments":{"database":"customers"}}}' \
- '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ticket_update","arguments":{"ticket":"T-8821"}}}' \
- '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"send_message","arguments":{"channel":"#support","text":"T-8821 updated"}}}' \
- '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"send_message","arguments":{"channel":"#all-hands","text":"T-8821 updated"}}}' \
- | ./target/debug/obsign-proxy \
-     --policy /tmp/demo/policy-bundle.json \
-     --trusted-keys /tmp/demo/trusted-keys.json \
-     --identity-bundle /tmp/demo/identity-bundle.json \
-     --token-file /tmp/demo/token.jwt \
-     --wal /tmp/demo/wal --chain-id demo --env prod \
-     --server-id mcp://mock.demo \
-     -- ./target/debug/mock-mcp-server
+```mermaid
+flowchart TB
+  idp["IdP (OIDC)"] -.->|"token"| agent["AI agent"]
+  agent -->|"MCP: stdio or HTTP"| gw["obsign-proxy<br/>gateway"]
+  ctl["obsign-control<br/>control plane"] -->|"signed bundles"| gw
+  gw -->|"allowed calls only"| mcp["MCP server"]
+  gw -->|"append + fsync"| wal[("WAL")]
+  wal -->|"read-only"| led["obsign-ledger<br/>sealing"]
+  hsm["HSM (PKCS#11)"] -.->|"signs"| led
+  led -->|"evidence pack"| ver["obsign verify<br/>auditor, offline"]
 ```
 
-What happens:
+</td>
+<td>
 
-```
-[obsign] identity PROVEN — u:marie.dupont via https://sso.acme.fr/realms/corp — expires in 1756 s
-[obsign] REFUSED delete_production_db: forbidden by an explicit rule
-[obsign] tools/list: 2 hidden — delete_production_db, exfiltrate_secrets
-[server] EXECUTING ticket_update
-[server] EXECUTING send_message
-[obsign] REFUSED send_message: forbidden by an explicit rule
-```
+**Four binaries, three trust zones.**
 
-The MCP server never saw the destructive call. `exfiltrate_secrets`, which the
-server advertises but the signed catalogue does not describe, is refused too.
-And `send_message` was executed exactly once. Same tool, two verdicts, and the
-difference is an *argument*. The catalogue declares which arguments the policy
-may read (`policy_args`), and the rule decides on the value:
+- **Gateway**: verifies identity, evaluates the policy, writes and `fsync`s
+  the record *before* forwarding. Holds no sealing key.
+- **Ledger**: runs on another host, reads the WAL, refuses a rewritten one,
+  seals checkpoints through an HSM.
+- **Control plane**: compiles policies from git into signed, immutable
+  releases.
+- **Verifier**: the only binary the auditor needs. No network, no trust in
+  you.
 
-```cedar
-@id("support_channel_only")
-forbid (principal, action == Action::"tool_call", resource == Tool::"send_message")
-when { context.args.channel != "#support" };
-```
+</td>
+</tr>
+<tr>
+<td colspan="2">
 
-The resulting log:
-
-```
-seq=0   deleg-1  delegation     u:marie.dupont  iss=https://sso.acme.fr/realms/corp
-seq=1   actor-1  actor          support-copilot -> u:marie.dupont  [delegated_human]
-seq=2   agent-1  agent_session  support-copilot
-seq=3   call-1   tool_call      delete_production_db
-seq=4   dec-1    decision       DENY <forbid_destructive_prod>
-seq=5   eff-1    effect         blocked
-seq=6   call-2   tool_call      ticket_update
-seq=7   dec-2    decision       ALLOW <allow_scoped>
-seq=8   call-3   tool_call      send_message
-seq=9   dec-3    decision       ALLOW <allow_unscoped>
-seq=10  eff-2    effect         ok
-seq=11  call-4   tool_call      send_message
-seq=12  dec-4    decision       DENY <support_channel_only>
-seq=13  eff-4    effect         blocked
-seq=14  eff-3    effect         ok
+```mermaid
+sequenceDiagram
+  participant A as Agent
+  participant G as Gateway
+  participant W as WAL
+  participant S as MCP server
+  A->>G: tools/call + Bearer token
+  G->>G: verify token, evaluate Cedar
+  G->>W: call + decision (fsync)
+  alt allowed
+    G->>S: forward
+    S-->>G: result
+    G->>W: effect ok
+    G-->>A: result
+  else refused
+    G->>W: effect blocked
+    G-->>A: isError, refused by policy
+  end
 ```
 
-(Effects close out of order. The blocked one is written at decision time, the
-ok ones when the server answers. `eff-N` binds to `call-N` by construction,
-so the log stays unambiguous whatever the interleaving; the channel value
-itself appears nowhere, the record keeps `args_hash`.)
-
-The WAL under `/tmp/demo/wal` is the gateway's only output. It holds no
-signing key. Sealing that log into an evidence pack, with a key the gateway
-never sees, is the ledger's job (see below).
-
-With an expired token (`mint_demo_token -- /tmp/demo -3600`), the gateway
-refuses to start and no call is relayed.
-
-## Streamable HTTP, the enterprise transport
-
-The same gateway serves MCP over Streamable HTTP: one shared network service
-instead of one process per agent. Each `initialize` opens a session with its
-own instance of the wrapped server, its own audit chain and its own identity,
-and the token arrives per request in the `Authorization` header, where
-enterprise SSO puts it. Deleting the session closes its chain; the ledger then
-seals it like any other WAL, under `<chain-id>-<session>`.
-
-```bash
-cargo run -p obsign-proxy -- \
-    --http 127.0.0.1:8080 \
-    --policy /tmp/demo/policy-bundle.json \
-    --trusted-keys /tmp/demo/trusted-keys.json \
-    --identity-bundle /tmp/demo/identity-bundle.json \
-    --wal /tmp/demo/wal --chain-id demo --env prod \
-    --server-id mcp://mock.demo \
-    -- ./target/debug/mock-mcp-server
-
-TOKEN=$(cat /tmp/demo/token.jwt)
-SID=$(curl -si http://127.0.0.1:8080/mcp \
-        -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-        -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
-      | tr -d '\r' | awk 'tolower($1)=="mcp-session-id:" {print $2}')
-
-curl -s http://127.0.0.1:8080/mcp \
-     -H "Authorization: Bearer $TOKEN" -H "Mcp-Session-Id: $SID" \
-     -H 'Content-Type: application/json' \
-     -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"delete_production_db","arguments":{}}}'
-# → isError: refused by policy, recorded, never reached the server
-
-curl -s -X DELETE http://127.0.0.1:8080/mcp \
-     -H "Mcp-Session-Id: $SID"
-# → when this returns, the WAL holds the complete session (chain demo-$SID),
-#   ready for a obsign-ledger pass to seal
-```
-
-The HTTP layer is written by hand on `std::net`, with no async runtime and no
-web framework. The dependency list is part of the product, and the subset of
-HTTP/1.1 this transport needs is smaller than any framework's tree. Inbound
-HTTP does not touch the "no network calls" invariant, which bans *outbound*
-dependencies (JWKS fetches, ledger round trips): identity and policy still
-arrive as signed files.
-
-The transport is plain HTTP by the same argument (no TLS stack in the
-auditable tree), and the bearer token must therefore never cross a network
-in clear: TLS terminates in a reverse proxy in front, and the gateway
-listens only where TLS ends. Tested nginx and Caddy configurations, the
-proxy contract (SSE buffering, timeouts, the `Origin` allowlist), and the
-probes to check a deployment: [docs/deploy-tls.md](docs/deploy-tls.md).
-
-## Proven or declared identity
-
-This is the distinction the whole attribution chain rests on. A log that traces
-back to "marie.dupont" without being able to substantiate it was really her
-proves nothing.
-
-| | Proven (OIDC) | Declared (`--insecure-declared-identity`) |
-|---|---|---|
-| `principal_issuer` in the log | the real issuer | `cli://declared` |
-| Expiry | from the `exp` claim | none |
-| Verified | signature, `iss`, `aud`, `exp`, `nbf` | nothing |
-| Use | production | development only |
-
-Declared mode requires a flag whose name says what it is, and with no identity
-configuration at all **the gateway refuses to start**. There is no silent
-fallback to anonymous mode.
-
-Design choices worth knowing:
-
-**No network calls.** The JWKS lives inside a signed identity bundle,
-distributed by the control plane alongside the policy bundle, on the same
-channel and the same rotation cadence. The gateway stays deployable air-gapped
-and adds no outbound surface to justify in a security review.
-
-**The identity bundle is signed too.** The JWKS decides *who can mint valid
-tokens*, and the claim mapping decides *which groups get assigned*. Whoever can
-write that file can mint an identity for themselves and bypass the whole
-attribution chain. That is the same threat as an unsigned rules file, and it
-deserves the same answer.
-
-**The algorithm comes from the JWKS, never from the token header.** That is the
-classic JWT flaw: an attacker declares `HS256` and HMAC-signs with the IdP's
-public key, which is public by definition. A dedicated test covers it.
-
-**Expiry is re-evaluated on every act.** An agent session routinely outlives a
-token; checking once when the session opens amounts to drawing unlimited
-authority from a 30-minute token. If the token was renewed on disk, the gateway
-picks it up and **records a new delegation**; otherwise an act performed under
-a renewed token would appear authorized by an already-expired delegation.
-
-## Delegation chain
-
-A token that says "marie.dupont" does not say *who was acting in her name*.
-RFC 8693 token exchange does, and Obsign records it.
-
-| Token mode | Actor chain | `principal_kind` |
-|---|---|---|
-| User token | `u:marie.dupont` | `human` |
-| Token exchange (`act` claim) | `support-copilot → u:marie.dupont` | `delegated_human` |
-| `client_credentials` | `batch-agent` | `machine` |
-
-The third case is the one nobody covers: a batch agent, with no human behind
-it, deleting in production. It is recognised by the union of the markers the
-target IdPs actually emit (`sub == client_id`, Entra ID's `idtyp: "app"`,
-Keycloak's `service-account-` username prefix), and the policy can then
-express it:
-
-```cedar
-@id("destructive_requires_human")
-forbid (principal, action == Action::"tool_call", resource)
-when { resource.destructive && !context.has_human_delegation };
-```
-
-"No agent destroys anything without an identifiable human at the end of the
-chain." Cedar also receives `context.actor_chain` (a set),
-`context.delegation_depth` (to bound multi-agent topologies) and
-`context.principal_kind`.
-
-Try the three modes:
-
-```bash
-cargo run -p obsign-proxy --example mint_demo_token -- /tmp/demo 1800 exchange
-cargo run -p obsign-proxy --example mint_demo_token -- /tmp/demo 1800 service
-```
-
-## Identity providers
-
-**Nothing is provider-specific, and that is deliberate.** Keycloak, Entra ID,
-Okta and Ping are OIDC providers: they work as-is. A connector per product
-would be the debt not to take on.
-
-What varies is *where* each provider files the information. The identity bundle
-therefore describes the paths, with `*` for segments whose name depends on the
-client:
-
-```json
-"claims": {
-  "subject":   "/sub",
-  "scopes":    ["/scope", "/scp"],
-  "groups":    ["/groups", "/roles",
-                "/realm_access/roles",
-                "/resource_access/*/roles"],
-  "client_id": ["/client_id", "/azp"]
-}
-```
-
-These defaults already cover Keycloak and Entra ID. The Keycloak case is worth
-flagging: roles are **never** flat, everything sits under `realm_access.roles`
-and `resource_access.<client>.roles`. A naive mapping returns empty groups, and
-no `principal in Group::"dba"` rule ever matches, with no visible error.
-
-The same goes for what marks a token as a machine's. The defaults recognise
-the three shapes the target IdPs emit; an IdP with its own convention is
-described in the bundle instead of being special-cased in code (signed from
-format `obsign-identity/2` on):
-
-```json
-"claims": {
-  "machine": {
-    "subject_is_client": true,
-    "equals":   [{ "path": "/idtyp", "value": "app" }],
-    "prefixes": [{ "path": "/preferred_username", "value": "service-account-" }]
-  }
-}
-```
-
-Marker paths speak the same language as the claim paths, wildcard included.
-Because these markers decide `principal_kind`, and hence which Cedar rules
-apply, they live **inside the signed bundle**, never as a file option: widening
-what counts as human must be signed like any other authorization change. A
-`obsign-identity/1` bundle still verifies unchanged, but only with the
-default markers; carrying custom ones requires re-signing as `/2`, since the
-v1 signature does not cover them.
-
-Two realm-side configuration points for Keycloak, done once:
-
-- **audience mapper** — by default access tokens carry `aud: "account"`
-  instead of your client ID. The gateway will refuse them, and that is
-  intended: relaxing the audience check would let through a legitimate token
-  issued for another service;
-- **token exchange** — [officially supported since Keycloak 26.2](https://www.keycloak.org/2025/05/standard-token-exchange-kc-26-2),
-  enable it on the agent's client to obtain the `act` claim.
-
-For SAML, put Keycloak **in front** as a SAML↔OIDC bridge. The gateway then
-never has to know SAML exists.
-
-### Key rotation
-
-Providers rotate their signing keys routinely, Keycloak in particular on its
-realm keys. The gateway makes no network calls, so "rotation" means **reloading
-the signed identity bundle from disk**, where the control plane published the
-new version.
-
-```bash
-python3 scripts/demo-rotation.py /tmp/rot
-```
-
-```
-[obsign] identity PROVEN — u:marie.dupont via …/realms/corp — expires in 2 s — bundle identity@k1
-[server] EXECUTING ticket_update
->>> rotation: the IdP moves to k2, the control plane republishes the bundle
-[obsign] rotation detected (unknown kid "k2") — identity bundle reloaded: identity@k2, 1 key(s)
-[obsign] delegation renewed (generation 2) — u:marie.dupont — expires in 3596 s
-[server] EXECUTING ticket_update
-```
-
-Properties worth knowing:
-
-**Triggered by the unknown `kid`.** That is the exact signal of a rotation, so
-reloading costs nothing in nominal operation: zero disk access as long as
-nothing rotates. One retry only; looping would turn a permanently invalid
-token into a disk-access loop.
-
-**The signature is revalidated on every reload.** Without it, hot rotation
-would be the easiest way to inject a JWKS: writing the file would be enough.
-
-**An invalid bundle never takes the gateway down.** Botched deployment,
-truncated or deleted file, bad signature: the previous configuration stays in
-force and the service keeps running. The return type enforces it.
-`ReloadOutcome::Failed` is not an `Err`, so no caller can treat it as fatal by
-accident.
-
-**Bounded frequency.** One attempt per second. A flood of tokens with random
-`kid` values therefore causes one file read per second, however many requests
-arrive. Detection uses the content hash instead of the modification time:
-mtime granularity goes up to one second on some filesystems, enough to miss
-two writes close together.
-
-**The reload is itself recorded.** A `config_reload` record (tag 8) goes
-into the audit chain, carrying the version and content hash of the bundle in
-force after the attempt. A reload changes what the log means: the same token
-is refused before it and accepted after, so "which keys were trusted when
-this act happened?" must read directly off the chain, from the last applied
-`config_reload` or the opening `agent_session` above the act. Rejected
-reloads are recorded too, with the hash of the refused bytes: dropping a
-rogue JWKS on disk is an attack, and the attempt is precisely what an
-investigation wants to see.
-
-## The ledger: sealing away from the gateway
-
-As long as sealing happens inside the gateway, the signing key and the log
-cohabit on one host: whoever compromises it can rewrite the log *and* re-seal
-it, and the checkpoints then certify the attacker's version of history.
-`obsign-ledger` runs elsewhere (another machine, or a cron under another
-identity), reads the WAL without ever writing to it, and seals with a key the
-gateway never holds:
-
-```bash
-openssl rand -hex 32 > /tmp/demo/seal-seed.hex
-
-./target/debug/obsign-ledger seal \
-    --wal /tmp/demo/wal --chain-id demo \
-    --store /tmp/demo/ledger \
-    --key /tmp/demo/seal-seed.hex --key-id seal-prod
-
-./target/debug/obsign-ledger export \
-    --wal /tmp/demo/wal --chain-id demo \
-    --store /tmp/demo/ledger --out /tmp/demo/evidence.json
-
-./target/debug/obsign verify /tmp/demo/evidence.json \
-    --trusted-keys /tmp/demo/ledger/keys.json
-```
-
-Before sealing anything new, the ledger re-hashes the record at the sealed
-boundary and compares it to the sealed head. A rewritten WAL, even one whose
-chain was entirely recomputed and is internally consistent, is refused with
-`DivergedLog`, and `run` mode exits non-zero on it: divergence never
-self-heals, and looping over it would turn an incident into a heartbeat.
-Exiting is only half of alerting; who gets told is the supervisor's job, and
-the air-gap-compatible pattern (systemd `OnFailure=`) is in
-[docs/alerting.md](docs/alerting.md).
-
-The key file is development-grade by construction. Signing goes through the
-`Sealer` trait, which is the KMS/HSM boundary, and the production
-implementation is `Pkcs11Sealer`: the key lives in an HSM behind the vendor's
-PKCS#11 module, and never enters this process either. The trait self-verifies
-every signature before it is persisted, so a misconfigured HSM key slot fails
-at sealing time, long before an auditor opens the pack twenty-four months
-later.
-
-### Sealing through an HSM (PKCS#11)
-
-PKCS#11 is the interface the target deployments actually have, whether on-prem
-HSMs (Trustway, Luna, YubiHSM), smartcard middleware or SoftHSM in development,
-and it is a local library call: the module may reach a network HSM internally,
-but the ledger itself still makes no network call. A cloud KMS would be
-another implementation of the same trait; it is deliberately not this one,
-because it would break both that rule and the air-gapped story. The bindings
-are hand-rolled over `dlopen`, in the spirit of the HTTP and DER code: the
-seven calls sealing needs, without the binding crate that would drag in the
-other sixty-one.
-
-```bash
-./target/debug/obsign-ledger seal \
-    --wal /tmp/demo/wal --chain-id demo \
-    --store /tmp/demo/ledger \
-    --hsm-module /usr/lib/pkcs11/vendor.so \
-    --hsm-key-label seal-prod \
-    --hsm-pin-file /etc/obsign/hsm-pin \
-    --key-id seal-prod
-```
-
-The key pair (Ed25519, both halves under the same label) is provisioned with
-the vendor's tooling; the ledger only ever asks the token to sign, over a
-read-only session. When the module exposes several tokens, `--hsm-token-label`
-or `--hsm-slot` picks one; the PIN comes from a file or `OBSIGN_HSM_PIN`,
-never from an argument (arguments end up in `ps` and shell history).
-Everything that can be misconfigured fails at startup with the vendor's error
-code in clear text: wrong PIN, absent key, or a key of the wrong type. A
-P-256 key under the right label is refused as such, instead of being left to
-die in signature verification. In `run` mode the PIN is presented exactly
-once, at startup: a retry loop that re-presented a wrong PIN every interval
-would walk the token to `CKR_PIN_LOCKED`.
-
-What the HSM buys: a compromised ledger host can sign *now*, but cannot
-exfiltrate the key and re-seal history *later, offline, at leisure*. What it
-does not buy: the HSM signs what it is handed and cannot know whether a
-checkpoint honestly summarizes the WAL. That remains the ledger's divergence
-detection, one host over from the gateway.
-
-### RFC 3161 anchoring
-
-A checkpoint signature proves *who* sealed; the *when* is only the key
-holder's word, since they could backdate `ts_ms`. Anchoring the checkpoint hash
-at a timestamping authority makes the date enforceable against a third party.
-The exchange is by file, with no HTTP client anywhere, because air-gapped
-deployments come first:
-
-```bash
-./target/debug/obsign-ledger anchor request \
-    --store /tmp/demo/ledger --chain-id demo --out /tmp/demo/checkpoint.tsq
-# carry the .tsq to your TSA (openssl ts reads and produces these), then:
-./target/debug/obsign-ledger anchor attach \
-    --store /tmp/demo/ledger --chain-id demo \
-    --response /tmp/demo/checkpoint.tsr --tsa "tsa.internal.acme.fr"
-```
-
-The response is only attached if the TSA granted it and the token imprints
-exactly the checkpoint hash; the token names its own checkpoint, so there is no
-flag to get wrong. In the evidence pack, `obsign verify` re-checks both
-structurally and reports the anchors; the CMS signature of the token itself is
-validated against the TSA certificate with standard tooling (`openssl ts
--verify`), and the report says so instead of passing a structural check off
-as a cryptographic one. It says so as a `CAVEAT`, not a warning: the check is
-one this tool cannot do offline, so `--strict` does not fail an anchored pack
-for it, and the verdict line reminds you it is still yours to run.
-
-## The control plane: from git to the fleet
-
-Everything the gateway trusts arrives as a signed file. `obsign-control` is
-where those files come from, and the reason a rule change is a dated,
-reviewed pull request instead of a click in a UI. Authoring the rules
-themselves (the model Cedar sees, the catalogue, argument rules, rollout
-and the backup that keeps old versions readable) is covered in
-[docs/policies-cedar.md](docs/policies-cedar.md). Every field of every file
-in that source tree, with its type, default and accepted values:
-[docs/policy-source-reference.md](docs/policy-source-reference.md).
-
-```bash
-# the source tree is a git checkout:
-#   policies/*.cedar   tools.json   fail-mode.json   identity/{provider,jwks}.json
-openssl rand -hex 32 > /tmp/ops.hex
-
-./target/debug/obsign-control publish \
-    --source ~/acme-policies --key /tmp/ops.hex --key-id ops-2026 \
-    --dist /srv/obsign/dist
-# [control] compiled policies@847d4fca5754 — 1 rule file(s), 2 tool(s), ...
-# [control] published release 847d4fca5754 -> /srv/obsign/dist/releases/847d4fca5754
-```
-
-The version *is* the commit sha, resolved by reading `.git` directly, with no
-git binary required on the build host, worktrees and packed refs included.
-Every decision recorded in the log cites `policies@<sha>`; replaying it months
-later means checking out that sha.
-
-Compilation validates with the gateway's own code paths (`Engine::load`,
-`KeyStore::from_set`), so what passes in CI cannot fail at startup across the
-fleet: Cedar syntax, the mandatory `@id` on every rule, duplicate tools,
-fail-mode overrides naming tools that do not exist, unusable or forbidden
-JWKS keys. The JWKS is a file in git, reviewed like a rule; it decides who
-can mint identities, and fetching it from the IdP is the job of whatever
-refreshes the repository, never of a gateway-side network call.
-
-Rules are also **type-checked against the model the gateway exposes**,
-derived from your own catalogue: `principal.department` or
-`context.enviroment` fails to compile, instead of surfacing as an evaluation
-error in production, where it would fall to the fail mode and, on a fail-open
-tool, turn a `forbid` into a rule that never forbids. `obsign-control
-schema` writes that model out as a Cedar schema you commit, so the [Cedar VS
-Code extension](docs/policies-cedar.md#your-editor) runs the same check while
-you type.
-
-Publication holds two invariants:
-
-- **a version is immutable** — `releases/<sha>/` is written once; publishing
-  different content under an existing sha is refused. A crash mid-publish is
-  repaired on the next run, a changed source is not;
-- **the current files change atomically** — write-then-rename on the files
-  the gateways hot-reload, so a reader sees the old release or the new one,
-  never a torn file. Rollback needs no tooling: republish the old sha.
-
-The release manifest is signed (canonical encoding, like every other signed
-artifact) but the artifact hashes inside it are plain SHA-256 of the file
-bytes, deliberately: "is the bundle my gateway loaded the one the manifest
-names?" must be answerable with nothing but `sha256sum`.
-
-### The audit dossier
-
-`obsign-ledger export` produces one pack for one chain; an auditor asks for
-a period. With the HTTP transport every agent session is its own chain, so
-"what did your agents do in Q3" is dozens of packs:
-
-```bash
-./target/debug/obsign-control export \
-    --wal /srv/obsign/wal --store /srv/obsign/ledger \
-    --out /tmp/dossier --key /tmp/ops.hex --key-id ops-2026
-```
-
-Every chain is exported, verified on the way out, and listed in a signed
-export manifest, so the dossier cannot lose a pack in transit without the loss
-being visible. A pack that fails verification is written and flagged, never
-repaired or filtered: an export that fixed things on the way out would do
-exactly what the product exists to make impossible. The exit code says so.
-
-### The console
-
-```bash
-./target/debug/obsign-control console \
-    --wal /srv/obsign/wal --store /srv/obsign/ledger --dist /srv/obsign/dist
-```
-
-Three server-rendered HTML pages on `std::net`: current release with its
-signature verdict, chains with their sealing state (each one re-verified on
-request), and records. No JavaScript, no template engine, no cache, so what
-the console shows is what the files say now. Read-only **by construction**.
-The only accepted method is GET, so the console can never become a second
-write path around git. It binds to localhost by default; authentication is the
-commercial layer's job, and it is no reason to weaken the core.
-
-## Verification in practice
-
-```bash
-cargo run -p obsign-audit-core --example gen_sample -- /tmp/sample
-cargo run -p obsign -- verify /tmp/sample/evidence.json \
-    --trusted-keys /tmp/sample/trusted-keys.json    # exit 0
-```
-
-The sample carries the three roles a real deployment has: the gateway signs
-each record as it writes it, the ledger seals over them, and an ops-signed
-deployment bundle, embedded in the pack, enrols the gateway. So
-`trusted-keys.json` holds **two** keys, seal and ops, and neither is an origin
-key: those ride the bundle, which is what keeps the out-of-band set at two
-entries however many gateways the deployment grows to.
-
-The report ends on one warning, `identity_not_attested`, and that is the
-product working: the sample enrols no TPM, so nothing proves *which software*
-ran under the gateway key, and the verifier says so instead of staying quiet.
-It is also why this run would exit 1 under `--strict`; see
-[the attestation design note](docs/design/attestation-v3.md).
-
-Tamper with the result and re-run:
-
-```bash
-sed -i '' 's/"outcome": "deny"/"outcome": "allow"/' /tmp/sample/evidence.json
-cargo run -p obsign -- verify /tmp/sample/evidence.json \
-    --trusted-keys /tmp/sample/trusted-keys.json    # exit 1
-```
-
-Three errors, all at once: the hash chain breaks, the gateway's signature over
-that record no longer verifies, and the sealed Merkle root no longer matches
-what the records recompute. Editing one field of a sealed log means forging
-three independent things held by three different keys.
-
-Exit codes: `0` proven, `1` tampered, `2` execution error, `3` consistent but
-unproven. Exit 3 means one of two things. The pack was only checked against the
-keys it carries itself (no `--trusted-keys`), which a forged pack passes
-identically. Or some record in it is covered by no valid checkpoint (an
-unsealed tail, or an empty pack), so the chain is consistent but those records
-are not proven. Exit 0 is reserved for a pack whose every record is sealed and
-checked against keys obtained outside the pack. Under `--strict` both cases
-exit 1, since each raises a warning.
-
-A trusted-key file must bind each `key_id` to one key. An id listed twice with
-different key material is an error (`conflicting_key_id`), and neither key is
-used, whatever the order of the entries.
-
-## What verification establishes
-
-1. **No record removed, inserted or modified** — hash chain, contiguous `seq`.
-2. **No wholesale rewrite** — the hash chain alone is not enough: whoever holds
-   the database can recompute everything. It is the checkpoints, signed with a
-   key outside the writing process (KMS/HSM), that close that hole.
-3. **No seal spirited away** — checkpoints are chained to each other.
-4. **What is not proven is said to be so** — a record that is consistent but
-   covered by no valid checkpoint is reported, never passed over in silence,
-   and keeps the run off exit 0.
-
-Without `--trusted-keys`, verification establishes internal consistency only,
-and the report says so explicitly. A forged pack signed with a made-up key
-validates itself: key anchoring must come from another channel.
-
-## Design decisions
-
-**Hand-rolled canonical encoding, no JSON for hashes.** JSON allows too much
-freedom (key order, whitespace, numbers): two serializers can produce two
-hashes for the same data. Here every field is length-prefixed and concatenation
-is injective. JSON stays the transport and reading format, never the
-computation one.
-
-**Hashes, not contents.** Prompts and tool arguments contain personal data.
-Only their hash is recorded: no component here retains the values, so a log or
-an evidence pack has nothing to leak. The corollary is stated openly. A pack
-proves *that* a tool was called and *under which rule*, without saying what
-was passed to it; recovering the arguments means holding them already, and the
-hash then proves they are the ones that went through. The format reserves
-`SealedRef` for optional retention, encrypted to a key the customer holds;
-nothing ships that today.
-
-**Merkle with promotion, not duplication.** With an odd number of elements the
-last one is promoted as-is. Duplication (CVE-2012-2459) lets you build two
-different batches with the same root.
-
-**Domain separation.** Records, leaves, internal nodes and checkpoints are
-hashed with distinct prefixes, so none can be presented as another.
-
-**A single implementation.** `obsign-audit-core` is the only place a hash is
-computed. The gateway, the ledger, the control plane and the `obsign` CLI all
-depend on it. Two implementations would diverge, and the day the export says
-"valid" while the verifier says "tampered", the product is worth nothing.
-
-**The signed catalogue is authoritative.** A tool the bundle does not describe
-is refused, even if the MCP server advertises it. An updated or compromised
-server can publish new tools at any time; if they are not in the catalogue,
-nobody approved their use.
-
-**Arguments become policy inputs only when declared.** The catalogue can
-declare, per tool, which arguments the policy may read (`policy_args`: a name,
-a JSON pointer, a type, an optional default); the gateway extracts exactly
-those and Cedar sees them as `context.args`. That is where real refusals live
-("`send_message`, but only to `#support`"), and what tool-level rules cannot
-say. The declared allowlist is also the privacy boundary: values exist in
-memory for the decision, the log keeps `args_hash`, and a field nobody declared
-is never even read. Extraction is total: every declared arg arrives extracted,
-defaulted, or the call is refused *before* Cedar runs. A crafted argument shape
-is therefore a plain recorded denial, never an evaluation error, and the fail
-mode stays reserved for failures of our machinery, out of the agent's reach.
-One deliberate asymmetry: `tools/list` evaluates without arguments (a listing
-has none), so an argument-restricted tool stays visible; visibility and
-permission are different questions, and the call path is the enforcement
-point. Declarations require `obsign-policy/2`; design:
-`docs/design/argument-policy-v1.md`.
-
-**Stable rule identifiers, enforced.** Cedar numbers its rules `policy0`,
-`policy1`… by file order. Since that identifier is engraved in the log,
-inserting a rule at the top would silently rename all the following ones and
-make every earlier record wrong. Every rule must therefore carry an
-`@id("...")` annotation; a bundle missing one is rejected at load time.
-
-**Durability before forwarding.** The gateway writes and `fsync`s the record
-*before* letting the call go out to the tool. If the process dies in between,
-we have the trace of an act that did not happen, which is awkward but
-defensible. The other way round we would have an act with no trace, which
-ruins the product.
-
-**Discovery filtering.** The agent only discovers what it can access, since
-`tools/list`, `resources/list` and `prompts/list` are all filtered. An
-invisible tool is never attempted: that many fewer refusals to handle, and that
-much less surface offered to a prompt injection.
-
-**The read channels are arbitrated too.** `resources/read`, `resources/
-subscribe`, `resources/unsubscribe` and `prompts/get` move data exactly as
-`tools/call` does, so they go through the same gate: identity verified, policy
-evaluated (Cedar actions `resource_read` and `prompt_get`, default deny),
-attempt recorded (`mcp_access`), effect recorded. There is no signed catalogue
-of resource URIs, because the server mints them at runtime, so policies match
-the target exactly (`resource == Resource::"docs://runbook"`) or by pattern
-(`context.target like "docs://*"`).
-
-**Completions are held to the permission of what they complete.**
-`completion/complete` enumerates the values of the object it references:
-argument values for a prompt, URI expansions for a resource template. Left
-unarbitrated it would walk around the `resources/list` filter, since what the
-listing hides, the completer spells out. It therefore reuses the capability
-of the referenced object (`ref/resource` maps to `resource_read`, `ref/prompt`
-to `prompt_get`): complete only what you could read, and every attempt is
+</td>
+</tr>
+<tr>
+<td>
+
+**Durable before forwarded.** The record is on disk before the call leaves.
+A crash in between leaves a trace of an act that never happened, never an
+act without a trace.
+
+A refused call never reaches the server. Tools the signed catalogue does not
+describe are hidden from `tools/list` and refused, even when the server
+advertises them.
+
+</td>
+<td>
+
+**Default-deny.** Arbitrated: `tools/call`, `resources/read`, `prompts/get`, subscriptions,
+completions, server-initiated `sampling` and `elicitation`. Protocol machinery
+(`initialize`, `ping`, listings) is relayed; any other method is refused and
 recorded.
 
-**The method space is default-deny, in both directions.** A fixed allowlist
-of protocol machinery (`initialize`, `ping`, the three `*/list` discoveries,
-`logging/setLevel`, the defined notifications) is relayed as-is, and *only*
-relayed: neither arbitrated nor recorded, an exemption with teeth (see the
-notifications entry under Known debt); every arbitrated act goes through the
-gate; anything else, a vendor extension or a future protocol revision, is
-refused with `-32601` and recorded. The refusal's `policy_id` is absent: the
-log tells a scope refusal apart from a rule's.
+</td>
+</tr>
+</table>
 
-**Server-initiated channels are inside the perimeter.**
-`sampling/createMessage` borrows the agent's model; `elicitation/create` puts
-a question to the human. Both move data across the boundary in the direction
-no policy used to see, so both are arbitrated under their own Cedar actions
-(`sampling`, `elicitation`, granted per server:
-`permit (principal, action == Action::"sampling", resource);`), default deny.
-Refused, the gateway answers the server in the agent's place and records the
-attempt; permitted, the request is recorded before it is forwarded and its
-effect closes on the agent's response, the same call/decision/effect triple
-as an agent act. `ping` and `roots/list` pass (the agent client answers roots
-under its own control); unknown server requests are refused, unknown server
-notifications dropped, and recorded either way.
+| Component | Binary | Role |
+|---|---|---|
+| [`obsign-proxy`](crates/obsign-proxy) | `obsign-proxy` | MCP gateway (stdio and Streamable HTTP), policy enforcement, WAL writer |
+| [`obsign-ledger`](crates/obsign-ledger) | `obsign-ledger` | Sealing, divergence detection, RFC 3161 anchoring, evidence export |
+| [`obsign-control-plane`](crates/obsign-control-plane) | `obsign-control` | Policy compilation from git, signed releases, audit dossier, read-only console |
+| [`obsign`](crates/obsign) | `obsign` | Offline verifier |
+| [`obsign-audit-core`](crates/obsign-audit-core) | | Record format, hash chain, Merkle, verification: the only place a hash is computed |
+| [`obsign-policy`](crates/obsign-policy) · [`obsign-identity`](crates/obsign-identity) · [`obsign-wal`](crates/obsign-wal) | | Cedar evaluation and signed bundles · OIDC and delegation · durable log |
+| [`obsign-pkcs11`](crates/obsign-pkcs11) · [`obsign-tpm-enroll`](crates/obsign-tpm-enroll) | `obsign-tpm-enroll` | HSM signing · TPM 2.0 gateway attestation |
 
-## Format compatibility
+## Integrating with your information system
 
-The `Payload` discriminants and the canonical encoding are **frozen**. Changing
-them invalidates every already-sealed log. A new payload type takes the next
-free integer; we never renumber.
+<table>
+<tr>
+<td colspan="2">
 
-The rule has already been exercised several times: `Payload::Actor` (tag 7)
-was added after the fact for the actor chain instead of a field on
-`Delegation`, then `Payload::ConfigReload` (tag 8), `Payload::SessionCert`
-(tag 9), `Payload::McpAccess` (tag 10) and `Payload::PrincipalLabel`
-(tag 11) the same way. The last of those records a readable name *beside* an
-opaque OIDC subject instead of replacing it, which a field on `Delegation`
-could not have done without moving every sealed delegation's hash. The
-`record_format_is_frozen` test carries reference hashes for the existing
-payloads, and none of them moved any of those times. The day that test fails,
-the question is not "how do I update the constants" but "which sealed logs
-have just been invalidated".
+```mermaid
+flowchart TB
+  subgraph ci["CI / ops"]
+    git[("Git: Cedar rules,<br/>tool catalogue, JWKS")] --> ctl["obsign-control publish"]
+  end
+  subgraph gwhost["Gateway host"]
+    rp["Reverse proxy (TLS)"] --> gw["obsign-proxy"]
+    gw --> mcp["Your MCP server"]
+    gw --> wal[("WAL")]
+  end
+  subgraph proof["Ledger host"]
+    hsm["HSM"] --- led["obsign-ledger"]
+  end
+  agents["Your agents"] --> rp
+  idp["Your IdP"] -.->|"tokens"| agents
+  ctl -->|"signed files"| gw
+  wal -->|"read-only"| led
+  tsa["Your TSA"] -.-|"RFC 3161"| led
+  led -->|"dossier"| aud["Auditor"]
+```
 
-Signed *bundles* evolve differently: their format string is part of the
-signed bytes, so a revision is a new string, and every revision an artifact
-was published under keeps verifying with the signing bytes of its day.
-Exercised three times: `obsign-identity/2` extended the signed bytes with the
-machine markers, `obsign-policy/2` with the argument declarations, and
-`obsign-identity/3` with the display-label claim paths. All follow the same
-two rules: an older bundle keeps its hash and signature, and an older file
-carrying fields only a newer format signs is refused instead of trusted
-(`UnsignedMachineMarkers`, `UnsignedLabelPaths`); otherwise those fields
-would be unsigned authority.
+</td>
+</tr>
+<tr>
+<td width="50%">
 
-They differ on one point that decides the upgrade order. `obsign-policy/2` is
-emitted only when a tool actually declares arguments, so a fleet that never
-uses the feature never forces a gateway upgrade. `obsign-identity/3` is
-emitted **unconditionally**, so upgrading the control plane alone takes a
-fleet down: gateways first, control plane second
-([deploy-docker.md](docs/deploy-docker.md)).
+**Everything arrives as a signed file.** The gateway and the ledger make no
+outbound network calls: no JWKS fetch, no ledger round trip, no HTTP client
+for timestamping. Air-gapped deployment is the default case, not a special
+one.
 
-## Known debt
+</td>
+<td>
 
-Three long-standing entries are paid off: the gateway no longer holds any
-signing key (its only output is the WAL, every seal comes from the ledger),
-`Pkcs11Sealer` puts the production sealing key behind a KMS/HSM, and
-configuration reloads are recorded in the chain (tag 8).
+**Policy is code.** A rule change is a reviewed pull request, and every
+decision in the log cites the git sha of the policies it applied.
 
-**A narrow notification residual remains an unrecorded text channel.**
-`notifications/message`, the one server notification that could spell out
-the very tool and resource names the listing filter hides, is now
-arbitrated per server under its own `notify` capability (default deny, as
-`sampling` is), and what passes leaves an `mcp_access` record with the
-payload hashed, never in clear. What stays exempt is genuine liveness/UX
-machinery that carries free text but cannot enumerate the hidden catalogue:
-`notifications/progress` (a `message`) and `notifications/cancelled` (a
-`reason`), in both directions. Arbitrating every progress tick would put a
-policy decision and an `fsync` on an unbounded hot path, so these remain a
-conscious, documented exemption; the same `notify`-style gating is the exit
-if a deployment ever needs them recorded too.
+The WAL is the only surface the gateway and the ledger share. The gateway
+can write it but cannot seal it; the ledger can seal but cannot write it.
 
-**Dependency tree.** Measured as unique crates in `cargo tree -e normal`.
-The tree that carries the trust story is the auditor's: `obsign` builds
-from 31 crates (`obsign-audit-core` 29); argument parsing is hand-rolled, so
-`clap` and its subtree are gone from that build. Of the 31, five are the
-`serde` derive machinery (`serde_derive`, `syn`, `quote`, `proc-macro2`,
-`unicode-ident`); manual `serde` implementations in `obsign-audit-core`, the
-remaining lever, would leave ~26, nearly all of it the cryptography itself
-(`curve25519-dalek`, `sha2` and their arithmetic support). The gateway is a
-different story and deliberately so: `obsign-proxy` builds from 114 crates,
-dominated by two justified subtrees: Cedar (68 crates; a closed decision)
-and `jsonwebtoken` with aws-lc under it (37; enterprise IdPs sign RS256/ES256,
-and hand-rolling RSA verification is not an option). The backend was `ring`
-until jsonwebtoken 11 made it a feature and the choice became explicit: the
-pure-Rust alternative pulls `rsa`, carrying an unfixable advisory on a path
-`jwks.rs` genuinely reaches. Neither subtree reaches the auditor's binary. Not a priority before the first design partner.
+</td>
+</tr>
+</table>
 
-## Docker
+| Your system | How Obsign connects | Guide |
+|---|---|---|
+| **Identity provider**: Keycloak, Entra ID, Okta, Ping | Standard OIDC, no connector per product. JWKS and claim mapping live in a signed identity bundle; key rotation reloads it from disk | [identity.md](docs/identity.md) |
+| **Git** | Policies, tool catalogue and JWKS are a repository; `obsign-control publish` compiles, type-checks and signs them | [policies-cedar.md](docs/policies-cedar.md) · [reference](docs/policy-source-reference.md) |
+| **MCP servers** | The gateway wraps each one as a child process; agents connect over stdio or Streamable HTTP | [deploy-docker.md](docs/deploy-docker.md) |
+| **Reverse proxy**: nginx, Caddy | Terminates TLS in front of the gateway's plaintext HTTP port | [deploy-tls.md](docs/deploy-tls.md) |
+| **HSM / smartcard** | Vendor PKCS#11 module loaded by the ledger; the sealing key never leaves it | [walkthrough](docs/walkthrough.md#sealing-through-an-hsm-pkcs11) |
+| **Timestamping authority** | RFC 3161, exchanged by file | [walkthrough](docs/walkthrough.md#rfc-3161-anchoring) |
+| **TPM 2.0** | Proves which gateway binary held the signing key | [attestation](docs/design/attestation-v3.md) · [real TPM](docs/real-tpm-interop.md) |
+| **Supervision** | The ledger exits non-zero on a rewritten WAL; systemd `OnFailure=` raises the alert | [alerting.md](docs/alerting.md) |
+| **Backup** | WAL and checkpoint store, long-term retention | [runbook](docs/runbook-backup-restore.md) |
 
-Four distroless single-binary images (gateway, ledger, control plane,
-verifier), multi-arch, cosign-signed, published to GHCR on every version
-tag; the gateway image is a base image the deployment extends with its MCP
-server. Air-gapped delivery works from `docker save` tarballs, so the registry
-is a convenience and never a dependency. Deployment guide, including the fsync
-and key-separation caveats that survive containerisation:
-[docs/deploy-docker.md](docs/deploy-docker.md). Day-2 operations, meaning
-backup, restore and the long-term retention procedure, are in
-[docs/runbook-backup-restore.md](docs/runbook-backup-restore.md).
+**Rollout in six steps**
+
+1. Put your Cedar rules, tool catalogue and IdP JWKS in a git repository.
+2. Publish a signed release: `obsign-control publish --source <repo> --key <ops key> --key-id <id> --dist <dir>`.
+3. Deploy the gateway image in front of each MCP server, with the bundles mounted read-only.
+4. Terminate TLS in a reverse proxy; keep the gateway port on loopback.
+5. Run the ledger on a separate host, WAL mounted read-only, key in an HSM.
+6. Each period, export the dossier (`obsign-control export`) and hand it to the auditor with your public keys.
+
+## Quickstart
+
+With Docker, the full pipeline (gateway, ledger, offline verification) in containers:
 
 ```bash
 docker compose up -d gateway console
-docker compose run --rm demo    # the README demo, sealed and verified
+docker compose run --rm demo    # drives the gateway, seals, verifies: exit 0
 ```
 
-## Tests
+From source, the verifier detecting tampering:
 
 ```bash
-cargo test --workspace     # 370 tests
+cargo run -p obsign-audit-core --example gen_sample -- /tmp/sample
+cargo run -p obsign -- verify /tmp/sample/evidence.json --trusted-keys /tmp/sample/trusted-keys.json  # exit 0
+sed -i '' 's/"outcome": "deny"/"outcome": "allow"/' /tmp/sample/evidence.json   # GNU sed: drop ''
+cargo run -p obsign -- verify /tmp/sample/evidence.json --trusted-keys /tmp/sample/trusted-keys.json  # exit 1
 ```
 
-Six families, each with a distinct role:
+Changing one field breaks three things held by three different keys: the hash
+chain, the gateway's signature on the record, and the sealed Merkle root.
 
-- `obsign-audit-core/tests/tamper.rs` — does not check that the code works but
-  that it **detects**: modified verdict, deleted record, permuted order,
-  wholly rewritten chain, spirited-away checkpoint. Plus the frozen-format
-  reference vectors.
-- `obsign-identity` — forged signature, modified payload, different issuer or
-  audience, expired token, unknown or missing `kid`, algorithm confusion, HMAC
-  key forbidden in a JWKS; plus claim mapping (nested Keycloak roles, `scope`
-  vs `scp`), the actor chain (single `act`, multi-hop, bounded nesting, service
-  account) and rotation (badly signed bundle rejected, truncated or deleted
-  file survived, bounded frequency).
-- `obsign-policy/tests/delegation.rs` — a service account cannot destroy, a
-  delegated human can, and a chain that is too deep is refused. `tests/args.rs`
-  covers the argument rules: right channel through, wrong channel refused by
-  its rule, crafted shape / float / oversize input refused at extraction even
-  on a fail-open tool, an argument-driven evaluation error denied instead of
-  failing open, a v1 bundle with injected declarations fails signature
-  verification, and a rule reading an argument the catalogue does not declare
-  is refused at compile time, naming the rule.
-- `obsign-ledger/tests/ledger.rs` — the rewritten-WAL attack (internally
-  consistent chain, diverging from sealed history) is refused before any new
-  seal; truncated logs, edited or spirited-away checkpoints and rebound key
-  ids are detected; a torn final store line survives a crash; anchors
-  round-trip into the evidence pack and foreign tokens do not attach. Each
-  control has its paired legitimate-path test. `tests/pkcs11_softhsm.rs` runs
-  the same pipeline against a real PKCS#11 token: wrong PIN, absent key and
-  wrong-type key refused by name, then an evidence pack sealed and verified
-  end to end; it needs a provisioned token (`source
-  scripts/pkcs11-test-env.sh`, SoftHSM) and passes vacuously without one.
-- `obsign-control-plane/tests/control_plane.rs` — every refusal has its
-  paired legitimate path: a rule without `@id`, a duplicate tool, a fail-mode
-  override with a typo and an unusable JWKS are compile errors; a published
-  version cannot change content but rollback (republishing an old sha) works;
-  a key id cannot be rebound but rotation under a new id can; a rewritten WAL
-  exports flagged invalid, never repaired; the console answers 405 to
-  anything but GET and 404 to chain ids shaped like path traversals; git HEAD
-  resolves from loose refs, packed refs and detached HEAD without a git
-  binary. Compilation is byte-for-byte deterministic, tested by compiling
-  twice.
-- `obsign-proxy` — unit tests on expiry, delegation renewal and rotation
-  recovery (at startup and mid-session, applied reloads and rejected ones both
-  surfacing as `config_reload` records), plus `tests/e2e.rs` which runs the
-  real binary in front of an MCP server and checks that the refused call
-  **never reaches the server**, refused on its name or on its arguments alike.
-  Two of those tests are regressions a manual demo found before the unit tests
-  did: duplicated effect identifiers when two calls are in flight, and
-  unstable Cedar rule identifiers. `tests/http.rs` covers the Streamable HTTP
-  transport with a hand-written HTTP client (deliberately not a client
-  library, so the tests share no assumptions with the hand-written server) and
-  checks session isolation, per-request bearer identity, the SSE stream,
-  and that each session's evidence pack seals and verifies independently.
+The [walkthrough](docs/walkthrough.md) runs everything step by step: a
+destructive call refused, a tool allowed or refused depending on one of its
+arguments, the HTTP transport, sealing, HSM, anchoring, publishing and the
+console.
 
-## Toolchain
+## Invariants
 
-Pinned to 1.99.1 via `rust-toolchain.toml`, for two reasons: Cedar's
-dependencies require rustc ≥ 1.89, and a proof product needs reproducible
-builds, since the compiler version is part of what will be audited. The pin is
-scoped to this project.
+Each of these is a reason to refuse a pull request:
 
-One system dependency beyond the toolchain: `cmake`, which builds the aws-lc
-backend the JWT verification links against. Only the gateway needs it. The
-offline verifier — the binary an auditor builds to check an evidence pack
-without trusting us — does not, and `cargo build -p obsign` stays a rustup
-and nothing else.
+| Invariant | Why |
+|---|---|
+| Frozen record format | Changing an encoding invalidates every log already sealed |
+| `obsign-audit-core` is the only proof implementation | Two implementations would eventually disagree on what is valid |
+| No JSON in hashes | JSON allows two encodings of the same data; the canonical encoding does not |
+| No network calls in the gateway | Air-gap compatible, no outbound surface to justify in review |
+| Everything that authorizes is signed | Policy, identity, catalogue, deployment: whoever writes an unsigned file mints authority |
+| `fsync` before forwarding | An act without a trace would ruin the product |
+| Degradations stay visible | What is not proven is reported as such, and keeps the run off exit 0 |
+
+## Documentation
+
+| | |
+|---|---|
+| **Understand** | [Walkthrough](docs/walkthrough.md) · [Identity and delegation](docs/identity.md) · [Design notes](docs/design-notes.md) (decisions, format compatibility, known debt, tests) |
+| **Write policies** | [Cedar policies](docs/policies-cedar.md) · [Source tree reference](docs/policy-source-reference.md) |
+| **Deploy and operate** | [Docker](docs/deploy-docker.md) · [TLS](docs/deploy-tls.md) · [Alerting](docs/alerting.md) · [Backup and restore](docs/runbook-backup-restore.md) · [Real TPM](docs/real-tpm-interop.md) |
+| **Design specs** | [WAL origin auth](docs/design/wal-origin-auth.md) · [Deployment bundle](docs/design/deployment-bundle-v1.md) · [Session certs](docs/design/session-certs-v2.md) · [Attestation](docs/design/attestation-v3.md) · [Argument policy](docs/design/argument-policy-v1.md) |
+
+## Build and test
+
+```bash
+cargo build --workspace    # Rust 1.99.1 (pinned) + cmake for the gateway's JWT backend
+cargo test --workspace
+cargo build -p obsign      # the auditor's verifier: rustup only, no cmake
+```
+
+Docker images (gateway, ledger, control plane, verifier) are distroless,
+multi-arch, cosign-signed and published to `ghcr.io/obsign` on every tag.
 
 ## License
 
-Apache-2.0; see [LICENSE](LICENSE). Contributions are accepted under the
-[DCO](https://developercertificate.org/), sign-off required; see
-[CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities go through GitHub's private
-reporting rather than a public issue, and [SECURITY.md](SECURITY.md) states
-what is in scope, what is already known, and what to expect. The commercial layer (compliance report
-packs, console RBAC/SSO, long retention) is separate code under a separate
-license. This repository is complete and verifiable without it.
+Apache-2.0, see [LICENSE](LICENSE). Contributions under the
+[DCO](https://developercertificate.org/), see [CONTRIBUTING.md](CONTRIBUTING.md).
+Report vulnerabilities privately, see [SECURITY.md](SECURITY.md).
+
+The commercial layer (compliance report packs, console RBAC/SSO, long
+retention) is separate code under a separate license. This repository is
+complete and verifiable without it.
