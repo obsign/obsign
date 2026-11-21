@@ -1673,4 +1673,71 @@ mod swtpm_fixture_tests {
             Err(Error::AttestationMismatch(_))
         ));
     }
+
+    /// The activation form from the same source: the full v4 exchange
+    /// against swtpm (RSA-2048 EK, credential activated, identity key under
+    /// a PolicyPCR policy, both statements qualified).
+    const FIXTURE_V4_ATTESTATION: &str =
+        include_str!("../tests/fixtures/swtpm-attestation-v4.json");
+    const FIXTURE_V4_ENTRY: &str = include_str!("../tests/fixtures/swtpm-identity-entry-v4.json");
+
+    fn fixture_v4() -> (PublicKeyEntry, KeyAttestation) {
+        (
+            serde_json::from_str(FIXTURE_V4_ENTRY).unwrap(),
+            serde_json::from_str(FIXTURE_V4_ATTESTATION).unwrap(),
+        )
+    }
+
+    #[test]
+    fn real_swtpm_activation_form_verifies() {
+        let (entry, att) = fixture_v4();
+        assert!(att.activation.is_some());
+        verify_attestation(&entry, &att).unwrap();
+    }
+
+    #[test]
+    fn real_swtpm_activation_form_rejects_tampering() {
+        let (entry, good) = fixture_v4();
+        let refused = |att: &KeyAttestation| verify_attestation(&entry, att).is_err();
+
+        // Another nonce or credential than the statements were qualified by.
+        let mut att = good.clone();
+        att.activation.as_mut().unwrap().nonce = hex::encode([7u8; 32]);
+        assert!(refused(&att), "foreign nonce accepted");
+        let mut att = good.clone();
+        att.activation.as_mut().unwrap().secret = hex::encode([7u8; 32]);
+        assert!(refused(&att), "forged credential accepted");
+
+        // The identity key's public area with userWithAuth set: a key its
+        // empty password opens. The Name then disagrees with the certify,
+        // and the attribute check refuses it on its own.
+        let mut att = good.clone();
+        let mut tp = hex::decode(att.identity_pub.as_ref().unwrap()).unwrap();
+        tp[7] |= 0x40;
+        att.identity_pub = Some(hex::encode(tp));
+        assert!(refused(&att), "password-usable identity key accepted");
+
+        // The AK public area with restricted cleared.
+        let mut att = good.clone();
+        let act = att.activation.as_mut().unwrap();
+        let mut ak = hex::decode(&act.ak_public).unwrap();
+        ak[5] &= !0x01;
+        act.ak_public = hex::encode(ak);
+        assert!(refused(&att), "unrestricted AK accepted");
+
+        // An EK of another shape (SHA-1 names): not the template the
+        // credential exchange relies on.
+        let mut att = good.clone();
+        let act = att.activation.as_mut().unwrap();
+        let mut ek = hex::decode(&act.ek_pub).unwrap();
+        ek[1] = 0x04; // nameAlg SHA-1: not the template
+        act.ek_pub = hex::encode(ek);
+        assert!(refused(&att), "EK of another shape accepted");
+
+        // The activation removed: verifies, but only in the earlier form,
+        // which the report names (attestation_unbound).
+        let mut att = good.clone();
+        att.activation = None;
+        verify_attestation(&entry, &att).unwrap();
+    }
 }
