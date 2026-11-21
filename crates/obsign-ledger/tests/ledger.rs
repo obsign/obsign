@@ -283,6 +283,55 @@ fn edited_store_refuses_to_open() {
 }
 
 #[test]
+fn run_mode_exits_on_a_forged_checkpoint_instead_of_retrying() {
+    // Regression: `run` exited only on a hand-picked list of errors. A
+    // forged checkpoint surfaces as `Core(BadSignature)`, was filed as
+    // transient, and retried every interval forever: no exit, so no
+    // `OnFailure=`, so nobody told (docs/alerting.md).
+    let wal_dir = tmpdir("runforged-wal");
+    let store_dir = tmpdir("runforged-store");
+    grow_wal(&wal_dir, 3);
+    {
+        let mut store = Store::open(&store_dir, "c1").unwrap();
+        let records = obsign_wal::read(&wal_dir, "c1").unwrap();
+        seal_pass(&records, &mut store, &sealer(), &no_origin(), 1000, 1).unwrap().unwrap();
+    }
+    let path = store_dir.join("c1.checkpoints.jsonl");
+    let line = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, line.replace("\"to_seq\":2", "\"to_seq\":1")).unwrap();
+
+    let seed = wal_dir.join("seed.hex");
+    std::fs::write(&seed, hex::encode([7u8; 32])).unwrap();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_obsign-ledger"))
+        .arg("run")
+        .args(["--store", store_dir.to_str().unwrap()])
+        .args(["--wal", wal_dir.to_str().unwrap()])
+        .args(["--chain-id", "c1", "--key-id", "seal-k1", "--interval-secs", "1"])
+        .args(["--key", seed.to_str().unwrap()])
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break Some(status);
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    let status = status.expect("`run` kept retrying a forged checkpoint instead of exiting");
+    assert!(!status.success());
+
+    let _ = std::fs::remove_dir_all(&wal_dir);
+    let _ = std::fs::remove_dir_all(&store_dir);
+}
+
+#[test]
 fn removed_checkpoint_breaks_the_store_chain() {
     let wal_dir = tmpdir("storedrop-wal");
     let store_dir = tmpdir("storedrop-store");

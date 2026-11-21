@@ -407,23 +407,29 @@ fn run_loop(
     loop {
         match one_pass(args, sealer, origin) {
             Ok(_) => {}
-            // Divergence, truncation, store corruption and an
-            // unauthenticated record never self-heal: looping over them
-            // would turn an incident into a heartbeat. Exit non-zero so the
-            // orchestrator alerts.
-            Err(
-                e @ (obsign_ledger::Error::DivergedLog { .. }
-                | obsign_ledger::Error::TruncatedLog { .. }
-                | obsign_ledger::Error::StoreBroken(_)
-                | obsign_ledger::Error::KeyConflict(_)
-                | obsign_ledger::Error::UnauthenticatedRecord { .. }),
-            ) => return Err(e.into()),
-            // Anything else (I/O blip, WAL mid-write) is worth retrying,
-            // but never silently.
-            Err(e) => eprintln!("[ledger] pass failed, will retry: {e}"),
+            Err(e) if retryable(&e) => eprintln!("[ledger] pass failed, will retry: {e}"),
+            // Divergence, truncation, a forged checkpoint, a broken chain, an
+            // unauthenticated record: none of it self-heals, and looping over
+            // it would turn an incident into a heartbeat. Exit non-zero so
+            // the orchestrator alerts.
+            Err(e) => return Err(e.into()),
         }
         std::thread::sleep(Duration::from_secs(interval_secs.max(1)));
     }
+}
+
+/// The only failures `run` mode retries: the I/O and HSM hiccups that can
+/// clear on their own. An allowlist, not a denylist, because the cost of the
+/// two mistakes is not symmetric: an incident misfiled as transient is
+/// retried silently forever and `OnFailure=` never fires, while a hiccup
+/// misfiled as fatal costs one restart.
+fn retryable(e: &obsign_ledger::Error) -> bool {
+    matches!(
+        e,
+        obsign_ledger::Error::Io(_)
+            | obsign_ledger::Error::Wal(obsign_wal::Error::Io(_))
+            | obsign_ledger::Error::Pkcs11(_)
+    )
 }
 
 fn do_export(
