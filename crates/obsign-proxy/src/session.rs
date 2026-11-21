@@ -59,6 +59,8 @@ pub struct Session {
     /// calls and sharing the call counter would leave holes in the dec-N /
     /// eff-N pairing an investigator reads by.
     pub reload_counter: u64,
+    /// Set by the first failed write, never cleared. See `write`.
+    pub poisoned: bool,
 }
 
 impl Session {
@@ -74,9 +76,33 @@ impl Session {
     /// chain), and a record must never become durable unsigned when the
     /// gateway has a key; the sealer would refuse it later, far from the
     /// cause.
+    ///
+    /// A failure poisons the session: every later write fails too. The chain
+    /// has already moved past the record (`seq` and `prev_hash` are taken at
+    /// `chain.append`), so a record that failed to sign or to reach the disk
+    /// leaves a hole the next one would chain across: a log that reports a
+    /// broken link forever, or one that sits on a torn line. The transport
+    /// then refuses every act that needs a record, which is all of them;
+    /// the stdio loop exits, the HTTP session answers 500.
     pub fn write(
         &mut self,
         id: impl Into<String>,
+        parent: Option<String>,
+        payload: Payload,
+    ) -> Result<Record, obsign_wal::Error> {
+        if self.poisoned {
+            return Err(obsign_wal::Error::Poisoned);
+        }
+        let written = self.write_unpoisoned(id.into(), parent, payload);
+        if written.is_err() {
+            self.poisoned = true;
+        }
+        written
+    }
+
+    fn write_unpoisoned(
+        &mut self,
+        id: String,
         parent: Option<String>,
         payload: Payload,
     ) -> Result<Record, obsign_wal::Error> {
@@ -275,6 +301,7 @@ pub fn open(
         relayed_to_agent: HashSet::new(),
         counter: 0,
         reload_counter: 0,
+        poisoned: false,
     }
 }
 
@@ -313,6 +340,62 @@ mod tests {
             r.verify_origin("t", &vk)
                 .unwrap_or_else(|e| panic!("record {} unsigned or invalid: {e}", r.id));
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An origin signer whose first signature fails, then recovers: an HSM
+    /// hiccup, a key file briefly unreadable.
+    struct FlakySigner {
+        inner: crate::origin::FileOriginSigner,
+        failed_once: std::sync::atomic::AtomicBool,
+    }
+
+    impl OriginSigner for FlakySigner {
+        fn key_id(&self) -> &str {
+            self.inner.key_id()
+        }
+        fn public_key(&self) -> obsign_audit_core::checkpoint::PublicKeyEntry {
+            self.inner.public_key()
+        }
+        fn sign(&self, message: &[u8]) -> Result<[u8; 64], std::io::Error> {
+            if !self.failed_once.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return Err(std::io::Error::other("signer unavailable"));
+            }
+            self.inner.sign(message)
+        }
+    }
+
+    #[test]
+    fn a_failed_write_poisons_the_session() {
+        // The chain moves on at `chain.append`, before the signature and the
+        // fsync. A write that fails after that point used to leave the
+        // session running: the next record chained onto a seq that never
+        // reached the disk, and the log reported a broken link forever.
+        let dir = std::env::temp_dir()
+            .join(format!("obsign-session-poison-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let signer = Arc::new(FlakySigner {
+            inner: crate::origin::FileOriginSigner::from_seed([4u8; 32]),
+            failed_once: std::sync::atomic::AtomicBool::new(false),
+        });
+        let (wal, chain) = Wal::open(&dir, "t").unwrap();
+        let mut s = open(chain, wal, "sess".into(), Some(signer));
+
+        let effect = || {
+            Payload::Effect(Effect {
+                status: EffectStatus::Ok,
+                result_hash: None,
+                latency_ms: 0,
+            })
+        };
+        assert!(s.write("eff-1", None, effect()).is_err());
+        assert!(
+            matches!(s.write("eff-2", None, effect()), Err(obsign_wal::Error::Poisoned)),
+            "the signer recovered, but nothing may follow a lost record"
+        );
+
+        // What is on disk is still a valid chain.
+        assert!(s.wal.read_all().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

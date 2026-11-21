@@ -57,6 +57,17 @@ pub enum Error {
          refusing to resume on top of a record no trusted gateway wrote"
     )]
     ForeignRecord { seq: u64, reason: String },
+
+    /// An earlier append failed, so this log takes no more records.
+    ///
+    /// A failed write or fsync leaves the file in a state nobody can name:
+    /// a partial line, or a whole one whose durability is unknown. The next
+    /// record would either glue itself onto the torn prefix (a corrupt line
+    /// in the middle of the log for good) or chain onto a `prev_hash` the
+    /// disk may never hold. Only a reopen, which replays and trims, restores
+    /// a head that is known to be on disk.
+    #[error("an earlier write to this log failed: no further record is accepted")]
+    Poisoned,
 }
 
 /// Append-only log, one JSON record per line.
@@ -69,6 +80,8 @@ pub enum Error {
 pub struct Wal {
     file: File,
     path: PathBuf,
+    /// Set by the first failed append, never cleared: see [`Error::Poisoned`].
+    poisoned: bool,
 }
 
 impl Wal {
@@ -194,22 +207,48 @@ impl Wal {
             }
         };
 
-        Ok((Wal { file, path }, writer))
+        Ok((
+            Wal {
+                file,
+                path,
+                poisoned: false,
+            },
+            writer,
+        ))
     }
 
     /// Writes a record and makes it durable.
     ///
     /// The `sync_data` is not negotiable: without it the content stays in the
     /// page cache, and a power cut erases the trace of an act that did happen.
+    ///
+    /// The first failure poisons the log: every later append fails with
+    /// [`Error::Poisoned`], whatever the disk does next. A transient error
+    /// that clears on its own is the dangerous case, not the safe one: the
+    /// records written after it would chain onto one that may not exist.
     pub fn append(&mut self, rec: &SignedRecord) -> Result<(), Error> {
+        if self.poisoned {
+            return Err(Error::Poisoned);
+        }
         let mut line = serde_json::to_string(rec).expect("serializing a record");
         // One write, record and newline together: a crash can only leave an
         // unterminated prefix, which `replay` recognises as torn.
         line.push('\n');
-        self.file.write_all(line.as_bytes())?;
-        self.file.flush()?;
-        self.file.sync_data()?;
+        let written = self
+            .file
+            .write_all(line.as_bytes())
+            .and_then(|_| self.file.flush())
+            .and_then(|_| self.file.sync_data());
+        if let Err(e) = written {
+            self.poisoned = true;
+            return Err(e.into());
+        }
         Ok(())
+    }
+
+    /// True once an append has failed; see [`Error::Poisoned`].
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
     }
 
     pub fn path(&self) -> &Path {
@@ -364,6 +403,41 @@ mod tests {
         let records = read(&dir, "c1").expect("reading must stay tolerant");
         assert_eq!(records.len(), 1);
         assert!(!records[0].record.payload.is_understood());
+    }
+
+    #[test]
+    fn a_failed_append_poisons_the_log() {
+        // A write that fails leaves the file in an unknown state. Accepting
+        // the next record, even once the disk recovers, chains it onto a
+        // record that may never have become durable, or glues it onto a
+        // partial line. Swapping the handle for a read-only one makes the
+        // write fail; swapping a writable one back stands for the disk
+        // recovering.
+        let dir = tmpdir("poisoned");
+        let (mut wal, mut chain) = Wal::open(&dir, "c1").unwrap();
+        let r = chain.append(0, "r0", None, "s", payload(0));
+        wal.append(&SignedRecord::unsigned(r)).unwrap();
+
+        let path = wal.path().to_path_buf();
+        wal.file = File::open(&path).unwrap();
+        let r = chain.append(1, "r1", None, "s", payload(1));
+        assert!(wal.append(&SignedRecord::unsigned(r)).is_err());
+        assert!(wal.is_poisoned());
+
+        wal.file = OpenOptions::new().append(true).open(&path).unwrap();
+        let r = chain.append(2, "r2", None, "s", payload(2));
+        assert!(
+            matches!(wal.append(&SignedRecord::unsigned(r)), Err(Error::Poisoned)),
+            "no record may follow a failed one"
+        );
+
+        // The log on disk stays a valid chain: the head is the last record
+        // actually written, and a reopen resumes on it.
+        drop(wal);
+        let (_wal, chain) = Wal::open(&dir, "c1").unwrap();
+        assert_eq!(chain.next_seq(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
