@@ -75,7 +75,7 @@
 use crate::checkpoint::PublicKeyEntry;
 use crate::error::Error;
 use crate::hash::sha256;
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::VerifyingKey;
 use serde::{Deserialize, Serialize};
 
 /// `TPM_GENERATED_VALUE`, the magic prefixing every genuine `TPMS_ATTEST`,
@@ -446,7 +446,7 @@ fn parse_ak(hexed: &str) -> Result<AkPublic, Error> {
 impl AkPublic {
     fn verify(&self, attest: &[u8], sig: &[u8; 64]) -> Result<(), Error> {
         let ok = match self {
-            AkPublic::Ed25519(vk) => vk.verify(attest, &Signature::from_bytes(sig)).is_ok(),
+            AkPublic::Ed25519(vk) => crate::ed25519_verify(vk, attest, sig),
             AkPublic::EcdsaP256(point) => {
                 crate::p256::verify_ecdsa_p256(point, sha256(attest).as_bytes(), sig)
             }
@@ -1167,6 +1167,19 @@ mod tests {
     use super::*;
     use crate::checkpoint::KeyRole;
     use ed25519_dalek::SigningKey;
+
+    #[test]
+    fn a_small_order_ak_signs_nothing() {
+        // The identity point and a signature that matches it for any
+        // message: non-strict Ed25519 accepted the pair, so an AK entry
+        // carrying it would have vouched for any certify or quote blob.
+        let mut weak = [0u8; 32];
+        weak[0] = 1;
+        let mut universal = [0u8; 64];
+        universal[0] = 1;
+        let ak = parse_ak(&hex::encode(weak)).expect("the point decodes");
+        assert!(ak.verify(b"any attest blob", &universal).is_err());
+    }
 
     fn pcr(index: u32, seed: u8) -> PcrExpectation {
         PcrExpectation {
