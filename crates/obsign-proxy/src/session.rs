@@ -61,6 +61,8 @@ pub struct Session {
     pub reload_counter: u64,
     /// Set by the first failed write, never cleared. See `write`.
     pub poisoned: bool,
+    /// Effect records that could not be written. See `write_effect`.
+    pub lost_effects: u64,
 }
 
 impl Session {
@@ -120,6 +122,26 @@ impl Session {
         Ok(sr.record)
     }
 
+    /// Writes the effect closing an act, when there is nothing left to
+    /// refuse if the write fails: the act already happened (a response came
+    /// back), or was already refused.
+    ///
+    /// The failure still poisons the session (see `write`), so the next act
+    /// is refused. What it must not be is silent: the act it closes stays
+    /// in the log as a call and a decision with no outcome, which reads
+    /// exactly like a response that never came. Said on stderr at the time,
+    /// and counted in the closing report, because a degradation nobody sees
+    /// is the one the log will be trusted on.
+    pub fn write_effect(&mut self, id: String, decision: String, effect: Effect) {
+        if let Err(e) = self.write(id.clone(), Some(decision), Payload::Effect(effect)) {
+            self.lost_effects += 1;
+            eprintln!(
+                "[obsign] AUDIT GAP: effect record {id} could not be written ({e}); \
+                 the act it closes has no recorded outcome"
+            );
+        }
+    }
+
     pub fn next_call_id(&mut self) -> String {
         self.counter += 1;
         format!("call-{}", self.counter)
@@ -133,13 +155,25 @@ impl Session {
     /// job ends when every record is durable in the WAL; the message says
     /// where to point the sealer.
     pub fn closing_report(&self) -> String {
-        format!(
+        let mut report = format!(
             "{} record(s) durable in {} — seal with: obsign-ledger seal \
              --wal <dir> --chain-id {}",
-            self.chain.next_seq(),
+            // The chain moved past the record whose write failed.
+            self.chain.next_seq() - u64::from(self.poisoned),
             self.wal.path().display(),
             self.chain.chain_id(),
-        )
+        );
+        if self.lost_effects > 0 {
+            report.push_str(&format!(
+                " — AUDIT GAP: {} effect record(s) could not be written, their \
+                 acts have no recorded outcome",
+                self.lost_effects
+            ));
+        }
+        if self.poisoned {
+            report.push_str(" — the log stopped accepting records after a failed write");
+        }
+        report
     }
 }
 
@@ -302,6 +336,7 @@ pub fn open(
         counter: 0,
         reload_counter: 0,
         poisoned: false,
+        lost_effects: 0,
     }
 }
 

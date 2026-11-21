@@ -306,10 +306,10 @@ pub(crate) fn handle_from_agent(
                 if let Some(p) = s.pending_to_agent.remove(&key) {
                     let result = msg.get("result");
                     let is_error = msg.get("error").is_some();
-                    let _ = s.write(
+                    s.write_effect(
                         p.effect_record_id,
-                        Some(p.decision_record_id),
-                        Payload::Effect(Effect {
+                        p.decision_record_id,
+                        Effect {
                             status: if is_error {
                                 EffectStatus::Error
                             } else {
@@ -318,7 +318,7 @@ pub(crate) fn handle_from_agent(
                             result_hash: result
                                 .map(|r| content_hash(r.to_string().as_bytes())),
                             latency_ms: p.started.elapsed().as_millis() as u64,
-                        }),
+                        },
                     );
                     return Ok(Forward::Pass(raw));
                 }
@@ -758,10 +758,10 @@ pub(crate) fn handle_from_server(
                     .unwrap_or(false);
 
             let mut s = state.lock().unwrap();
-            let _ = s.write(
+            s.write_effect(
                 p.effect_record_id,
-                Some(p.decision_record_id),
-                Payload::Effect(Effect {
+                p.decision_record_id,
+                Effect {
                     status: if is_error {
                         EffectStatus::Error
                     } else {
@@ -769,7 +769,7 @@ pub(crate) fn handle_from_server(
                     },
                     result_hash: result.map(|r| content_hash(r.to_string().as_bytes())),
                     latency_ms: p.started.elapsed().as_millis() as u64,
-                }),
+                },
             );
         }
     }
@@ -999,14 +999,14 @@ fn handle_server_initiated(
                 // request keeps its slot, the newcomer is refused with its
                 // own effect, and no recorded call is left without one.
                 std::collections::hash_map::Entry::Occupied(_) => {
-                    let _ = s.write(
+                    s.write_effect(
                         effect_id,
-                        Some(decision_id),
-                        Payload::Effect(Effect {
+                        decision_id,
+                        Effect {
                             status: EffectStatus::Blocked,
                             result_hash: None,
                             latency_ms: 0,
-                        }),
+                        },
                     );
                     drop(s);
                     eprintln!(
@@ -1031,14 +1031,14 @@ fn handle_server_initiated(
         return Downstream::Forward(msg);
     }
 
-    let _ = s.write(
+    s.write_effect(
         effect_id,
-        Some(decision_id),
-        Payload::Effect(Effect {
+        decision_id,
+        Effect {
             status: EffectStatus::Blocked,
             result_hash: None,
             latency_ms: 0,
-        }),
+        },
     );
     drop(s);
 
@@ -1128,10 +1128,10 @@ fn arbitrate_notification(
     }
 
     let allowed = verdict.is_allowed();
-    let _ = s.write(
+    s.write_effect(
         effect_id,
-        Some(decision_id),
-        Payload::Effect(Effect {
+        decision_id,
+        Effect {
             status: if allowed {
                 EffectStatus::Ok
             } else {
@@ -1139,7 +1139,7 @@ fn arbitrate_notification(
             },
             result_hash: None,
             latency_ms: 0,
-        }),
+        },
     );
     drop(s);
 
@@ -1260,6 +1260,34 @@ mod tests {
             recs.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids.len(), recs.len(), "record identifiers must stay unique");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_effect_that_cannot_be_written_is_reported() {
+        // The response came back, the act happened; when its effect could
+        // not be written, `let _ = s.write(…)` dropped the error on the
+        // floor and the log read as if the response never came.
+        let (dir, state) = open_state("lost-effect");
+        let ctx = ctx();
+
+        let call = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                           "params": { "name": "search_docs", "arguments": {} } });
+        assert!(matches!(
+            handle_from_agent(call, &state, &ctx, None).unwrap(),
+            Forward::Pass(_)
+        ));
+
+        // The disk fails between the call and its response.
+        state.lock().unwrap().poisoned = true;
+        let resp = json!({ "jsonrpc": "2.0", "id": 1, "result": { "content": [] } });
+        let _ = handle_from_server(resp, &state, &ctx, "sess");
+
+        let report = state.lock().unwrap().closing_report();
+        assert!(
+            report.contains("AUDIT GAP: 1 effect record"),
+            "the lost effect must be reported, got: {report}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

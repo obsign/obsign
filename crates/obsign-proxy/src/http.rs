@@ -853,17 +853,14 @@ fn dispatch_from_server(
                     {
                         let mut s = sess.state.lock().unwrap();
                         if let Some(p) = s.pending_to_agent.remove(&key) {
-                            let _ = s.write(
+                            s.write_effect(
                                 p.effect_record_id,
-                                Some(p.decision_record_id),
-                                obsign_audit_core::record::Payload::Effect(
-                                    obsign_audit_core::record::Effect {
-                                        status: obsign_audit_core::record::EffectStatus::Blocked,
-                                        result_hash: None,
-                                        latency_ms: p.started.elapsed().as_millis()
-                                            as u64,
-                                    },
-                                ),
+                                p.decision_record_id,
+                                obsign_audit_core::record::Effect {
+                                    status: obsign_audit_core::record::EffectStatus::Blocked,
+                                    result_hash: None,
+                                    latency_ms: p.started.elapsed().as_millis() as u64,
+                                },
                             );
                         }
                         s.relayed_to_agent.remove(&key);
