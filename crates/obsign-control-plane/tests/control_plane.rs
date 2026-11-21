@@ -1313,6 +1313,56 @@ fn the_console_lists_chains_newest_first() {
 }
 
 #[test]
+fn the_console_verifies_each_artifact_not_just_the_manifest() {
+    let wal_dir = tmp("con-verify-wal");
+    std::fs::create_dir_all(&wal_dir).unwrap();
+    let dist = tmp("con-verify-dist");
+    let src = tmp("con-verify-src");
+    write_source_tree(&src);
+    let compiled = compile(&SourceTree::load(&src).unwrap(), "v1", &ops()).unwrap();
+    publish(&dist, &compiled, &ops(), 1_000).unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let console = Console {
+        wal_dir,
+        store_dir: None,
+        dist_dir: Some(dist.clone()),
+    };
+    std::thread::spawn(move || console.serve_on(listener));
+    let get = |path: &str| {
+        http_get(addr, &format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
+    };
+
+    let release = get("/release");
+    assert!(release.contains("hash matches, signature valid"), "{release}");
+    assert!(!release.contains("NOT VERIFIED"), "{release}");
+
+    // Rules swapped in dist/ after publish: the manifest is untouched and
+    // still verifies, but the page must not show these rules as released.
+    let path = dist.join("policy-bundle.json");
+    let tampered = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("forbid_destructive_prod", "forbid_nothing_at_all");
+    std::fs::write(&path, tampered).unwrap();
+    let release = get("/release");
+    assert!(release.contains("forbid_nothing_at_all"));
+    assert!(release.contains("NOT VERIFIED"), "{release}");
+    assert!(release.contains("sha256 MISMATCH"), "{release}");
+    assert!(get("/").contains("sha256 MISMATCH"));
+
+    // A manifest signed by a key trusted under another role is a finding,
+    // not a green verdict.
+    std::fs::write(&path, serde_json::to_vec_pretty(&compiled.policy).unwrap()).unwrap();
+    let mut entry = ops().public_entry();
+    entry.role = obsign_audit_core::checkpoint::KeyRole::Origin;
+    std::fs::write(dist.join("trusted-keys.json"), serde_json::to_string(&[&entry]).unwrap()).unwrap();
+    let overview = get("/");
+    assert!(!overview.contains("manifest signature valid"), "{overview}");
+    assert!(overview.contains("not ops"), "{overview}");
+}
+
+#[test]
 fn console_is_read_only_and_shows_the_log() {
     let wal_dir = tmp("con-wal");
     let store_dir = tmp("con-store");

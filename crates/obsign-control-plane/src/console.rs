@@ -30,7 +30,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::export::list_chains;
-use crate::release::SignedManifest;
+use crate::release::{Artifact, SignedManifest};
+use obsign_audit_core::hash::sha256;
 use crate::Error;
 
 /// Ceiling on request head bytes. Above this, nobody is browsing.
@@ -322,57 +323,133 @@ fn overview(console: &Console) -> Option<String> {
     Some(page("Obsign — control plane", &body))
 }
 
-fn release_summary(dist: &Path) -> String {
+/// What the console can vouch for about the current release: the manifest's
+/// signature, and for each artifact, that the file in dist/ is the one the
+/// manifest names (sha256) and carries a valid ops signature of its own.
+///
+/// The manifest signature alone covers the manifest's bytes, nothing else:
+/// a policy bundle swapped in dist/ after publish would be displayed under a
+/// green "signature valid" that never looked at it.
+struct ReleaseState {
+    signed: SignedManifest,
+    verdict: String,
+    /// Per artifact the manifest names: (name, sha256, verified, status).
+    artifacts: Vec<(String, String, bool, String)>,
+}
+
+/// Resolves a key that may sign releases and bundles: trusted, and trusted
+/// *as ops*. A key the fleet trusts to seal, or a gateway's origin key, has
+/// no business signing rules, and its signature here is a finding.
+fn ops_key(keys: &[PublicKeyEntry], key_id: &str) -> Result<ed25519_dalek::VerifyingKey, String> {
+    let entry = keys
+        .iter()
+        .find(|k| k.key_id == key_id)
+        .ok_or_else(|| format!("signed with unknown key \"{key_id}\""))?;
+    if entry.role != obsign_audit_core::checkpoint::KeyRole::Ops {
+        return Err(format!(
+            "key \"{key_id}\" is trusted as {}, not ops (a key recorded by an \
+             earlier build is upgraded by the next publish)",
+            entry.role.as_str()
+        ));
+    }
+    entry.to_verifying_key().map_err(|e| e.to_string())
+}
+
+/// Checks one current artifact against its manifest entry and its own
+/// signature. `Ok` carries the status line shown next to it.
+fn check_artifact(dist: &Path, keys: &[PublicKeyEntry], a: &Artifact) -> Result<String, String> {
+    let bytes = std::fs::read(dist.join(&a.name)).map_err(|e| format!("unreadable: {e}"))?;
+    if sha256(&bytes) != a.sha256 {
+        return Err("sha256 MISMATCH: the file in dist/ is not the one the manifest names".to_string());
+    }
+    let key_id = match a.name.as_str() {
+        "policy-bundle.json" => {
+            let b: obsign_policy::SignedBundle = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            b.verify(&ops_key(keys, &b.key_id)?).map_err(|e| format!("signature INVALID: {e}"))?;
+            b.key_id
+        }
+        "identity-bundle.json" => {
+            let b: obsign_identity::SignedIdentityBundle =
+                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            b.verify(&ops_key(keys, &b.key_id)?).map_err(|e| format!("signature INVALID: {e}"))?;
+            b.key_id
+        }
+        "deployment-bundle.json" => {
+            let b: obsign_audit_core::deployment::SignedDeploymentBundle =
+                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            b.verify(&ops_key(keys, &b.key_id)?).map_err(|e| format!("signature INVALID: {e}"))?;
+            b.key_id
+        }
+        _ => return Err("unknown artifact: not verified".to_string()),
+    };
+    Ok(format!("hash matches, signature valid (key {key_id})"))
+}
+
+fn release_state(dist: &Path) -> Result<Option<ReleaseState>, String> {
     let manifest_path = dist.join("manifest.json");
     if !manifest_path.is_file() {
-        return "<p class=\"mut\">nothing published yet</p>".to_string();
+        return Ok(None);
     }
-    let parsed: Result<SignedManifest, _> = std::fs::read_to_string(&manifest_path)
+    let signed: SignedManifest = std::fs::read_to_string(&manifest_path)
         .map_err(|e| e.to_string())
-        .and_then(|s| serde_json::from_str(&s).map_err(|e| e.to_string()));
-    let signed = match parsed {
-        Ok(s) => s,
-        Err(e) => return format!("<p class=\"bad\">manifest unreadable: {}</p>", esc(&e)),
-    };
+        .and_then(|s| serde_json::from_str(&s).map_err(|e| e.to_string()))
+        .map_err(|e| format!("manifest unreadable: {e}"))?;
 
     // Verified against the published trusted keys, and the outcome is shown
     // either way. An unverifiable current release is front-page news.
-    let verdict = match load_keys(&dist.join("trusted-keys.json"))
-        .iter()
-        .find(|k| k.key_id == signed.key_id)
+    let keys = load_keys(&dist.join("trusted-keys.json"));
+    let verdict = match ops_key(&keys, &signed.key_id)
+        .and_then(|vk| signed.verify(&vk).map(|_| ()).map_err(|e| format!("signature INVALID: {e}")))
     {
-        None => format!(
-            "<span class=\"bad\">signed with unknown key \"{}\"</span>",
+        Ok(()) => format!(
+            "<span class=\"ok\">manifest signature valid (key {})</span>",
             esc(&signed.key_id)
         ),
-        Some(entry) => match entry
-            .to_verifying_key()
-            .map_err(Error::from)
-            .and_then(|vk| signed.verify(&vk).map(|_| ()))
-        {
-            Ok(()) => format!(
-                "<span class=\"ok\">signature valid (key {})</span>",
-                esc(&signed.key_id)
-            ),
-            Err(e) => format!("<span class=\"bad\">signature INVALID: {}</span>", esc(&e.to_string())),
-        },
+        Err(e) => format!("<span class=\"bad\">manifest {}</span>", esc(&e)),
+    };
+    let artifacts = signed
+        .manifest
+        .artifacts
+        .iter()
+        .map(|a| {
+            let (ok, status) = match check_artifact(dist, &keys, a) {
+                Ok(s) => (true, s),
+                Err(s) => (false, s),
+            };
+            (a.name.clone(), a.sha256.to_string(), ok, status)
+        })
+        .collect();
+    Ok(Some(ReleaseState {
+        signed,
+        verdict,
+        artifacts,
+    }))
+}
+
+fn release_summary(dist: &Path) -> String {
+    let state = match release_state(dist) {
+        Ok(None) => return "<p class=\"mut\">nothing published yet</p>".to_string(),
+        Ok(Some(s)) => s,
+        Err(e) => return format!("<p class=\"bad\">{}</p>", esc(&e)),
     };
 
-    let m = &signed.manifest;
+    let m = &state.signed.manifest;
     let mut out = format!(
         "<p>version <code>{}</code> — published {} — {} — \
          <a href=\"/release\">details</a></p><table>\
-         <tr><th>artifact</th><th>sha256</th></tr>",
+         <tr><th>artifact</th><th>sha256</th><th>status</th></tr>",
         esc(&m.version),
         fmt_utc(m.ts_ms),
-        verdict
+        state.verdict
     );
-    for a in &m.artifacts {
+    for (name, hash, ok, status) in &state.artifacts {
         let _ = write!(
             out,
-            "<tr><td>{}</td><td><code>{}</code></td></tr>",
-            esc(&a.name),
-            a.sha256
+            "<tr><td>{}</td><td><code>{}</code></td><td class=\"{}\">{}</td></tr>",
+            esc(name),
+            esc(hash),
+            if *ok { "ok" } else { "bad" },
+            esc(status)
         );
     }
     out.push_str("</table>");
@@ -386,9 +463,32 @@ fn load_keys(path: &Path) -> Vec<PublicKeyEntry> {
         .unwrap_or_default()
 }
 
+/// The status line shown above an artifact's contents. Contents are shown
+/// either way (they are what an operator investigating needs to see), but
+/// never under a verdict that did not look at them.
+fn artifact_status(state: &Result<Option<ReleaseState>, String>, name: &str) -> String {
+    let found = state
+        .as_ref()
+        .ok()
+        .and_then(|s| s.as_ref())
+        .and_then(|s| s.artifacts.iter().find(|a| a.0 == name));
+    match found {
+        Some((_, _, true, status)) => format!("<p class=\"ok\">{}</p>", esc(status)),
+        Some((_, _, false, status)) => format!(
+            "<p class=\"bad\">NOT VERIFIED — {} — the contents below are not \
+             what the release vouches for</p>",
+            esc(status)
+        ),
+        None => "<p class=\"bad\">NOT VERIFIED — not named in the current \
+                 manifest — the contents below are not part of the release</p>"
+            .to_string(),
+    }
+}
+
 fn release_page(console: &Console) -> Option<String> {
     let dist = console.dist_dir.as_ref()?;
     let mut body = release_summary(dist);
+    let state = release_state(dist);
 
     let bundle_path = dist.join("policy-bundle.json");
     if let Ok(raw) = std::fs::read_to_string(&bundle_path) {
@@ -404,11 +504,12 @@ fn release_page(console: &Console) -> Option<String> {
                 let b = &signed.bundle;
                 let _ = write!(
                     body,
-                    "<h2>Policy bundle <code>{}</code></h2>\
+                    "<h2>Policy bundle <code>{}</code></h2>{}\
                      <h3>Tool catalogue</h3><table>\
                      <tr><th>tool</th><th>server</th><th>destructive</th>\
                      <th>required scope</th><th>on failure</th></tr>",
-                    esc(&b.version)
+                    esc(&b.version),
+                    artifact_status(&state, "policy-bundle.json")
                 );
                 for t in &b.tools {
                     let _ = write!(
@@ -436,10 +537,11 @@ fn release_page(console: &Console) -> Option<String> {
             let kids: Vec<String> = b.jwks.keys.iter().map(|k| esc(&k.kid)).collect();
             let _ = write!(
                 body,
-                "<h2>Identity bundle <code>{}</code></h2>\
+                "<h2>Identity bundle <code>{}</code></h2>{}\
                  <p>issuer <code>{}</code> — audience <code>{}</code> — \
                  {} key(s): {}</p>",
                 esc(&b.version),
+                artifact_status(&state, "identity-bundle.json"),
                 esc(&b.issuer),
                 esc(&b.audience),
                 b.jwks.keys.len(),
