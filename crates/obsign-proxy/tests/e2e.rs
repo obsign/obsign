@@ -748,6 +748,17 @@ fn the_log_resumes_after_restart() {
 /// Runs `obsign-proxy` with raw arguments and no traffic. Used to check startup
 /// refusals.
 fn start_only(name: &str, extra: &[&str]) -> std::process::Output {
+    start_only_with_roles(name, extra, Default::default(), Default::default())
+}
+
+/// [`start_only`], with the policy key and the identity key declared under
+/// the given roles in the trusted keys.
+fn start_only_with_roles(
+    name: &str,
+    extra: &[&str],
+    policy_role: obsign_audit_core::checkpoint::KeyRole,
+    identity_role: obsign_audit_core::checkpoint::KeyRole,
+) -> std::process::Output {
     let dir = std::env::temp_dir().join(format!("obsign-start-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -764,7 +775,9 @@ fn start_only(name: &str, extra: &[&str]) -> std::process::Output {
         },
     };
     let signed = bundle.sign("policy-key", &key);
-    let keys = keyring(&key);
+    let mut keys = keyring(&key);
+    keys[0].role = policy_role;
+    keys[1].role = identity_role;
     std::fs::write(dir.join("bundle.json"), serde_json::to_string(&signed).unwrap()).unwrap();
     std::fs::write(dir.join("keys.json"), serde_json::to_string(&keys).unwrap()).unwrap();
     std::fs::write(dir.join("identity-bundle.json"), identity_bundle_json()).unwrap();
@@ -940,6 +953,55 @@ fn an_ambiguous_identity_configuration_is_refused() {
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("incompatible"), "unclear message: {err}");
+}
+
+#[test]
+fn a_policy_signed_by_an_origin_key_is_refused() {
+    // The policy key was resolved by id alone, whatever role the trusted
+    // keys gave it. An origin key sits on the gateway host to sign records;
+    // whoever reads it there could sign their own rules, and the gateway
+    // loaded them as authority.
+    use obsign_audit_core::checkpoint::KeyRole;
+    let declared = ["--insecure-declared-identity", "--principal", "marie"];
+
+    let out = start_only_with_roles("policy-origin", &declared, KeyRole::Origin, KeyRole::Ops);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("an origin key"), "unclear message: {err}");
+
+    // An ops key is what it should be; a legacy `seal` default still loads.
+    for role in [KeyRole::Ops, KeyRole::Seal] {
+        let out = start_only_with_roles("policy-ops", &declared, role, KeyRole::Ops);
+        assert!(
+            out.status.success(),
+            "role {role:?} refused: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn an_identity_bundle_signed_by_an_origin_key_is_refused() {
+    // Same rule for the identity bundle: an origin key signing a JWKS
+    // would let the record writer mint the principals it records.
+    use obsign_audit_core::checkpoint::KeyRole;
+    let oidc = [
+        "--identity-bundle",
+        "{dir}/identity-bundle.json",
+        "--token-file",
+        "{dir}/token.jwt",
+    ];
+    let out = start_only_with_roles("identity-origin", &oidc, KeyRole::Ops, KeyRole::Origin);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "an identity bundle signed by an origin key must not load: {err}"
+    );
+    assert!(err.contains("identity-key"), "unclear message: {err}");
+
+    // The control: the same configuration with an ops identity key starts.
+    let out = start_only_with_roles("identity-ops", &oidc, KeyRole::Ops, KeyRole::Ops);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
 }
 
 #[test]

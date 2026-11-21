@@ -239,17 +239,9 @@ fn main() -> Result<()> {
     )
     .context("unreadable trusted keys")?;
 
-    let vk = trusted
-        .iter()
-        .find(|k| k.key_id == signed.key_id)
-        .with_context(|| {
-            format!(
-                "bundle signed with key \"{}\", absent from the trusted keys",
-                signed.key_id
-            )
-        })?
-        .to_verifying_key()
-        .context("unusable trusted key")?;
+    // Resolved by key id *and* role: an origin key in the file is never a
+    // bundle signer (see `origin::bundle_signers`).
+    let vk = origin::bundle_key(&trusted, &signed.key_id, "policy bundle")?;
 
     // An unverified bundle must never be loaded: otherwise changing the
     // rules amounts to writing a file on the gateway's disk.
@@ -369,6 +361,9 @@ fn main() -> Result<()> {
     // will refuse: fail at startup, in front of the operator.
     keys.verify_enrolled()?;
 
+    // Past this point `trusted` only verifies identity bundles, at startup
+    // and on every rotation: the same rule applies, so the origin keys go.
+    let trusted = origin::bundle_signers(&trusted);
     match &cli.http {
         Some(addr) => run_http(&cli, addr, engine, bundle_version, trusted, keys),
         None => run_stdio(&cli, engine, bundle_version, trusted, keys),
