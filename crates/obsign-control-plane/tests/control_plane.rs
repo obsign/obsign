@@ -1062,7 +1062,7 @@ fn a_refused_publish_trusts_no_new_key() {
     let src = tmp("refused-key-src");
     let dist = tmp("refused-key-dist");
     write_source_tree(&src);
-    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", &ops()).unwrap();
+    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", EPOCH, &ops()).unwrap();
     publish(&dist, &v1, &ops(), 1_000).unwrap();
 
     // Different content under the same version, signed by a key the fleet
@@ -1074,7 +1074,7 @@ fn a_refused_publish_trusts_no_new_key() {
     )
     .unwrap();
     let other = OpsKey::from_seed([0x77u8; 32], "ops-key-2");
-    let conflicting = compile(&SourceTree::load(&src).unwrap(), "v1", &other).unwrap();
+    let conflicting = compile(&SourceTree::load(&src).unwrap(), "v1", EPOCH, &other).unwrap();
     assert!(matches!(
         publish(&dist, &conflicting, &other, 2_000),
         Err(Error::VersionConflict { .. })
@@ -1089,7 +1089,7 @@ fn a_key_id_keeps_its_role() {
     use obsign_audit_core::checkpoint::KeyRole;
     let src = tmp("role-src");
     write_source_tree(&src);
-    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", &ops()).unwrap();
+    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", EPOCH, &ops()).unwrap();
 
     // The ops key's id and material, already trusted as an origin key: the
     // same id under a second role is refused, not silently merged.
@@ -1388,7 +1388,7 @@ fn the_console_verifies_each_artifact_not_just_the_manifest() {
     let dist = tmp("con-verify-dist");
     let src = tmp("con-verify-src");
     write_source_tree(&src);
-    let compiled = compile(&SourceTree::load(&src).unwrap(), "v1", &ops()).unwrap();
+    let compiled = compile(&SourceTree::load(&src).unwrap(), "v1", EPOCH, &ops()).unwrap();
     publish(&dist, &compiled, &ops(), 1_000).unwrap();
 
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1785,7 +1785,7 @@ fn a_release_without_a_bundle_removes_the_stale_current_copy() {
     let dist = tmp("stale-current-dist");
     write_source_tree(&dir);
     write_deployment(&dir, &[("gw-a", 40)]);
-    let v1 = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap();
+    let v1 = compile(&SourceTree::load(&dir).unwrap(), "v1", EPOCH, &ops()).unwrap();
     publish(&dist, &v1, &ops(), 1_000).unwrap();
     assert!(dist.join("identity-bundle.json").is_file());
     assert!(dist.join("deployment-bundle.json").is_file());
@@ -1795,7 +1795,7 @@ fn a_release_without_a_bundle_removes_the_stale_current_copy() {
     // manifest that says this release has none.
     std::fs::remove_dir_all(dir.join("identity")).unwrap();
     std::fs::remove_dir_all(dir.join("deployment")).unwrap();
-    let v2 = compile(&SourceTree::load(&dir).unwrap(), "v2", &ops()).unwrap();
+    let v2 = compile(&SourceTree::load(&dir).unwrap(), "v2", EPOCH, &ops()).unwrap();
     publish(&dist, &v2, &ops(), 2_000).unwrap();
     assert!(!dist.join("identity-bundle.json").exists());
     assert!(!dist.join("deployment-bundle.json").exists());
@@ -1811,14 +1811,14 @@ fn the_same_version_with_another_artifact_set_is_a_conflict() {
     let dir = tmp("artifact-set-src");
     let dist = tmp("artifact-set-dist");
     write_source_tree(&dir);
-    let v1 = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap();
+    let v1 = compile(&SourceTree::load(&dir).unwrap(), "v1", EPOCH, &ops()).unwrap();
     let published = publish(&dist, &v1, &ops(), 1_000).unwrap();
     let manifest = std::fs::read(published.release_dir.join("manifest.json")).unwrap();
 
     // Same version, identity bundle gone: the policy bytes still match, but
     // the release is not the one v1 names.
     std::fs::remove_dir_all(dir.join("identity")).unwrap();
-    let shrunk = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap();
+    let shrunk = compile(&SourceTree::load(&dir).unwrap(), "v1", EPOCH, &ops()).unwrap();
     assert!(matches!(
         publish(&dist, &shrunk, &ops(), 2_000),
         Err(Error::VersionConflict { .. })
@@ -1826,7 +1826,7 @@ fn the_same_version_with_another_artifact_set_is_a_conflict() {
     // And with an artifact v1 never had.
     write_source_tree(&dir);
     write_deployment(&dir, &[("gw-a", 40)]);
-    let grown = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap();
+    let grown = compile(&SourceTree::load(&dir).unwrap(), "v1", EPOCH, &ops()).unwrap();
     assert!(matches!(
         publish(&dist, &grown, &ops(), 3_000),
         Err(Error::VersionConflict { .. })
@@ -1844,7 +1844,7 @@ fn a_second_publish_fails_fast_while_one_holds_the_lock() {
     let src = tmp("lock-src");
     let dist = tmp("lock-dist");
     write_source_tree(&src);
-    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", &ops()).unwrap();
+    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", EPOCH, &ops()).unwrap();
 
     // Another publish in flight holds dist/'s lock: interleaving with it
     // could leave a manifest naming the other's artifacts.
@@ -1869,7 +1869,7 @@ fn an_unreadable_release_file_is_an_error_not_a_crash_to_repair() {
     let src = tmp("unreadable-src");
     let dist = tmp("unreadable-dist");
     write_source_tree(&src);
-    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", &ops()).unwrap();
+    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", EPOCH, &ops()).unwrap();
     let published = publish(&dist, &v1, &ops(), 1_000).unwrap();
 
     let file = published.release_dir.join("policy-bundle.json");
@@ -1892,7 +1892,7 @@ fn a_planted_temp_file_cannot_steer_an_atomic_write() {
     let src = tmp("tmpname-src");
     let dist = tmp("tmpname-dist");
     write_source_tree(&src);
-    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", &ops()).unwrap();
+    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", EPOCH, &ops()).unwrap();
 
     // A symlink where a fixed `<name>.tmp` would be written: followed, it
     // overwrites its target, and the rename then makes the current bundle a
@@ -1917,7 +1917,7 @@ fn a_label_cannot_escape_the_releases_directory() {
     let tree = SourceTree::load(&src).unwrap();
 
     for label in ["../../escaped", "..", ".", "a/b", "", ".hidden", "v1\\x"] {
-        let compiled = compile(&tree, label, &ops()).unwrap();
+        let compiled = compile(&tree, label, EPOCH, &ops()).unwrap();
         let result = publish(&dist, &compiled, &ops(), 1_000);
         assert!(matches!(result, Err(Error::InvalidVersion(_))), "{label:?}: {result:?}");
     }
@@ -1926,7 +1926,7 @@ fn a_label_cannot_escape_the_releases_directory() {
 
     // What a short sha or an ordinary label looks like still publishes.
     for label in ["abcd12345678", "v1.2.3-rc_1+build"] {
-        publish(&dist, &compile(&tree, label, &ops()).unwrap(), &ops(), 1_000).unwrap();
+        publish(&dist, &compile(&tree, label, EPOCH, &ops()).unwrap(), &ops(), 1_000).unwrap();
     }
 }
 
