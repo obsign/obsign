@@ -296,6 +296,12 @@ fn print_report(r: &evidence::Report) {
         "  checkpoints : {} valid / {}",
         r.checkpoints_valid, r.checkpoints_total
     );
+    // A pack does not prove its own end: dropping the newest checkpoints
+    // with their records leaves a pack that verifies. This is the line to
+    // compare with an out-of-band record of the latest seal.
+    if let (Some(seq), Some(h)) = (r.last_sealed_seq, r.last_checkpoint_hash) {
+        println!("  last sealed : seq {seq}, checkpoint {h}");
+    }
     if r.anchors_total > 0 {
         println!(
             "  anchors     : {} consistent / {} (RFC 3161)",
@@ -488,6 +494,8 @@ mod tests {
             records_unknown: 0,
             first_seq: Some(0),
             last_seq: Some(0),
+            last_sealed_seq: Some(0),
+            last_checkpoint_hash: None,
             self_referential,
             findings,
         }

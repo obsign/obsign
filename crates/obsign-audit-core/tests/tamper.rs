@@ -240,6 +240,59 @@ fn removing_a_checkpoint_is_visible() {
 }
 
 #[test]
+fn tail_truncation_is_a_documented_limit_not_a_detection() {
+    // DOCUMENTS current behaviour, it does not endorse it. See "What
+    // verification establishes" in docs/walkthrough.md and the scope in
+    // SECURITY.md: nothing in a pack commits to the head of the chain, so
+    // dropping the newest checkpoints together with their records leaves a
+    // pack that verifies, exit 0. Truncation in the middle or at the head is
+    // detected (`removing_a_checkpoint_is_visible`, `partial_chain`). The
+    // witness for the tail is outside the pack: an RFC 3161 anchor or an
+    // out-of-band copy of the latest checkpoint, compared to the
+    // `last_checkpoint_hash` the report states. If this test starts failing
+    // because truncation is now detected, update the documents with it.
+    let key = signing_key();
+    let mut chain = ChainWriter::new(CHAIN_ID);
+    let mut records = Vec::new();
+    let mut cps = Vec::new();
+    for batch in 0..3 {
+        for i in 0..2 {
+            records.push(chain.append(batch * 100 + i, format!("r-{batch}-{i}"), None, "s", tool_call("t")));
+        }
+        cps.push(chain.seal(9_000 + batch, KEY_ID).unwrap().sign(&key));
+    }
+    let witnessed = cps[2].checkpoint.hash();
+
+    let entry = pubkey_entry(&key);
+    let mut ev = Evidence {
+        format: FORMAT.to_string(),
+        chain_id: CHAIN_ID.to_string(),
+        records: wrap(records),
+        checkpoints: cps,
+        keys: vec![entry.clone()],
+        anchors: Vec::new(),
+        deployment: None,
+    };
+    ev.checkpoints.truncate(2);
+    ev.records.truncate(4);
+
+    let r = evidence::verify(&ev, &[entry]);
+    assert!(r.is_valid(), "the truncated pack still verifies: {:?}", r.findings);
+    assert!(r.proves_every_record());
+    // Unsigned records here, hence `origin_unverified`; nothing else, and
+    // nothing about a missing tail.
+    assert!(
+        r.warnings().all(|f| f.code == "origin_unverified"),
+        "and says nothing about it: {:?}",
+        r.findings
+    );
+    // What the auditor compares to the witness: it no longer matches.
+    assert_eq!(r.last_sealed_seq, Some(3));
+    assert_eq!(r.last_checkpoint_hash, Some(ev.checkpoints[1].checkpoint.hash()));
+    assert_ne!(r.last_checkpoint_hash, Some(witnessed));
+}
+
+#[test]
 fn a_checkpoint_claiming_the_whole_u64_range_cannot_stall_the_verifier() {
     // The interval bounds are read before the signature means anything, so
     // anyone can write `[0..u64::MAX]`. The verifier used to walk it seq by

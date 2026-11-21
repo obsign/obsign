@@ -237,3 +237,28 @@ fn an_oversized_pack_is_refused_before_it_is_read() {
     assert_eq!(out.status.code(), Some(2), "stderr: {stderr}");
     assert!(stderr.contains("larger than"), "stderr: {stderr}");
 }
+
+#[test]
+fn the_report_states_the_last_sealed_checkpoint() {
+    // A pack does not prove its own end (see docs/walkthrough.md, "What
+    // verification establishes"): the auditor compares this line with an
+    // out-of-band record of the latest seal, so it has to be printed.
+    let key = SigningKey::from_bytes(&[1u8; 32]);
+    let ev = pack(&key, "k1");
+    let head = ev.checkpoints[0].checkpoint.hash();
+    let ev = write_tmp("head.json", &serde_json::to_string(&ev).unwrap());
+    let keys = write_tmp("head.keys.json", &serde_json::to_string(&vec![entry(&key, "k1")]).unwrap());
+
+    let out = obsign(&[
+        "verify",
+        "--allow-unsigned-legacy-chains",
+        "--trusted-keys",
+        keys.to_str().unwrap(),
+        ev.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(&format!("last sealed : seq 2, checkpoint {head}")),
+        "stdout: {stdout}"
+    );
+}

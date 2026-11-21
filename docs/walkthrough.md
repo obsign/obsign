@@ -398,3 +398,19 @@ used, whatever the order of the entries.
 Without `--trusted-keys`, verification establishes internal consistency only,
 and the report says so explicitly. A forged pack signed with a made-up key
 validates itself: key anchoring must come from another channel.
+
+What a pack does **not** prove: its own completeness at the tail. Nothing in
+it commits to the head of the chain, so removing the newest checkpoints
+together with the records they seal leaves a pack that verifies, exit 0.
+Truncation anywhere else is detected: a record missing in the middle breaks
+the hash chain, a checkpoint missing in the middle breaks the checkpoint
+chain, and a pack that starts after seq 0 says so (`partial_chain`). The
+witness for the tail lives outside the pack: an RFC 3161 anchor over the
+latest checkpoint, or a copy of that checkpoint's hash kept elsewhere. The
+report prints the line to compare with it:
+
+```
+  last sealed : seq 41, checkpoint 9f3c…
+```
+
+If the witness names a later checkpoint than that line, the pack was cut.

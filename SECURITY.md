@@ -48,7 +48,8 @@ backports to earlier tags.
 The trust story, first and foremost:
 
 - a forged, altered or truncated evidence pack that `obsign verify
-  --trusted-keys` still exits 0 on;
+  --trusted-keys` still exits 0 on, truncation meaning records or
+  checkpoints removed at the head or in the middle of the chain;
 - an act that reaches the MCP server without a recorded decision, or a
   recorded decision that does not match what was actually enforced;
 - a token accepted that should not have been: algorithm confusion, audience or
@@ -77,6 +78,11 @@ report:
 - verification without `--trusted-keys` exiting 3 rather than 1 on a pack
   signed with a made-up key. A pack that vouches for itself proves nothing,
   and the report says so;
+- a pack cut at the tail (the newest checkpoints dropped together with the
+  records they seal) exiting 0. Nothing in a pack commits to its own end; the
+  witness is an RFC 3161 anchor or an out-of-band record of the latest
+  checkpoint, compared with the `last sealed` line of the report. See
+  [What verification establishes](docs/walkthrough.md#what-verification-establishes);
 - an evidence pack not containing prompt or argument values. It holds their
   hashes by design, and that corollary is stated in
   [docs/design-notes.md](docs/design-notes.md#design-decisions);

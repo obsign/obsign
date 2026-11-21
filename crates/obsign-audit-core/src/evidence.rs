@@ -132,6 +132,15 @@ pub struct Report {
     pub records_unknown: usize,
     pub first_seq: Option<u64>,
     pub last_seq: Option<u64>,
+    /// The highest `to_seq` a valid checkpoint seals, and that checkpoint's
+    /// hash. Nothing in a pack commits to its own end: drop the last
+    /// checkpoints with their records and what remains verifies. These two
+    /// values are what an auditor compares to an out-of-band record of the
+    /// latest checkpoint (an RFC 3161 anchor, a copy kept elsewhere).
+    #[serde(default)]
+    pub last_sealed_seq: Option<u64>,
+    #[serde(default)]
+    pub last_checkpoint_hash: Option<Hash>,
     /// True when no trusted keys were supplied and verification fell back to
     /// the keys embedded in the pack. A valid report then proves internal
     /// consistency only: a forged pack signed with a made-up key embedded in
@@ -538,6 +547,7 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     // --- Checkpoints ---------------------------------------------------
     let mut checkpoints_valid = 0usize;
     let mut valid_checkpoints: BTreeSet<Hash> = BTreeSet::new();
+    let mut last_sealed: Option<(u64, Hash)> = None;
     let mut sealed: Vec<(u64, u64)> = Vec::new();
     let mut prev_cp_hash: Option<Hash> = None;
 
@@ -690,6 +700,9 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
         if cp_ok {
             checkpoints_valid += 1;
             valid_checkpoints.insert(cp.hash());
+            if last_sealed.is_none_or(|(seq, _)| cp.to_seq > seq) {
+                last_sealed = Some((cp.to_seq, cp.hash()));
+            }
             sealed.push((cp.from_seq, cp.to_seq));
         }
     }
@@ -839,6 +852,8 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
         records_unknown,
         first_seq: records_by_seq.keys().next().copied(),
         last_seq: records_by_seq.keys().next_back().copied(),
+        last_sealed_seq: last_sealed.map(|(seq, _)| seq),
+        last_checkpoint_hash: last_sealed.map(|(_, h)| h),
         self_referential: trusted.is_empty(),
         findings,
     }
