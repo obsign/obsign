@@ -53,6 +53,13 @@ pub struct Session {
     /// machinery requests still relay but their replies will be refused,
     /// which fails toward refusal, never toward an unarbitrated channel.
     pub relayed_to_agent: HashSet<String>,
+    /// Ids of agent machinery requests (`tools/list`, `ping`…) forwarded
+    /// and not yet answered. Not recorded, but they share the agent's id
+    /// space with the acts in `pending`: an act and a listing in flight
+    /// under one id would let the listing's response close the act's
+    /// effect. Whichever comes second is refused, so a response id names
+    /// at most one request.
+    pub machinery_in_flight: HashSet<String>,
     /// Call counter, used to build readable identifiers.
     pub counter: u64,
     /// Separate counter for `reload-N` identifiers: reloads are rarer than
@@ -333,6 +340,7 @@ pub fn open(
         pending: HashMap::new(),
         pending_to_agent: HashMap::new(),
         relayed_to_agent: HashSet::new(),
+        machinery_in_flight: HashSet::new(),
         counter: 0,
         reload_counter: 0,
         poisoned: false,

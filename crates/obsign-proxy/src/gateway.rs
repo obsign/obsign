@@ -419,7 +419,34 @@ pub(crate) fn handle_from_agent(
                 },
             }
         }
-        m if machinery(m) => return Ok(Forward::Pass(raw)),
+        m if machinery(m) => {
+            // Unarbitrated, but not outside the id discipline: forwarded
+            // under an id an act is waiting on, its response would close
+            // that act's effect with a listing for a result.
+            if let Some(id) = msg.get("id").filter(|v| !v.is_null()) {
+                let key = id.to_string();
+                let mut s = state.lock().unwrap();
+                if s.pending.contains_key(&key) || !s.machinery_in_flight.insert(key) {
+                    drop(s);
+                    eprintln!("[obsign] REFUSED {m}: JSON-RPC id {id} is already in flight");
+                    return Ok(Forward::Reply(
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {
+                                "code": -32600,
+                                "message": format!(
+                                    "Invalid Request: JSON-RPC id {id} is already \
+                                     awaiting a response on this session"
+                                )
+                            }
+                        })
+                        .to_string(),
+                    ));
+                }
+            }
+            return Ok(Forward::Pass(raw));
+        }
         other => Act::OutOfScope {
             method: other.to_string(),
         },
@@ -584,48 +611,48 @@ pub(crate) fn handle_from_agent(
             );
         }
         if !id.is_null() {
-            match s.pending.entry(id.to_string()) {
-                // The agent reused a JSON-RPC id while its first call is
-                // still in flight. Overwriting the slot would leave two
-                // forwarded calls waiting on one id: whichever response
-                // arrives first would close the wrong Effect record and the
-                // displaced one would never be written. The in-flight call
-                // keeps its slot; this one is refused, with its own Effect,
-                // so every recorded call still ends in exactly one effect.
-                std::collections::hash_map::Entry::Occupied(_) => {
-                    s.write(
-                        effect_id,
-                        Some(decision_id),
-                        Payload::Effect(Effect {
-                            status: EffectStatus::Blocked,
-                            result_hash: None,
-                            latency_ms: 0,
-                        }),
-                    )?;
-                    drop(s);
-                    eprintln!(
-                        "[obsign] REFUSED {}: JSON-RPC id {id} is already in flight",
-                        act.label()
-                    );
-                    return Ok(Forward::Reply(refusal_reply(
-                        &act,
-                        &id,
-                        &format!(
-                            "Call refused: JSON-RPC id {id} is already \
-                             awaiting a response on this session"
-                        ),
-                    )));
-                }
-                std::collections::hash_map::Entry::Vacant(slot) => {
-                    slot.insert(Pending {
-                        decision_record_id: decision_id,
-                        effect_record_id: effect_id,
-                        started: Instant::now(),
-                    });
-                }
+            let key = id.to_string();
+            if s.pending.contains_key(&key) || s.machinery_in_flight.contains(&key) {
+                // The agent reused a JSON-RPC id while its first call, or a
+                // machinery request, is still in flight. Overwriting the
+                // slot would leave two forwarded requests waiting on one id:
+                // whichever response arrives first would close the wrong
+                // Effect record and the displaced one would never be
+                // written. The in-flight request keeps its slot; this one is
+                // refused, with its own Effect, so every recorded call still
+                // ends in exactly one effect.
+                s.write(
+                    effect_id,
+                    Some(decision_id),
+                    Payload::Effect(Effect {
+                        status: EffectStatus::Blocked,
+                        result_hash: None,
+                        latency_ms: 0,
+                    }),
+                )?;
+                drop(s);
+                eprintln!(
+                    "[obsign] REFUSED {}: JSON-RPC id {id} is already in flight",
+                    act.label()
+                );
+                return Ok(Forward::Reply(refusal_reply(
+                    &act,
+                    &id,
+                    &format!(
+                        "Call refused: JSON-RPC id {id} is already \
+                         awaiting a response on this session"
+                    ),
+                )));
             }
-        }
-        return Ok(Forward::Pass(raw));
+            s.pending.insert(
+                key,
+                Pending {
+                    decision_record_id: decision_id,
+                    effect_record_id: effect_id,
+                    started: Instant::now(),
+                },
+            );
+        }        return Ok(Forward::Pass(raw));
     }
 
     // Refusal: the effect is immediate and final.
@@ -748,7 +775,17 @@ pub(crate) fn handle_from_server(
     // Response to an allowed call: we record what actually happened, not
     // what was requested.
     if let Some(key) = msg.get("id").map(|v| v.to_string()) {
-        let pending = state.lock().unwrap().pending.remove(&key);
+        let pending = {
+            let mut s = state.lock().unwrap();
+            let p = s.pending.remove(&key);
+            // Not an act's response: maybe a machinery one, whose id is free
+            // again. Never both, the agent side refuses the second of two
+            // requests sharing an id.
+            if p.is_none() {
+                s.machinery_in_flight.remove(&key);
+            }
+            p
+        };
         if let Some(p) = pending {
             let result = msg.get("result");
             let is_error = msg.get("error").is_some()
@@ -1287,6 +1324,66 @@ mod tests {
         assert!(
             report.contains("AUDIT GAP: 1 effect record"),
             "the lost effect must be reported, got: {report}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn machinery_cannot_share_an_id_with_an_act_in_flight() {
+        // `tools/call` id 5, then `tools/list` id 5: the listing passed
+        // untracked, and whichever response came back first closed the
+        // call's effect, a listing recorded as the call's outcome.
+        let (dir, state) = open_state("machinery-id");
+        let ctx = ctx();
+        let call = |id: u64| {
+            json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                    "params": { "name": "search_docs", "arguments": {} } })
+        };
+        let list = |id: u64| json!({ "jsonrpc": "2.0", "id": id, "method": "tools/list" });
+
+        // Act first, then machinery under its id.
+        assert!(matches!(
+            handle_from_agent(call(5), &state, &ctx, None).unwrap(),
+            Forward::Pass(_)
+        ));
+        match handle_from_agent(list(5), &state, &ctx, None).unwrap() {
+            Forward::Reply(r) => assert!(r.contains("already"), "got: {r}"),
+            Forward::Pass(_) => panic!("machinery must not reuse an act's id in flight"),
+        }
+
+        // Machinery first, then an act under its id: the act is refused,
+        // with its own effect.
+        assert!(matches!(
+            handle_from_agent(list(6), &state, &ctx, None).unwrap(),
+            Forward::Pass(_)
+        ));
+        match handle_from_agent(call(6), &state, &ctx, None).unwrap() {
+            Forward::Reply(r) => assert!(r.contains("already"), "got: {r}"),
+            Forward::Pass(_) => panic!("an act must not reuse a listing's id in flight"),
+        }
+
+        // The listing's response frees its id without touching any effect;
+        // the call's response closes the call.
+        let listing = json!({ "jsonrpc": "2.0", "id": 6, "result": { "tools": [] } });
+        let _ = handle_from_server(listing, &state, &ctx, "sess");
+        let resp = json!({ "jsonrpc": "2.0", "id": 5, "result": { "content": [] } });
+        let _ = handle_from_server(resp, &state, &ctx, "sess");
+        assert!(matches!(
+            handle_from_agent(list(6), &state, &ctx, None).unwrap(),
+            Forward::Pass(_)
+        ), "an answered id is free again");
+
+        let recs = state.lock().unwrap().wal.read_all().unwrap();
+        let effects: Vec<(&str, &EffectStatus)> = recs
+            .iter()
+            .filter_map(|r| match &r.payload {
+                Payload::Effect(e) => Some((r.id.as_str(), &e.status)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            effects,
+            vec![("eff-2", &EffectStatus::Blocked), ("eff-1", &EffectStatus::Ok)]
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -511,7 +511,18 @@ fn forward_and_wait(
     id: &Value,
 ) -> std::result::Result<Value, &'static str> {
     let (tx, rx) = mpsc::channel();
-    sess.waiters.lock().unwrap().insert(id.to_string(), tx);
+    // Never overwritten: a displaced waiter would hang until the session
+    // ends, and its response would answer the newcomer's POST. The gateway
+    // already refuses a second request under an id in flight
+    // (`handle_from_agent`), so an occupied slot is not forwarded either.
+    match sess.waiters.lock().unwrap().entry(id.to_string()) {
+        std::collections::hash_map::Entry::Occupied(_) => {
+            return Err("JSON-RPC id already awaiting a response on this session")
+        }
+        std::collections::hash_map::Entry::Vacant(slot) => {
+            slot.insert(tx);
+        }
+    }
 
     // The waiter is registered *before* the write: the response cannot lose
     // the race with its own registration.
