@@ -121,6 +121,40 @@ signed bytes are unchanged, and either format still refuses to carry a claim
 path its own signature never covered (`UnsignedLabelPaths`); an unsigned
 label path would choose the name an investigation reads.
 
+## Rolling out the identity epoch (`obsign-identity/4`)
+
+`/4` is emitted unconditionally too, so the order is the same: **every
+gateway image first, then the control plane.** What it adds is a signed
+epoch, the commit time of the published source, and a gateway refuses to
+reload a bundle whose epoch is lower than the one in force: an old bundle,
+validly signed but still listing an IdP key since revoked, can no longer be
+put back on disk to bring that key back. The guard lives in memory, so it
+covers reloads, not a restart onto an older file; file permissions still
+cover that case.
+
+The control plane reads the epoch from `git` when it can. The distroless
+image has no `git`, so publishing from the container needs it given
+explicitly, from the commit being published:
+
+```bash
+docker run --rm -v "$PWD:/src:ro" -v ./dist:/dist \
+  -e SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
+  ghcr.io/obsign/obsign-control publish --source /src ...
+```
+
+`--epoch <seconds>` does the same. With `--label` the source is not a
+commit, so one of the two is required.
+
+## Rolling out TPM credential activation (`obsign-deployment/2`)
+
+The control plane emits `obsign-deployment/2` only once an attestation in
+`deployment/attestation.json` carries a credential activation, the v4
+enrollment exchange ([attestation-v4.md](design/attestation-v4.md)). A
+component that only knows `/1` refuses a `/2` bundle, so upgrade every
+gateway, ledger and verifier first, then enroll a host the new way. A fleet
+that keeps its older attestations keeps receiving `/1`; those still verify,
+and the report says what they do not prove (`attestation_unbound`).
+
 ## HSM (PKCS#11) and TPM
 
 The vendor's PKCS#11 module is loaded at runtime with `dlopen`: mount the

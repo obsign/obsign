@@ -369,7 +369,7 @@ The report ends on one warning, `identity_not_attested`, and that is the
 product working: the sample enrols no TPM, so nothing proves *which software*
 ran under the gateway key, and the verifier says so instead of staying quiet.
 It is also why this run would exit 1 under `--strict`; see
-[the attestation design note](design/attestation-v3.md).
+[the attestation design note](design/attestation-v4.md).
 
 Tamper with the result and re-run:
 

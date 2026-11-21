@@ -133,21 +133,25 @@ have just been invalidated".
 Signed *bundles* evolve differently: their format string is part of the
 signed bytes, so a revision is a new string, and every revision an artifact
 was published under keeps verifying with the signing bytes of its day.
-Exercised four times: `obsign-identity/2` extended the signed bytes with the
+Exercised five times: `obsign-identity/2` extended the signed bytes with the
 machine markers, `obsign-policy/2` with the argument declarations,
-`obsign-identity/3` with the display-label claim paths, and
+`obsign-identity/3` with the display-label claim paths,
 `obsign-identity/4` with a monotonic epoch a gateway will not reload below
-and each key's `use`/`key_ops`.
+and each key's `use`/`key_ops`, and `obsign-deployment/2` with the TPM
+credential activation of each attestation
+([design/attestation-v4.md](design/attestation-v4.md)).
 All follow the same two rules: an older bundle keeps its hash and signature,
 and an older file carrying fields only a newer format signs is refused
 instead of trusted (`UnsignedMachineMarkers`, `UnsignedLabelPaths`,
-`UnsignedEpoch`, `UnsignedKeyUse`); otherwise those fields would be unsigned authority. Identity
-bundles older than `/4` carry no order: one counts as epoch 0, so it never
-replaces a `/4` bundle on reload, but nothing orders two of them.
+`UnsignedEpoch`, `UnsignedKeyUse`, `UnsignedAttestationActivation`);
+otherwise those fields would be unsigned authority. Identity bundles older
+than `/4` carry no order: one counts as epoch 0, so it never replaces a `/4`
+bundle on reload, but nothing orders two of them.
 
 They differ on one point that decides the upgrade order. `obsign-policy/2` is
-emitted only when a tool actually declares arguments, so a fleet that never
-uses the feature never forces a gateway upgrade. `obsign-identity/3` was
+emitted only when a tool actually declares arguments, and
+`obsign-deployment/2` only when an attestation carries an activation, so a
+fleet that never uses either feature never forces an upgrade. `obsign-identity/3` was
 emitted **unconditionally**, and `/4` is the same: upgrading the control plane
 alone takes a fleet down, gateways first, control plane second
 ([deploy-docker.md](deploy-docker.md)). `/4` also needs an epoch at compile
@@ -194,7 +198,7 @@ pure-Rust alternative pulls `rsa`, carrying an unfixable advisory on a path
 ## Tests
 
 ```bash
-cargo test --workspace     # 370 tests
+cargo test --workspace     # 511 tests
 ```
 
 Six families, each with a distinct role:
