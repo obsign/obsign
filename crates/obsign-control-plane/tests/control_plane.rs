@@ -1564,6 +1564,66 @@ fn the_deployment_bundle_is_published_as_an_immutable_artifact() {
 }
 
 #[test]
+fn a_release_without_a_bundle_removes_the_stale_current_copy() {
+    let dir = tmp("stale-current-src");
+    let dist = tmp("stale-current-dist");
+    write_source_tree(&dir);
+    write_deployment(&dir, &[("gw-a", 40)]);
+    let v1 = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap();
+    publish(&dist, &v1, &ops(), 1_000).unwrap();
+    assert!(dist.join("identity-bundle.json").is_file());
+    assert!(dist.join("deployment-bundle.json").is_file());
+
+    // v2 drops identity/ and deployment/. The gateways watch dist/: the
+    // previous release's identity bundle must not stay current under a
+    // manifest that says this release has none.
+    std::fs::remove_dir_all(dir.join("identity")).unwrap();
+    std::fs::remove_dir_all(dir.join("deployment")).unwrap();
+    let v2 = compile(&SourceTree::load(&dir).unwrap(), "v2", &ops()).unwrap();
+    publish(&dist, &v2, &ops(), 2_000).unwrap();
+    assert!(!dist.join("identity-bundle.json").exists());
+    assert!(!dist.join("deployment-bundle.json").exists());
+
+    // Rolling back to v1 brings them back, from its immutable copy.
+    publish(&dist, &v1, &ops(), 3_000).unwrap();
+    assert!(dist.join("identity-bundle.json").is_file());
+    assert!(dist.join("deployment-bundle.json").is_file());
+}
+
+#[test]
+fn the_same_version_with_another_artifact_set_is_a_conflict() {
+    let dir = tmp("artifact-set-src");
+    let dist = tmp("artifact-set-dist");
+    write_source_tree(&dir);
+    let v1 = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap();
+    let published = publish(&dist, &v1, &ops(), 1_000).unwrap();
+    let manifest = std::fs::read(published.release_dir.join("manifest.json")).unwrap();
+
+    // Same version, identity bundle gone: the policy bytes still match, but
+    // the release is not the one v1 names.
+    std::fs::remove_dir_all(dir.join("identity")).unwrap();
+    let shrunk = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap();
+    assert!(matches!(
+        publish(&dist, &shrunk, &ops(), 2_000),
+        Err(Error::VersionConflict { .. })
+    ));
+    // And with an artifact v1 never had.
+    write_source_tree(&dir);
+    write_deployment(&dir, &[("gw-a", 40)]);
+    let grown = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap();
+    assert!(matches!(
+        publish(&dist, &grown, &ops(), 3_000),
+        Err(Error::VersionConflict { .. })
+    ));
+    assert_eq!(
+        std::fs::read(published.release_dir.join("manifest.json")).unwrap(),
+        manifest,
+        "releases/v1/manifest.json is written once"
+    );
+    assert!(!published.release_dir.join("deployment-bundle.json").exists());
+}
+
+#[test]
 fn a_hostile_payload_kind_cannot_inject_html() {
     // The `kind` column used to be one of ten compile-time literals, which is
     // why it was interpolated raw. An unknown payload's kind is whatever the

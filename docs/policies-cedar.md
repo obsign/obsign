@@ -329,8 +329,8 @@ The distribution directory:
 ```
 dist/
 ├── policy-bundle.json        ← current, atomically replaced
-├── identity-bundle.json      ← current
-├── deployment-bundle.json    ← current (when the tree has deployment/)
+├── identity-bundle.json      ← current (removed when the release has none)
+├── deployment-bundle.json    ← current (removed when the release has none)
 ├── manifest.json             ← current, signed
 ├── trusted-keys.json         ← accumulated ops public keys
 └── releases/<version>/       ← immutable history, one directory per version

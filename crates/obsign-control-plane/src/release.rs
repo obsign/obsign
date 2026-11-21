@@ -5,7 +5,8 @@
 //! ```text
 //! <dist>/
 //!   policy-bundle.json      current: atomically replaced, gateways watch these
-//!   identity-bundle.json    current
+//!   identity-bundle.json    current, absent when the release has none
+//!   deployment-bundle.json  current, absent when the release has none
 //!   manifest.json           current, signed
 //!   trusted-keys.json       accumulated ops public keys
 //!   releases/<version>/     immutable history, one directory per version
@@ -14,7 +15,8 @@
 //! Two invariants carry this module:
 //!
 //! * **a version is immutable**, `releases/<sha>/` is written once; a
-//!   publish that would change its content is refused. Decisions in the audit
+//!   publish that would change its content, artifact set included, is
+//!   refused. Decisions in the audit
 //!   log cite `policies@<sha>`: replaying them months later requires that the
 //!   sha still designate the same rules;
 //! * **the current files change atomically**, write-then-rename, so a
@@ -32,6 +34,14 @@ use crate::compile::Compiled;
 use crate::{merge_trusted_key, write_atomic, Error, OpsKey};
 
 pub const FORMAT: &str = "obsign-release/1";
+
+/// Every artifact a release can carry. A release that lacks one must not
+/// leave the previous release's copy current in dist/.
+const ARTIFACT_NAMES: [&str; 3] = [
+    "deployment-bundle.json",
+    "identity-bundle.json",
+    "policy-bundle.json",
+];
 
 /// What a release contains, hashed file by file.
 ///
@@ -165,6 +175,26 @@ pub fn publish(
     }
     let reused = missing.is_empty();
 
+    // The artifact *set* is part of the release too: the same version
+    // without its identity bundle (or with one it did not have) is different
+    // content, whether the earlier publish got as far as its manifest or
+    // died before it.
+    let published = |name: &str| artifacts.iter().any(|(n, _)| n == name);
+    for name in ARTIFACT_NAMES.iter().filter(|n| !published(n)) {
+        if release_dir.join(name).exists() {
+            return Err(Error::VersionConflict { version });
+        }
+    }
+    let manifest_path = release_dir.join("manifest.json");
+    if let Ok(bytes) = std::fs::read(&manifest_path) {
+        if let Ok(existing) = serde_json::from_slice::<SignedManifest>(&bytes) {
+            let names: Vec<&str> = existing.manifest.artifacts.iter().map(|a| a.name.as_str()).collect();
+            if names.iter().any(|n| !published(n)) || names.len() != artifacts.len() {
+                return Err(Error::VersionConflict { version });
+            }
+        }
+    }
+
     if trusted_changed {
         write_atomic(&trusted_path, serde_json::to_string_pretty(&trusted)?.as_bytes())?;
     }
@@ -189,8 +219,7 @@ pub fn publish(
     // On a rollback the original manifest (and its original timestamp) is
     // kept: the manifest describes the release, not the act of pointing the
     // fleet at it. A fresh one is only written when the directory is new or
-    // its manifest no longer matches the artifacts (crash repair again).
-    let manifest_path = release_dir.join("manifest.json");
+    // its manifest is unreadable or no longer verifies (crash repair again).
     let manifest_bytes = match read_matching_manifest(&manifest_path, &manifest.artifacts, &trusted)
     {
         Some(bytes) => bytes,
@@ -204,9 +233,19 @@ pub fn publish(
     };
 
     // Current files last, manifest last of all: a reader that sees the new
-    // manifest is guaranteed to see the artifacts it names.
+    // manifest is guaranteed to see the artifacts it names, and none it does
+    // not. A current file the new release lacks is removed: left in place,
+    // a gateway would keep loading the previous release's identity bundle,
+    // or a ledger the previous enrolment, under a manifest that says this
+    // release has none.
     for (name, bytes) in &artifacts {
         write_atomic(&dist.join(name), bytes)?;
+    }
+    for name in ARTIFACT_NAMES.iter().filter(|n| !published(n)) {
+        match std::fs::remove_file(dist.join(name)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
     }
     write_atomic(&dist.join("manifest.json"), &manifest_bytes)?;
 
