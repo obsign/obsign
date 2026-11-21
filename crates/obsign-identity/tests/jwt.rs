@@ -274,6 +274,22 @@ fn an_exp_or_iat_too_large_for_milliseconds_is_refused() {
 }
 
 #[test]
+fn an_empty_subject_is_refused() {
+    let idp = Idp::new("k1", 1);
+    for sub in ["", "   "] {
+        let mut c = claims();
+        c["sub"] = json!(sub);
+        assert!(
+            matches!(
+                verifier(&idp).verify(&idp.mint(c)).unwrap_err(),
+                Error::MissingSubject
+            ),
+            "sub {sub:?} accepted"
+        );
+    }
+}
+
+#[test]
 fn token_without_scope_is_refused() {
     // An empty delegation would only authorize tools requiring no scope.
     // That is nearly always a configuration mistake: better to fail loudly

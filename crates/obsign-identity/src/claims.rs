@@ -136,10 +136,14 @@ fn flatten_items(a: &[Value], out: &mut Vec<String>) {
 }
 
 impl ClaimMap {
+    /// The principal's identifier. An empty or blank one is no answer: it
+    /// would record a delegation granted by nobody, and every token with an
+    /// empty `sub` would share one principal.
     pub fn subject(&self, claims: &Value) -> Option<String> {
         resolve(claims, &self.subject)
             .first()
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .map(String::from)
     }
 
