@@ -8,7 +8,9 @@
 //! What this module checks, and deliberately nothing more:
 //!
 //! * the TSA **granted** the request;
-//! * the token's message imprint **is the checkpoint hash** (SHA-256).
+//! * the token's message imprint **is the checkpoint hash**, under SHA-256
+//!   (the hashAlgorithm OID is checked, not assumed);
+//! * its `genTime` is a well-formed DER GeneralizedTime.
 //!
 //! It does NOT validate the token's CMS signature. Doing so requires a full
 //! X.509/CMS stack, and that dependency weight contradicts the rule that an
@@ -48,18 +50,20 @@ pub struct TimestampInfo {
     /// TSTInfo `messageImprint.hashedMessage`: the bytes the TSA vouches
     /// existed at `gen_time`. Must equal the checkpoint hash.
     pub hashed_message: Vec<u8>,
-    /// TSTInfo `genTime` (GeneralizedTime, e.g. `20260728120000Z`), kept as
-    /// text: the auditor compares it to a retention obligation, not to a
-    /// clock.
+    /// TSTInfo `genTime` (GeneralizedTime, e.g. `20260728120000Z`), checked
+    /// to be well formed and kept as text: the auditor compares it to a
+    /// retention obligation, not to a clock.
     pub gen_time: Option<String>,
 }
 
 // OID content bytes (without tag/length).
 const OID_ID_CT_TST_INFO: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x09, 0x10, 0x01, 0x04];
 const OID_SIGNED_DATA: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x07, 0x02];
+const OID_SHA256: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01];
 
 const TAG_INTEGER: u8 = 0x02;
 const TAG_OCTET_STRING: u8 = 0x04;
+const TAG_NULL: u8 = 0x05;
 const TAG_OID: u8 = 0x06;
 const TAG_GENERALIZED_TIME: u8 = 0x18;
 const TAG_SEQUENCE: u8 = 0x30;
@@ -199,7 +203,18 @@ pub fn parse_timestamp_response(der: &[u8]) -> Result<TimestampInfo, Error> {
     tst.expect(TAG_INTEGER, "TSTInfo.version")?;
     tst.expect(TAG_OID, "TSTInfo.policy")?;
     let mut imprint = Der::new(tst.expect(TAG_SEQUENCE, "MessageImprint")?);
-    imprint.expect(TAG_SEQUENCE, "hashAlgorithm")?;
+    // The imprint is compared to a SHA-256 checkpoint hash, so it must be
+    // one: 32 bytes under another algorithm are other bytes that happen to
+    // be the same length. Parameters are absent or NULL (RFC 5754 allows
+    // both), nothing else.
+    let mut alg = Der::new(imprint.expect(TAG_SEQUENCE, "hashAlgorithm")?);
+    if alg.expect(TAG_OID, "hashAlgorithm.algorithm")? != OID_SHA256 {
+        return Err(Error::BadDer("MessageImprint hashAlgorithm is not SHA-256".into()));
+    }
+    if !alg.b.is_empty() && !alg.expect(TAG_NULL, "hashAlgorithm.parameters")?.is_empty() {
+        return Err(Error::BadDer("hashAlgorithm.parameters: non-empty NULL".into()));
+    }
+    alg.finish("hashAlgorithm")?;
     let hashed = imprint.expect(TAG_OCTET_STRING, "hashedMessage")?;
     imprint.finish("MessageImprint")?;
     tst.expect(TAG_INTEGER, "TSTInfo.serialNumber")?;
@@ -208,16 +223,55 @@ pub fn parse_timestamp_response(der: &[u8]) -> Result<TimestampInfo, Error> {
     // token where something else parses at that position is malformed, not a
     // token without a time; `None` stays reserved for the anchor formats
     // that never carried one.
-    let gen_time = Some(String::from_utf8_lossy(
+    let gen_time = Some(generalized_time(
         tst.expect(TAG_GENERALIZED_TIME, "TSTInfo.genTime")?,
-    )
-    .into_owned());
+    )?);
 
     Ok(TimestampInfo {
         status,
         hashed_message: hashed.to_vec(),
         gen_time,
     })
+}
+
+/// Reads a DER GeneralizedTime (X.690 11.7: `YYYYMMDDHHMMSS[.f+]Z`, UTC,
+/// no trailing zero in the fraction, a real calendar date) and returns it as
+/// text. Anything else is refused: a date the verifier cannot read is not a
+/// date it may show an auditor.
+fn generalized_time(b: &[u8]) -> Result<String, Error> {
+    let bad = |why: &str| Error::BadDer(format!("genTime: {why}"));
+    if b.len() < 15 || !b[..14].iter().all(u8::is_ascii_digit) {
+        return Err(bad("expected YYYYMMDDHHMMSS"));
+    }
+    let num = |r: std::ops::Range<usize>| {
+        b[r].iter().fold(0u32, |acc, d| acc * 10 + u32::from(d - b'0'))
+    };
+    let (year, month, day) = (num(0..4), num(4..6), num(6..8));
+    let (hour, minute, second) = (num(8..10), num(10..12), num(12..14));
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return Err(bad("month out of range")),
+    };
+    if day == 0 || day > days || hour > 23 || minute > 59 || second > 59 {
+        return Err(bad("field out of range"));
+    }
+    let rest = &b[14..b.len() - 1];
+    if b[b.len() - 1] != b'Z' {
+        return Err(bad("must end in Z (UTC)"));
+    }
+    match rest {
+        [] => {}
+        [b'.', digits @ ..]
+            if !digits.is_empty()
+                && digits.iter().all(u8::is_ascii_digit)
+                && digits.last() != Some(&b'0') => {}
+        _ => return Err(bad("malformed fraction of a second")),
+    }
+    Ok(std::str::from_utf8(b).expect("ASCII checked").to_string())
 }
 
 #[cfg(test)]
@@ -241,16 +295,20 @@ pub(crate) mod testutil {
         out
     }
 
-    use super::OID_SIGNED_DATA;
-    const OID_SHA256: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01];
+    use super::{OID_SHA256, OID_SIGNED_DATA};
     const OID_DEMO_POLICY: &[u8] = &[0x2A, 0x03, 0x04];
 
     /// A bare TSTInfo SEQUENCE over the given imprint.
     pub fn tst_info(imprint: &[u8], gen_time: &[u8]) -> Vec<u8> {
+        tst_info_with(&tlv(0x30, &tlv(0x06, OID_SHA256)), imprint, gen_time)
+    }
+
+    /// A bare TSTInfo SEQUENCE, with the given hashAlgorithm element.
+    pub fn tst_info_with(hash_algorithm: &[u8], imprint: &[u8], gen_time: &[u8]) -> Vec<u8> {
         let message_imprint = tlv(
             0x30,
             &[
-                tlv(0x30, &tlv(0x06, OID_SHA256)),
+                hash_algorithm.to_vec(),
                 tlv(0x04, imprint),
             ]
             .concat(),
@@ -312,7 +370,10 @@ pub(crate) mod testutil {
 
 #[cfg(test)]
 mod tests {
-    use super::testutil::{granted_response, granted_response_from, rejected_response, tlv, tst_encap, tst_info};
+    use super::testutil::{
+        granted_response, granted_response_from, rejected_response, tlv, tst_encap, tst_info,
+        tst_info_with,
+    };
     use super::*;
 
     #[test]
@@ -323,6 +384,79 @@ mod tests {
         assert_eq!(info.status, 0);
         assert_eq!(info.hashed_message, imprint);
         assert_eq!(info.gen_time.as_deref(), Some("20260728120000Z"));
+    }
+
+    #[test]
+    fn an_imprint_under_another_hash_algorithm_is_refused() {
+        // SHA-512/256 also yields 32 bytes. The imprint used to be compared
+        // to the checkpoint hash whatever the OID said, mixing digests of
+        // two functions.
+        const OID_SHA512_256: &[u8] = &[0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x06];
+        let alg = tlv(0x30, &tlv(0x06, OID_SHA512_256));
+        let encap = tlv(
+            0x30,
+            &[
+                tlv(0x06, OID_ID_CT_TST_INFO),
+                tlv(0xA0, &tlv(0x04, &tst_info_with(&alg, &[0xABu8; 32], b"20260728120000Z"))),
+            ]
+            .concat(),
+        );
+        let der = granted_response_from(
+            &[tlv(0x02, &[3]), tlv(0x31, &[]), encap, tlv(0x31, &[])].concat(),
+        );
+        assert!(matches!(parse_timestamp_response(&der), Err(Error::BadDer(_))));
+    }
+
+    #[test]
+    fn sha256_with_null_parameters_is_accepted() {
+        // RFC 5754 lets the parameters be absent or NULL; TSAs emit both.
+        let alg = tlv(0x30, &[tlv(0x06, OID_SHA256), tlv(0x05, &[])].concat());
+        let tst = tst_info_with(&alg, &[0xABu8; 32], b"20260728120000.5Z");
+        let encap = tlv(
+            0x30,
+            &[tlv(0x06, OID_ID_CT_TST_INFO), tlv(0xA0, &tlv(0x04, &tst))].concat(),
+        );
+        let der = granted_response_from(
+            &[tlv(0x02, &[3]), tlv(0x31, &[]), encap, tlv(0x31, &[])].concat(),
+        );
+        let info = parse_timestamp_response(&der).unwrap();
+        assert_eq!(info.gen_time.as_deref(), Some("20260728120000.5Z"));
+    }
+
+    #[test]
+    fn a_malformed_gen_time_is_refused() {
+        // It used to be read with from_utf8_lossy and shown as is: any bytes
+        // under the GeneralizedTime tag became the date an auditor reads.
+        for bad in [
+            &b"2026072812000Z"[..],     // one digit short
+            b"20261328120000Z",         // month 13
+            b"20260230120000Z",         // 30 February
+            b"20260728120000",          // no Z: local time
+            b"20260728120000+0100",     // offset, not DER
+            b"20260728120000.50Z",      // trailing zero in the fraction
+            b"20260728120000.Z",        // empty fraction
+            b"2026-07-28T12:00Z",       // not GeneralizedTime
+            b"\xff\xfe0728120000Z",     // not even ASCII
+        ] {
+            let der = granted_response(&[0xABu8; 32], bad);
+            assert!(
+                matches!(parse_timestamp_response(&der), Err(Error::BadDer(_))),
+                "genTime {:?} must not parse",
+                String::from_utf8_lossy(bad)
+            );
+        }
+    }
+
+    #[test]
+    fn a_malformed_prefix_is_refused() {
+        // Garbage ahead of the TimeStampResp, and a wrong outer tag.
+        let der = granted_response(&[0xABu8; 32], b"20260728120000Z");
+        let mut prefixed = vec![0x00];
+        prefixed.extend_from_slice(&der);
+        assert!(matches!(parse_timestamp_response(&prefixed), Err(Error::BadDer(_))));
+        let mut retagged = der.clone();
+        retagged[0] = 0x31;
+        assert!(matches!(parse_timestamp_response(&retagged), Err(Error::BadDer(_))));
     }
 
     #[test]

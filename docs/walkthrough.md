@@ -236,7 +236,9 @@ deployments come first:
 The response is only attached if the TSA granted it and the token imprints
 exactly the checkpoint hash; the token names its own checkpoint, so there is no
 flag to get wrong. In the evidence pack, `obsign verify` re-checks both
-structurally and reports the anchors; the CMS signature of the token itself is
+structurally (a SHA-256 imprint, a well-formed `genTime`) and lists each anchor
+with the time the TSA gave it; an anchor over a checkpoint that failed
+verification is shown but not counted. The CMS signature of the token itself is
 validated against the TSA certificate with standard tooling (`openssl ts
 -verify`), and the report says so instead of passing a structural check off
 as a cryptographic one. It says so as a `CAVEAT`, not a warning: the check is

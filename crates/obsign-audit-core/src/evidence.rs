@@ -118,6 +118,10 @@ pub struct Report {
     /// signature itself is validated out of band (see `anchor_not_validated`).
     #[serde(default)]
     pub anchors_ok: usize,
+    /// One entry per anchor in the pack, in pack order: what it timestamps
+    /// and when the TSA says it saw it.
+    #[serde(default)]
+    pub anchors: Vec<AnchorReport>,
     /// Records whose origin signature verified against a trusted origin key.
     #[serde(default)]
     pub records_origin_ok: usize,
@@ -136,6 +140,22 @@ pub struct Report {
     #[serde(default)]
     pub self_referential: bool,
     pub findings: Vec<Finding>,
+}
+
+/// What the verifier read from one RFC 3161 anchor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnchorReport {
+    /// `[from..to]` of the checkpoint it names; `None` when the pack holds
+    /// no such checkpoint (`anchor_orphan`).
+    pub checkpoint: Option<String>,
+    pub checkpoint_hash: Hash,
+    /// The token's `genTime` (GeneralizedTime, UTC), when it parsed.
+    pub gen_time: Option<String>,
+    /// Where the pack says the token came from. Informational only.
+    pub tsa: Option<String>,
+    /// Counted in `anchors_ok`: structurally consistent and bound to a
+    /// checkpoint that itself verified.
+    pub consistent: bool,
 }
 
 /// Knobs the caller sets according to what the deployment claims.
@@ -517,6 +537,7 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
 
     // --- Checkpoints ---------------------------------------------------
     let mut checkpoints_valid = 0usize;
+    let mut valid_checkpoints: BTreeSet<Hash> = BTreeSet::new();
     let mut sealed: Vec<(u64, u64)> = Vec::new();
     let mut prev_cp_hash: Option<Hash> = None;
 
@@ -668,6 +689,7 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
 
         if cp_ok {
             checkpoints_valid += 1;
+            valid_checkpoints.insert(cp.hash());
             sealed.push((cp.from_seq, cp.to_seq));
         }
     }
@@ -689,8 +711,17 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
         .collect();
 
     let mut anchors_ok = 0usize;
+    let mut anchor_reports = Vec::with_capacity(ev.anchors.len());
     for anchor in &ev.anchors {
-        let Some(label) = checkpoint_labels.get(&anchor.checkpoint_hash) else {
+        anchor_reports.push(AnchorReport {
+            checkpoint: checkpoint_labels.get(&anchor.checkpoint_hash).cloned(),
+            checkpoint_hash: anchor.checkpoint_hash,
+            gen_time: None,
+            tsa: anchor.tsa.clone(),
+            consistent: false,
+        });
+        let report = anchor_reports.last_mut().expect("just pushed");
+        let Some(label) = report.checkpoint.clone() else {
             findings.push(Finding::error(
                 "anchor_orphan",
                 format!(
@@ -730,6 +761,7 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
                 ));
             }
             Ok(info) => {
+                report.gen_time = info.gen_time;
                 if info.hashed_message != anchor.checkpoint_hash.as_bytes() {
                     findings.push(Finding::error(
                         "anchor_mismatch",
@@ -739,9 +771,13 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
                              timestamps something else."
                         ),
                     ));
-                } else {
+                } else if valid_checkpoints.contains(&anchor.checkpoint_hash) {
                     anchors_ok += 1;
+                    report.consistent = true;
                 }
+                // Otherwise the token is well formed but dates a checkpoint
+                // that failed above: it is not counted. A timestamp proves
+                // when a seal existed, not that the seal was ever valid.
             }
         }
     }
@@ -798,6 +834,7 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
         checkpoints_valid,
         anchors_total: ev.anchors.len(),
         anchors_ok,
+        anchors: anchor_reports,
         records_origin_ok,
         records_unknown,
         first_seq: records_by_seq.keys().next().copied(),
@@ -1167,6 +1204,52 @@ mod tests {
         let r = verify(&ev, &[entry]);
         assert!(!r.is_valid(), "a TSA rejection must not pass as an anchor");
         assert!(r.errors().any(|f| f.code == "anchor_rejected"));
+    }
+
+    #[test]
+    fn the_report_carries_each_anchors_gen_time() {
+        let (mut ev, entry) = sealed_pack();
+        let hash = ev.checkpoints[0].checkpoint.hash();
+        ev.anchors.push(anchor_over(&ev, hash.as_bytes()));
+
+        let r = verify(&ev, &[entry]);
+        assert_eq!(r.anchors.len(), 1);
+        let a = &r.anchors[0];
+        assert_eq!(a.checkpoint.as_deref(), Some("[0..2]"));
+        assert_eq!(a.gen_time.as_deref(), Some("20260728120000Z"));
+        assert_eq!(a.tsa.as_deref(), Some("demo-tsa"));
+        assert!(a.consistent);
+    }
+
+    #[test]
+    fn an_anchor_on_a_failed_checkpoint_is_not_counted() {
+        // A well-formed token over the hash of a checkpoint whose signature
+        // does not verify. The timestamp says when that seal existed, not
+        // that it was ever valid: it used to count in `anchors_ok`.
+        let (mut ev, entry) = sealed_pack();
+        ev.checkpoints[0].signature = hex::encode([7u8; 64]);
+        let hash = ev.checkpoints[0].checkpoint.hash();
+        ev.anchors.push(anchor_over(&ev, hash.as_bytes()));
+
+        let r = verify(&ev, &[entry]);
+        assert!(!r.is_valid());
+        assert_eq!((r.anchors_total, r.anchors_ok), (1, 0));
+        assert!(!r.anchors[0].consistent);
+        assert!(!r.caveats().any(|f| f.code == "anchor_not_validated"));
+    }
+
+    #[test]
+    fn an_anchor_with_trailing_bytes_is_unreadable() {
+        let (mut ev, entry) = sealed_pack();
+        let hash = ev.checkpoints[0].checkpoint.hash();
+        let mut a = anchor_over(&ev, hash.as_bytes());
+        a.token_hex.push_str("00");
+        ev.anchors.push(a);
+
+        let r = verify(&ev, &[entry]);
+        assert!(!r.is_valid());
+        assert!(r.errors().any(|f| f.code == "anchor_unreadable"));
+        assert_eq!(r.anchors_ok, 0);
     }
 
     #[test]

@@ -271,6 +271,17 @@ fn print_report(r: &evidence::Report) {
             "  anchors     : {} consistent / {} (RFC 3161)",
             r.anchors_ok, r.anchors_total
         );
+        // The date is the point of an anchor: show each one, and say so
+        // when it was not counted (the finding below says why).
+        for a in &r.anchors {
+            println!(
+                "                {} genTime {}{}{}",
+                a.checkpoint.as_deref().unwrap_or("[absent checkpoint]"),
+                a.gen_time.as_deref().unwrap_or("unreadable"),
+                a.tsa.as_deref().map(|t| format!(" ({t})")).unwrap_or_default(),
+                if a.consistent { "" } else { " — not counted" }
+            );
+        }
     }
     // "0 signed" on a legacy pack is information, not noise, and under
     // --require-origin it is the headline.
@@ -442,6 +453,7 @@ mod tests {
             checkpoints_valid: 1,
             anchors_total: 0,
             anchors_ok: 0,
+            anchors: Vec::new(),
             records_origin_ok: 1,
             records_unknown: 0,
             first_seq: Some(0),
