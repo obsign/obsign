@@ -313,8 +313,10 @@ which is the only way a stale schema can quietly mislead an editor.
 
 The version label defaults to the short sha of `HEAD`, and **compile refuses
 to stamp that sha onto a dirty working tree**. A `policies@<sha>` citation
-in an audit record must mean the bytes that commit contains. Use `--label`
-for a tree that is not in git.
+in an audit record must mean the bytes that commit contains. The check
+covers every file `compile` reads: the rules, `tools.json`,
+`fail-mode.json`, `identity/` and `deployment/`. Use `--label` for a tree
+that is not in git.
 
 `policies/obsign.cedarschema` is exempt from that refusal, and only it: the
 schema is derived, its bytes never enter the signed bundle, and `compile`

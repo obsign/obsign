@@ -66,14 +66,43 @@ struct ProviderFile {
     claims: Option<ClaimMap>,
 }
 
+/// The rules directory: every top-level `*.cedar` in it is read.
+pub(crate) const POLICIES_DIR: &str = "policies";
+pub(crate) const TOOLS_FILE: &str = "tools.json";
+pub(crate) const FAIL_MODE_FILE: &str = "fail-mode.json";
+pub(crate) const IDENTITY_DIR: &str = "identity";
+pub(crate) const IDENTITY_PROVIDER_FILE: &str = "identity/provider.json";
+pub(crate) const IDENTITY_JWKS_FILE: &str = "identity/jwks.json";
+pub(crate) const DEPLOYMENT_DIR: &str = "deployment";
+pub(crate) const DEPLOYMENT_KEYS_FILE: &str = "deployment/origin-keys.json";
+pub(crate) const DEPLOYMENT_ATTESTATION_FILE: &str = "deployment/attestation.json";
+
+/// Every file `load` reads besides the rules, '/'-separated and relative to
+/// the tree root. The clean-tree check scopes itself from this table and
+/// from [`SOURCE_DIRS`], so a file `load` starts reading cannot be signed
+/// under a sha without the check covering it: add it here, or `load`
+/// cannot name it.
+pub(crate) const SOURCE_FILES: &[&str] = &[
+    TOOLS_FILE,
+    FAIL_MODE_FILE,
+    IDENTITY_PROVIDER_FILE,
+    IDENTITY_JWKS_FILE,
+    DEPLOYMENT_KEYS_FILE,
+    DEPLOYMENT_ATTESTATION_FILE,
+];
+
+/// Directories whose content `load` reads; any tracked file under them is in
+/// the clean-tree check's scope.
+pub(crate) const SOURCE_DIRS: &[&str] = &[POLICIES_DIR, IDENTITY_DIR, DEPLOYMENT_DIR];
+
 impl SourceTree {
     pub fn load(root: &Path) -> Result<Self, Error> {
-        let (cedar, cedar_files) = read_cedar(&root.join("policies"))?;
-        let tools = read_tools(&root.join("tools.json"))?;
-        let fail_mode = read_fail_mode(&root.join("fail-mode.json"), &tools)?;
-        let identity = read_identity(&root.join("identity"))?;
-        let deployment = read_deployment(&root.join("deployment"))?;
-        let attestations = read_attestations(&root.join("deployment"), deployment.as_deref())?;
+        let (cedar, cedar_files) = read_cedar(&root.join(POLICIES_DIR))?;
+        let tools = read_tools(&root.join(TOOLS_FILE))?;
+        let fail_mode = read_fail_mode(&root.join(FAIL_MODE_FILE), &tools)?;
+        let identity = read_identity(root)?;
+        let deployment = read_deployment(root)?;
+        let attestations = read_attestations(root, deployment.as_deref())?;
 
         Ok(SourceTree {
             root: root.to_path_buf(),
@@ -179,13 +208,13 @@ fn read_fail_mode(path: &Path, tools: &[ToolDef]) -> Result<FailMode, Error> {
     Ok(fm)
 }
 
-fn read_identity(dir: &Path) -> Result<Option<IdentitySource>, Error> {
-    if !dir.is_dir() {
+fn read_identity(root: &Path) -> Result<Option<IdentitySource>, Error> {
+    if !root.join(IDENTITY_DIR).is_dir() {
         return Ok(None);
     }
 
-    let provider_path = dir.join("provider.json");
-    let jwks_path = dir.join("jwks.json");
+    let provider_path = root.join(IDENTITY_PROVIDER_FILE);
+    let jwks_path = root.join(IDENTITY_JWKS_FILE);
     for p in [&provider_path, &jwks_path] {
         if !p.is_file() {
             return Err(Error::Source(format!(
@@ -228,11 +257,11 @@ fn read_identity(dir: &Path) -> Result<Option<IdentitySource>, Error> {
 /// an origin key, a duplicate id, an unusable public key) are compile errors
 /// here, where the pull-request author is looking. Enrolling a gateway is
 /// committing its public entry to this file; revoking is removing it.
-fn read_deployment(dir: &Path) -> Result<Option<Vec<PublicKeyEntry>>, Error> {
-    if !dir.is_dir() {
+fn read_deployment(root: &Path) -> Result<Option<Vec<PublicKeyEntry>>, Error> {
+    if !root.join(DEPLOYMENT_DIR).is_dir() {
         return Ok(None);
     }
-    let path = dir.join("origin-keys.json");
+    let path = root.join(DEPLOYMENT_KEYS_FILE);
     if !path.is_file() {
         return Err(Error::Source(format!(
             "deployment/ exists but {} is missing: an empty deployment \
@@ -276,10 +305,10 @@ fn read_deployment(dir: &Path) -> Result<Option<Vec<PublicKeyEntry>>, Error> {
 /// carry is a copy-paste slip that review should catch before the verifier
 /// does.
 fn read_attestations(
-    dir: &Path,
+    root: &Path,
     origin_keys: Option<&[PublicKeyEntry]>,
 ) -> Result<Vec<obsign_audit_core::attestation::KeyAttestation>, Error> {
-    let path = dir.join("attestation.json");
+    let path = root.join(DEPLOYMENT_ATTESTATION_FILE);
     if !path.is_file() {
         return Ok(Vec::new());
     }

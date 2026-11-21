@@ -14,10 +14,11 @@
 //! Comparing against the *commit* itself would mean reading the object store
 //! (zlib, packfiles, deltas); the index gives almost all of it without that:
 //!
-//! * every working file the compilation reads is content-hashed and compared
-//!   to its index entry, so edits, deletions and untracked additions are
-//!   caught exactly, whatever the stat data says (an rsync'ed checkout, with
-//!   its fresh mtimes, hashes the same);
+//! * every working file the compilation reads (rules, catalogues, identity,
+//!   deployment) is content-hashed and compared to its index entry, so
+//!   edits, deletions and untracked additions are caught exactly, whatever
+//!   the stat data says (an rsync'ed checkout, with its fresh mtimes,
+//!   hashes the same);
 //! * an invalidated cache-tree entry in the index means `git add` ran with
 //!   no commit after it; staged-but-uncommitted state is caught too.
 //!
@@ -31,7 +32,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::source::find_git_dirs;
+use crate::source::{find_git_dirs, POLICIES_DIR, SOURCE_DIRS, SOURCE_FILES};
 use crate::Error;
 
 /// Every way the working tree diverges from what the index (and, through the
@@ -75,16 +76,19 @@ pub fn worktree_divergence(source_root: &Path) -> Result<Vec<String>, Error> {
     // the schema after a catalogue change, then compile, over something the
     // compilation does not read. `compile` derives the model from
     // `tools.json` itself and never trusts this file.
-    let generated_schema = format!("policies/{}", obsign_policy::SCHEMA_FILE);
+    let generated_schema = format!("{POLICIES_DIR}/{}", obsign_policy::SCHEMA_FILE);
 
+    // Scoped from the same table `SourceTree::load` reads its paths from:
+    // a file it reads and this check ignores would be signed under a sha
+    // that does not contain it.
     let in_scope = |p: &str| match p.strip_prefix(&prefix) {
         None => false,
         Some(rest) => {
             rest != generated_schema
-                && (rest == "tools.json"
-                    || rest == "fail-mode.json"
-                    || rest.starts_with("policies/")
-                    || rest.starts_with("identity/"))
+                && (SOURCE_FILES.contains(&rest)
+                    || SOURCE_DIRS.iter().any(|d| {
+                        rest.strip_prefix(d).is_some_and(|r| r.starts_with('/'))
+                    }))
         }
     };
 
@@ -149,27 +153,22 @@ pub fn worktree_divergence(source_root: &Path) -> Result<Vec<String>, Error> {
 
 /// The files `SourceTree::load` reads, as index-style paths. Deliberately
 /// re-enumerated from disk rather than taken from a loaded `SourceTree`,
-/// with the same scoping (`policies/*.cedar` at the top level, the two
-/// catalogues, the identity pair): this is the read whose bytes are about to
-/// be signed.
+/// from the same layout table `load` uses (`policies/*.cedar` at the top
+/// level, then every entry of `SOURCE_FILES` present): this is the read
+/// whose bytes are about to be signed.
 fn compiled_inputs(source_root: &Path, prefix: &str) -> Result<Vec<String>, Error> {
     let mut inputs = Vec::new();
-    let policies = source_root.join("policies");
+    let policies = source_root.join(POLICIES_DIR);
     if policies.is_dir() {
         for entry in std::fs::read_dir(&policies)? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
             if name.ends_with(".cedar") && entry.file_type()?.is_file() {
-                inputs.push(format!("{prefix}policies/{name}"));
+                inputs.push(format!("{prefix}{POLICIES_DIR}/{name}"));
             }
         }
     }
-    for name in ["tools.json", "fail-mode.json"] {
-        if source_root.join(name).is_file() {
-            inputs.push(format!("{prefix}{name}"));
-        }
-    }
-    for name in ["identity/provider.json", "identity/jwks.json"] {
+    for name in SOURCE_FILES {
         if source_root.join(name).is_file() {
             inputs.push(format!("{prefix}{name}"));
         }

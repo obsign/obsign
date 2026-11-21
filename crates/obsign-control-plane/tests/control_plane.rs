@@ -886,6 +886,34 @@ fn a_source_tree_in_a_repo_subdirectory_is_scoped_by_its_prefix() {
     assert!(d[0].contains("policy-src/tools.json"), "{d:?}");
 }
 
+#[test]
+fn an_uncommitted_deployment_edit_is_divergence() {
+    // deployment/ is signed into deployment-bundle.json and stamped
+    // `deployment@<sha>`: enrolling a gateway behind the commit's back is
+    // exactly the lie the clean-tree check exists to refuse.
+    let dir = tmp("wt-deployment");
+    write_source_tree(&dir);
+    write_deployment(&dir, &[("gw-a", 40)]);
+    let mut tracked = TRACKED.to_vec();
+    tracked.push("deployment/origin-keys.json");
+    write_git_checkout(&dir, &tracked);
+    assert!(worktree_divergence(&dir).unwrap().is_empty());
+
+    write_deployment(&dir, &[("gw-a", 40), ("gw-rogue", 41)]);
+    let d = worktree_divergence(&dir).unwrap();
+    assert!(
+        d.iter().any(|m| m.contains("deployment/origin-keys.json") && m.contains("modified")),
+        "{d:?}"
+    );
+
+    // An untracked attestation file is read by compile, so it is caught too.
+    write_deployment(&dir, &[("gw-a", 40)]);
+    std::fs::write(dir.join("deployment/attestation.json"), "[]").unwrap();
+    let d = worktree_divergence(&dir).unwrap();
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert!(d[0].contains("deployment/attestation.json") && d[0].contains("not tracked"), "{d:?}");
+}
+
 // ---------------------------------------------------------------------------
 // Publication
 // ---------------------------------------------------------------------------
