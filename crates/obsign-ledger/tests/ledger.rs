@@ -332,6 +332,73 @@ fn run_mode_exits_on_a_forged_checkpoint_instead_of_retrying() {
 }
 
 #[test]
+fn a_second_writer_on_the_store_fails_fast() {
+    let store_dir = tmpdir("lock-store");
+    let held = Store::open_exclusive(&store_dir, "c1").unwrap();
+    // Any chain: the lock is store-wide, because keys.json is.
+    assert!(matches!(Store::open_exclusive(&store_dir, "c1"), Err(obsign_ledger::Error::Locked(_))));
+    assert!(matches!(Store::open_exclusive(&store_dir, "c2"), Err(obsign_ledger::Error::Locked(_))));
+    // Readers are not writers.
+    Store::open(&store_dir, "c1").unwrap();
+    drop(held);
+    Store::open_exclusive(&store_dir, "c1").unwrap();
+    let _ = std::fs::remove_dir_all(&store_dir);
+}
+
+#[test]
+fn a_cron_seal_overlapping_a_pass_neither_forks_the_store_nor_stops_run() {
+    // `seal` from cron while another pass holds the store: before the lock,
+    // both sealed from the same head and appended, two checkpoints with the
+    // same predecessor, and the store never opened again.
+    let wal_dir = tmpdir("overlap-wal");
+    let store_dir = tmpdir("overlap-store");
+    grow_wal(&wal_dir, 3);
+    let seed = wal_dir.join("seed.hex");
+    std::fs::write(&seed, hex::encode([7u8; 32])).unwrap();
+    let ledger = |mode: &str| {
+        let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_obsign-ledger"));
+        c.arg(mode)
+            .args(["--store", store_dir.to_str().unwrap()])
+            .args(["--wal", wal_dir.to_str().unwrap()])
+            .args(["--chain-id", "c1", "--key-id", "seal-k1"])
+            .args(["--key", seed.to_str().unwrap()]);
+        c
+    };
+
+    let held = Store::open_exclusive(&store_dir, "c1").unwrap();
+    let out = ledger("seal").output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("locked"), "{out:?}");
+    assert!(Store::open(&store_dir, "c1").unwrap().checkpoints().is_empty());
+
+    // The daemon waits the other pass out instead of exiting.
+    let mut child = ledger("run")
+        .args(["--interval-secs", "1"])
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    let still_running = child.try_wait().unwrap().is_none();
+    drop(held);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut sealed = false;
+    while std::time::Instant::now() < deadline && still_running {
+        if Store::open(&store_dir, "c1").map(|s| s.checkpoints().len()).unwrap_or(0) == 1 {
+            sealed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(still_running, "`run` exited on a locked store instead of retrying");
+    assert!(sealed, "`run` did not seal once the lock was released");
+
+    let _ = std::fs::remove_dir_all(&wal_dir);
+    let _ = std::fs::remove_dir_all(&store_dir);
+}
+
+#[test]
 fn removed_checkpoint_breaks_the_store_chain() {
     let wal_dir = tmpdir("storedrop-wal");
     let store_dir = tmpdir("storedrop-store");

@@ -372,8 +372,10 @@ fn one_pass(
     sealer: &dyn Sealer,
     origin: &obsign_ledger::OriginPolicy,
 ) -> Result<bool, obsign_ledger::Error> {
+    // Locked before the WAL is read: the pass seals what it read against
+    // the head it loaded, and both must be this process's alone.
+    let mut store = Store::open_exclusive(&args.store.store, &args.store.chain_id)?;
     let records = obsign_wal::read(&args.wal, &args.store.chain_id)?;
-    let mut store = Store::open(&args.store.store, &args.store.chain_id)?;
 
     match seal_pass(&records, &mut store, sealer, origin, now_ms(), args.min_new)? {
         Some(sc) => {
@@ -419,7 +421,8 @@ fn run_loop(
 }
 
 /// The only failures `run` mode retries: the I/O and HSM hiccups that can
-/// clear on their own. An allowlist, not a denylist, because the cost of the
+/// clear on their own, and a store locked by another pass, which clears
+/// when that pass ends. An allowlist, not a denylist, because the cost of the
 /// two mistakes is not symmetric: an incident misfiled as transient is
 /// retried silently forever and `OnFailure=` never fires, while a hiccup
 /// misfiled as fatal costs one restart.
@@ -429,6 +432,7 @@ fn retryable(e: &obsign_ledger::Error) -> bool {
         obsign_ledger::Error::Io(_)
             | obsign_ledger::Error::Wal(obsign_wal::Error::Io(_))
             | obsign_ledger::Error::Pkcs11(_)
+            | obsign_ledger::Error::Locked(_)
     )
 }
 
@@ -535,8 +539,8 @@ fn anchor_attach(
     response: &Path,
     tsa: Option<String>,
 ) -> Result<()> {
-    let mut store =
-        Store::open(&store_args.store, &store_args.chain_id).context("opening the store")?;
+    let mut store = Store::open_exclusive(&store_args.store, &store_args.chain_id)
+        .context("opening the store")?;
     let der = std::fs::read(response)
         .with_context(|| format!("reading {}", response.display()))?;
 

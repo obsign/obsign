@@ -21,6 +21,8 @@ pub struct Store {
     checkpoints: Vec<SignedCheckpoint>,
     anchors: Vec<Anchor>,
     keys: Vec<PublicKeyEntry>,
+    /// Held by [`Store::open_exclusive`] for the life of the value.
+    _lock: Option<std::fs::File>,
 }
 
 impl Store {
@@ -102,7 +104,38 @@ impl Store {
             checkpoints,
             anchors,
             keys,
+            _lock: None,
         })
+    }
+
+    /// Opens the store for writing, holding an exclusive lock on the whole
+    /// store directory until the `Store` is dropped.
+    ///
+    /// Two sealing passes over one store (a cron `seal` overlapping `run`)
+    /// each load the same head, each seal from it, and each append: two
+    /// checkpoints with the same predecessor, a fork no later open accepts.
+    /// The lock is store-wide, not per chain, because `keys.json` is shared:
+    /// two chains recording a new key at once would each rewrite it from
+    /// their own copy and lose the other's entry. The second process fails
+    /// fast with [`Error::Locked`]. The kernel drops the lock with the
+    /// process, so a crash leaves nothing to clean up.
+    pub fn open_exclusive(dir: &Path, chain_id: &str) -> Result<Self, Error> {
+        std::fs::create_dir_all(dir)?;
+        let f = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.join(".ledger.lock"))?;
+        match f.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(Error::Locked(dir.display().to_string()))
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
+        }
+        let mut store = Store::open(dir, chain_id)?;
+        store._lock = Some(f);
+        Ok(store)
     }
 
     pub fn chain_id(&self) -> &str {
