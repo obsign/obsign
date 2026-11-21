@@ -1162,7 +1162,7 @@ fn export_produces_verifiable_packs_and_a_signed_manifest() {
         seal_chain(&wal_dir, &store_dir, chain);
     }
 
-    let (exports, all_valid) = export_all(&wal_dir, &store_dir, &out, &ops(), 9_000).unwrap();
+    let (exports, all_valid) = export_all(&wal_dir, &store_dir, &out, &ops(), 9_000, None).unwrap();
     assert!(all_valid);
     assert_eq!(exports.len(), 2, "one pack per chain");
 
@@ -1206,7 +1206,7 @@ fn a_rewritten_wal_is_exported_but_flagged_invalid() {
     std::fs::remove_file(wal_dir.join("alpha.jsonl")).unwrap();
     fill_chain(&wal_dir, "alpha", 4, 999);
 
-    let (exports, all_valid) = export_all(&wal_dir, &store_dir, &out, &ops(), 9_000).unwrap();
+    let (exports, all_valid) = export_all(&wal_dir, &store_dir, &out, &ops(), 9_000, None).unwrap();
     // Written anyway (the failing pack is the one you want on disk) but
     // never passed off as fine.
     assert!(!all_valid);
@@ -1235,12 +1235,79 @@ fn a_sealed_chain_whose_wal_was_removed_refuses_the_export() {
 
     std::fs::remove_file(wal_dir.join("beta.jsonl")).unwrap();
 
-    let err = export_all(&wal_dir, &store_dir, &out, &ops(), 9_000)
+    let err = export_all(&wal_dir, &store_dir, &out, &ops(), 9_000, None)
         .expect_err("a sealed chain missing its WAL must not be silently omitted");
     assert!(
         matches!(&err, Error::Source(m) if m.contains("beta")),
         "the refusal must name the dropped chain, got: {err:?}"
     );
+}
+
+#[test]
+fn a_pinned_seal_key_refuses_a_store_sealed_under_another() {
+    let wal_dir = tmp("pin-wal");
+    let store_dir = tmp("pin-store");
+    fill_chain(&wal_dir, "alpha", 3, 0);
+    seal_chain(&wal_dir, &store_dir, "alpha"); // sealed by seal-1, seed 0x55
+
+    let entry = |seed: u8| obsign_audit_core::checkpoint::PublicKeyEntry {
+        key_id: "seal-1".to_string(),
+        algo: "ed25519".to_string(),
+        public_key: hex::encode(ed25519_dalek::SigningKey::from_bytes(&[seed; 32]).verifying_key().to_bytes()),
+        role: obsign_audit_core::checkpoint::KeyRole::Seal,
+    };
+
+    // The store's keys.json vouches for itself: pinned to the auditor's own
+    // copy of the real key, a store re-sealed under a substitute is refused.
+    let out = tmp("pin-out-bad").join("dossier");
+    let err = export_all(&wal_dir, &store_dir, &out, &ops(), 9_000, Some(&[entry(0x66)]))
+        .expect_err("a store sealed under an unpinned key must be refused");
+    assert!(matches!(&err, Error::Source(m) if m.contains("seal-1")), "{err:?}");
+    assert!(!out.exists());
+
+    let out = tmp("pin-out-good").join("dossier");
+    let (_, all_valid) =
+        export_all(&wal_dir, &store_dir, &out, &ops(), 9_000, Some(&[entry(0x55)])).unwrap();
+    assert!(all_valid);
+}
+
+#[test]
+fn a_failed_export_leaves_no_partial_dossier() {
+    let wal_dir = tmp("partial-wal");
+    let store_dir = tmp("partial-store");
+    let out = tmp("partial-out");
+    fill_chain(&wal_dir, "alpha", 3, 0);
+    seal_chain(&wal_dir, &store_dir, "alpha");
+    // beta sorts after alpha and cannot be read: alpha's pack was already
+    // on disk by the time the export failed.
+    std::fs::create_dir(wal_dir.join("beta.jsonl")).unwrap();
+
+    assert!(export_all(&wal_dir, &store_dir, &out, &ops(), 9_000, None).is_err());
+    let left: Vec<_> = std::fs::read_dir(&out).unwrap().collect();
+    assert!(left.is_empty(), "a failed export wrote {left:?}");
+    let staging: Vec<_> = std::fs::read_dir(out.parent().unwrap())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().contains("partial-out.partial"))
+        .collect();
+    assert!(staging.is_empty(), "staging left behind: {staging:?}");
+}
+
+#[test]
+fn an_export_refuses_a_directory_holding_an_earlier_dossier() {
+    let wal_dir = tmp("stale-exp-wal");
+    let store_dir = tmp("stale-exp-store");
+    let out = tmp("stale-exp-out");
+    fill_chain(&wal_dir, "alpha", 3, 0);
+    seal_chain(&wal_dir, &store_dir, "alpha");
+
+    // Last quarter's pack for a chain since pruned: beside a new manifest
+    // that does not list it, it reads as part of this dossier.
+    std::fs::write(out.join("gone.evidence.json"), b"{}").unwrap();
+    let err = export_all(&wal_dir, &store_dir, &out, &ops(), 9_000, None).unwrap_err();
+    assert!(matches!(&err, Error::Source(m) if m.contains("not empty")), "{err:?}");
+    assert_eq!(std::fs::read(out.join("gone.evidence.json")).unwrap(), b"{}");
+    assert!(!out.join("export-manifest.json").exists());
 }
 
 #[test]
@@ -1250,12 +1317,12 @@ fn an_empty_or_mistyped_export_is_refused() {
     let out = tmp("empty-out");
 
     // No chain: an empty audit dossier is a mistyped path, not a result.
-    assert!(export_all(&wal_dir, &store_dir, &out, &ops(), 0).is_err());
+    assert!(export_all(&wal_dir, &store_dir, &out, &ops(), 0, None).is_err());
 
     // Missing store directory: would export every chain as "0 sealed".
     fill_chain(&wal_dir, "alpha", 2, 0);
     let missing = store_dir.join("nope");
-    assert!(export_all(&wal_dir, &missing, &out, &ops(), 0).is_err());
+    assert!(export_all(&wal_dir, &missing, &out, &ops(), 0, None).is_err());
 }
 
 // ---------------------------------------------------------------------------

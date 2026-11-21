@@ -313,8 +313,13 @@ a period. With the HTTP transport every agent session is its own chain, so
 ```bash
 ./target/debug/obsign-control export \
     --wal /srv/obsign/wal --store /srv/obsign/ledger \
-    --out /tmp/dossier --key /tmp/ops.hex --key-id ops-2026
+    --out /tmp/dossier --key /tmp/ops.hex --key-id ops-2026 \
+    --seal-keys /secure/seal-keys.json   # your copy of the sealing keys
 ```
+
+`--out` must be absent or empty; the dossier is assembled beside it and
+appears complete or not at all. `--seal-keys` pins the sealing keys: without
+it, packs verify against the store's own `keys.json`.
 
 Every chain is exported, verified on the way out, and listed in a signed
 export manifest, so the dossier cannot lose a pack in transit without the loss

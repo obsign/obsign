@@ -89,7 +89,8 @@ enum Command {
         #[arg(long)]
         store: PathBuf,
 
-        /// Output directory for the dossier
+        /// Output directory for the dossier. Must not exist or be empty;
+        /// it appears only once the dossier is complete.
         #[arg(long)]
         out: PathBuf,
 
@@ -99,6 +100,14 @@ enum Command {
 
         #[arg(long, default_value = "ops-key")]
         key_id: String,
+
+        /// Your out-of-band copy of the sealing public keys (a JSON array of
+        /// key entries, as in the store's keys.json). Without it, packs are
+        /// verified against the store's own keys.json, which a substituted
+        /// store would carry too. With it, a store sealed under any other
+        /// key is refused.
+        #[arg(long)]
+        seal_keys: Option<PathBuf>,
     },
 
     /// Write the Cedar schema of the model these rules see
@@ -168,7 +177,8 @@ fn main() -> Result<()> {
             out,
             key,
             key_id,
-        } => do_export(&wal, &store, &out, &key, &key_id),
+            seal_keys,
+        } => do_export(&wal, &store, &out, &key, &key_id, seal_keys.as_deref()),
         Command::Schema { source, out, check } => do_schema(&source, out.as_deref(), check),
         Command::Console {
             wal,
@@ -374,9 +384,18 @@ fn do_export(
     out: &std::path::Path,
     key: &std::path::Path,
     key_id: &str,
+    seal_keys: Option<&std::path::Path>,
 ) -> Result<()> {
     let ops = OpsKey::from_seed_file(key, key_id).context("loading the ops key")?;
-    let (exports, all_valid) = export_all(wal, store, out, &ops, now_ms()).context("exporting")?;
+    let pinned: Option<Vec<obsign_audit_core::checkpoint::PublicKeyEntry>> = match seal_keys {
+        None => None,
+        Some(p) => Some(
+            serde_json::from_str(&std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?)
+                .with_context(|| format!("parsing {}", p.display()))?,
+        ),
+    };
+    let (exports, all_valid) =
+        export_all(wal, store, out, &ops, now_ms(), pinned.as_deref()).context("exporting")?;
 
     for e in &exports {
         eprintln!(
