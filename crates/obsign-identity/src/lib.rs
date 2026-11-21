@@ -104,4 +104,14 @@ pub enum Error {
 
     #[error("identity bundle signed with key \"{0}\", absent from the trusted keys")]
     UnknownBundleKey(String),
+
+    #[error("trusted key \"{0}\" is unusable: {1}")]
+    UnusableBundleKey(String, String),
+
+    #[error("trusted key id \"{0}\" is bound to more than one key")]
+    DuplicateTrustedKey(String),
+
+    #[error("identity bundle signed with key \"{0}\", whose role is {1}: \
+             only the ops key signs identity bundles")]
+    BundleKeyRole(String, String),
 }

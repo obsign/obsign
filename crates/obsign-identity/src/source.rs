@@ -1,4 +1,5 @@
-use obsign_audit_core::checkpoint::PublicKeyEntry;
+use ed25519_dalek::VerifyingKey;
+use obsign_audit_core::checkpoint::{KeyRole, PublicKeyEntry};
 use obsign_audit_core::{content_hash, Hash};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -191,24 +192,53 @@ fn verify_bundle(
     trusted: &[PublicKeyEntry],
 ) -> Result<(Verifier, String, u64), Error> {
     let signed: SignedIdentityBundle = serde_json::from_str(raw)?;
+    let vk = bundle_key(trusted, &signed.key_id)?;
 
-    let mut keys = BTreeMap::new();
-    for entry in trusted {
-        if let Ok(vk) = entry.to_verifying_key() {
-            keys.insert(entry.key_id.clone(), vk);
-        }
-    }
-
-    let vk = keys
-        .get(&signed.key_id)
-        .ok_or_else(|| Error::UnknownBundleKey(signed.key_id.clone()))?;
-
-    let bundle = signed.verify(vk)?;
+    let bundle = signed.verify(&vk)?;
     Ok((
         Verifier::from_bundle(bundle)?,
         bundle.version.clone(),
         bundle.epoch,
     ))
+}
+
+/// Resolves the key an identity bundle names, refusing anything ambiguous.
+///
+/// The identity bundle decides who can mint an accepted token, so its signer
+/// must be the ops key that publishes releases. An `origin` key is refused:
+/// it lives on the gateway itself, and a gateway able to sign its own
+/// identity bundle would certify the identities it then records. `seal` is
+/// accepted because it is the default: a trusted-keys file written before
+/// roles existed declares its ops key that way, and the auditor resolves it
+/// by key id for the same reason.
+///
+/// An id bound to two different keys is refused rather than resolved last
+/// one wins, and an unusable entry under the named id is reported as such
+/// instead of vanishing into "unknown key".
+fn bundle_key(trusted: &[PublicKeyEntry], key_id: &str) -> Result<VerifyingKey, Error> {
+    let mut material = BTreeMap::new();
+    for entry in trusted {
+        let key = (entry.algo.as_str(), entry.public_key.to_ascii_lowercase());
+        if material.insert(entry.key_id.as_str(), key.clone()).is_some_and(|k| k != key) {
+            return Err(Error::DuplicateTrustedKey(entry.key_id.clone()));
+        }
+    }
+
+    let mut found = None;
+    for entry in trusted.iter().filter(|e| e.key_id == key_id) {
+        if entry.role == KeyRole::Origin {
+            return Err(Error::BundleKeyRole(
+                key_id.to_string(),
+                entry.role.as_str().to_string(),
+            ));
+        }
+        found = Some(
+            entry
+                .to_verifying_key()
+                .map_err(|e| Error::UnusableBundleKey(key_id.to_string(), e.to_string()))?,
+        );
+    }
+    found.ok_or_else(|| Error::UnknownBundleKey(key_id.to_string()))
 }
 
 #[cfg(test)]
@@ -268,8 +298,59 @@ mod tests {
             key_id: "identity-key".into(),
             algo: "ed25519".into(),
             public_key: hex::encode(signer.verifying_key().to_bytes()),
-            role: Default::default(),
+            role: KeyRole::Ops,
         }]
+    }
+
+    #[test]
+    fn only_an_ops_or_legacy_key_signs_the_identity_bundle() {
+        let signer = SigningKey::from_bytes(&[0x22; 32]);
+        let p = tmpfile("role");
+        std::fs::write(&p, bundle_json("identity@1", &[("k1", 1)], &signer)).unwrap();
+
+        // An origin key is the gateway's own: it must not vouch for the
+        // identities the gateway then records.
+        let mut ring = keyring(&signer);
+        ring[0].role = KeyRole::Origin;
+        assert!(matches!(
+            BundleSource::load(&p, &ring),
+            Err(Error::BundleKeyRole(..))
+        ));
+
+        // A file written before roles existed says `seal` for its ops key.
+        ring[0].role = KeyRole::Seal;
+        assert!(BundleSource::load(&p, &ring).is_ok());
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn an_ambiguous_or_unusable_trusted_key_is_refused() {
+        let signer = SigningKey::from_bytes(&[0x22; 32]);
+        let other = SigningKey::from_bytes(&[0x23; 32]);
+        let p = tmpfile("ambiguous");
+        std::fs::write(&p, bundle_json("identity@1", &[("k1", 1)], &signer)).unwrap();
+
+        // The same id bound to two keys: resolving either one is a guess.
+        let mut ring = keyring(&other);
+        ring.extend(keyring(&signer));
+        assert!(matches!(
+            BundleSource::load(&p, &ring),
+            Err(Error::DuplicateTrustedKey(_))
+        ));
+
+        // The same id twice with the same key is only redundant.
+        let mut ring = keyring(&signer);
+        ring.extend(keyring(&signer));
+        assert!(BundleSource::load(&p, &ring).is_ok());
+
+        // An entry that does not parse is named, not reported as absent.
+        let mut ring = keyring(&signer);
+        ring[0].public_key = "zz".into();
+        assert!(matches!(
+            BundleSource::load(&p, &ring),
+            Err(Error::UnusableBundleKey(..))
+        ));
+        let _ = std::fs::remove_file(p);
     }
 
     fn tmpfile(name: &str) -> PathBuf {

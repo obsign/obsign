@@ -173,6 +173,10 @@ token into a disk-access loop.
 
 **The signature is revalidated on every reload.** Without it, hot rotation
 would be the easiest way to inject a JWKS: writing the file would be enough.
+The signer must be the ops key in `--trusted-keys`: an `origin`-role key (the
+gateway's own) is refused, and so is a key id bound to two different keys.
+A `seal` role is accepted, since that is what a trusted-keys file written
+before roles existed says about its ops key.
 
 **An older bundle is refused on reload.** A signature proves the control
 plane published a bundle once, not that it still stands by it: an old bundle
