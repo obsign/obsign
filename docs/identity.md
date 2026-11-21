@@ -72,6 +72,10 @@ chain." Cedar also receives `context.actor_chain` (a set),
 `context.delegation_depth` (to bound multi-agent topologies) and
 `context.principal_kind`.
 
+A malformed chain is refused, never read around: an `act` without a string
+`sub`, or nested more than 8 deep, fails verification instead of being
+recorded as a shorter chain (or as no delegation at all).
+
 Try the three modes:
 
 ```bash

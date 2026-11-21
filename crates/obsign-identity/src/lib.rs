@@ -74,6 +74,9 @@ pub enum Error {
     #[error("the token carries no subject at the configured path")]
     MissingSubject,
 
+    #[error("malformed delegation: {0}")]
+    MalformedDelegation(String),
+
     #[error("the token carries no exp claim")]
     MissingExpiry,
 

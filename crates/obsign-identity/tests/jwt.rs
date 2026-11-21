@@ -238,6 +238,20 @@ fn groups_and_roles_are_merged() {
 }
 
 #[test]
+fn an_actor_without_a_subject_is_refused_not_read_as_human() {
+    // A signed `act` the chain cannot name must not leave a delegated token
+    // classified Human at depth 0.
+    let idp = Idp::new("k1", 1);
+    let mut c = claims();
+    c["act"] = json!({ "client_id": "support-copilot" });
+
+    assert!(matches!(
+        verifier(&idp).verify(&idp.mint(c)).unwrap_err(),
+        Error::MalformedDelegation(_)
+    ));
+}
+
+#[test]
 fn token_without_scope_is_refused() {
     // An empty delegation would only authorize tools requiring no scope.
     // That is nearly always a configuration mistake: better to fail loudly
