@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use crate::compile::Compiled;
-use crate::{record_trusted_key, write_atomic, Error, OpsKey};
+use crate::{merge_trusted_key, write_atomic, Error, OpsKey};
 
 pub const FORMAT: &str = "obsign-release/1";
 
@@ -139,30 +139,38 @@ pub fn publish(
     }
     artifacts.sort_by(|a, b| a.0.cmp(&b.0));
 
-    // The ops key becomes (or already is) a trusted key. Refusing a rebound
-    // key id happens before anything else is written. The full set is kept:
-    // a rollback may republish a manifest signed by an *earlier* ops key.
-    let trusted = record_trusted_key(&dist.join("trusted-keys.json"), &ops.public_entry())?;
+    // Every refusal runs before the first write: a refused publish leaves
+    // dist/ exactly as it found it.
+    //
+    // The ops key becomes (or already is) a trusted key; a rebound key id is
+    // refused here. The full set is kept: a rollback may republish a
+    // manifest signed by an *earlier* ops key.
+    let trusted_path = dist.join("trusted-keys.json");
+    let (trusted, trusted_changed) = merge_trusted_key(&trusted_path, &ops.public_entry())?;
 
     let version = compiled.source_ref.clone();
     let release_dir = dist.join("releases").join(&version);
-    std::fs::create_dir_all(&release_dir)?;
 
     // Immutability check, with crash repair: an artifact missing from an
     // existing release directory (a publish that died halfway) is rewritten;
     // an artifact with *different* content is a refusal, the author changed
     // the source without committing, and the sha would lie.
-    let mut reused = true;
+    let mut missing = Vec::new();
     for (name, bytes) in &artifacts {
-        let path = release_dir.join(name);
-        match std::fs::read(&path) {
+        match std::fs::read(release_dir.join(name)) {
             Ok(existing) if &existing == bytes => {}
             Ok(_) => return Err(Error::VersionConflict { version }),
-            Err(_) => {
-                reused = false;
-                write_atomic(&path, bytes)?;
-            }
+            Err(_) => missing.push((name, bytes)),
         }
+    }
+    let reused = missing.is_empty();
+
+    if trusted_changed {
+        write_atomic(&trusted_path, serde_json::to_string_pretty(&trusted)?.as_bytes())?;
+    }
+    std::fs::create_dir_all(&release_dir)?;
+    for (name, bytes) in missing {
+        write_atomic(&release_dir.join(name), bytes)?;
     }
 
     let manifest = Manifest {

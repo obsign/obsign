@@ -42,7 +42,7 @@ pub use schema::{default_schema_path, sync_schema, SchemaSync};
 pub use source::SourceTree;
 pub use worktree::worktree_divergence;
 
-use obsign_audit_core::checkpoint::PublicKeyEntry;
+use obsign_audit_core::checkpoint::{KeyRole, PublicKeyEntry};
 use ed25519_dalek::SigningKey;
 use std::io::Write as _;
 use std::path::Path;
@@ -109,6 +109,18 @@ pub enum Error {
          rotated key must take a new id, or old signatures become unverifiable"
     )]
     KeyConflict(String),
+
+    /// A key id binds one role too: the same key admitted under a second
+    /// role would let it sign what the first role was kept away from.
+    #[error(
+        "key id \"{key_id}\" already recorded with role \"{recorded}\", not \
+         \"{requested}\": a key keeps the role it was trusted under"
+    )]
+    KeyRoleConflict {
+        key_id: String,
+        recorded: &'static str,
+        requested: &'static str,
+    },
 
     #[error("invalid manifest signature")]
     BadManifestSignature,
@@ -200,19 +212,48 @@ pub(crate) fn record_trusted_key(
     path: &Path,
     entry: &PublicKeyEntry,
 ) -> Result<Vec<PublicKeyEntry>, Error> {
+    let (keys, changed) = merge_trusted_key(path, entry)?;
+    if changed {
+        write_atomic(path, serde_json::to_string_pretty(&keys)?.as_bytes())?;
+    }
+    Ok(keys)
+}
+
+/// The trusted-keys set with `entry` merged in, and whether that changed it,
+/// without writing anything: `publish` runs every refusal before its first
+/// write, and a key recorded by a publish that was then refused would be
+/// trust nobody decided to grant.
+///
+/// A key id binds one key in one role. The one role change accepted is the
+/// documented upgrade of an ops key recorded by an earlier build under the
+/// default `seal` role: same key material, tightened to `ops`.
+pub(crate) fn merge_trusted_key(
+    path: &Path,
+    entry: &PublicKeyEntry,
+) -> Result<(Vec<PublicKeyEntry>, bool), Error> {
     let mut keys: Vec<PublicKeyEntry> = if path.exists() {
         serde_json::from_str(&std::fs::read_to_string(path)?)?
     } else {
         Vec::new()
     };
 
-    if let Some(existing) = keys.iter().find(|k| k.key_id == entry.key_id) {
+    if let Some(existing) = keys.iter_mut().find(|k| k.key_id == entry.key_id) {
         if existing.public_key != entry.public_key || existing.algo != entry.algo {
             return Err(Error::KeyConflict(entry.key_id.clone()));
         }
-    } else {
-        keys.push(entry.clone());
-        write_atomic(path, serde_json::to_string_pretty(&keys)?.as_bytes())?;
+        if existing.role == entry.role {
+            return Ok((keys, false));
+        }
+        if existing.role == KeyRole::Seal && entry.role == KeyRole::Ops {
+            existing.role = KeyRole::Ops;
+            return Ok((keys, true));
+        }
+        return Err(Error::KeyRoleConflict {
+            key_id: entry.key_id.clone(),
+            recorded: existing.role.as_str(),
+            requested: entry.role.as_str(),
+        });
     }
-    Ok(keys)
+    keys.push(entry.clone());
+    Ok((keys, true))
 }

@@ -1053,6 +1053,67 @@ fn a_key_id_cannot_be_rebound() {
     assert_eq!(keys.len(), 2);
 }
 
+fn trusted_keys(dist: &Path) -> Vec<obsign_audit_core::checkpoint::PublicKeyEntry> {
+    serde_json::from_str(&std::fs::read_to_string(dist.join("trusted-keys.json")).unwrap()).unwrap()
+}
+
+#[test]
+fn a_refused_publish_trusts_no_new_key() {
+    let src = tmp("refused-key-src");
+    let dist = tmp("refused-key-dist");
+    write_source_tree(&src);
+    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", &ops()).unwrap();
+    publish(&dist, &v1, &ops(), 1_000).unwrap();
+
+    // Different content under the same version, signed by a key the fleet
+    // does not trust yet: refused, and the refusal must not have handed that
+    // key the fleet's trust on its way out.
+    std::fs::write(
+        src.join("policies/00-base.cedar"),
+        CEDAR_OK.replace("prod", "staging"),
+    )
+    .unwrap();
+    let other = OpsKey::from_seed([0x77u8; 32], "ops-key-2");
+    let conflicting = compile(&SourceTree::load(&src).unwrap(), "v1", &other).unwrap();
+    assert!(matches!(
+        publish(&dist, &conflicting, &other, 2_000),
+        Err(Error::VersionConflict { .. })
+    ));
+    let keys = trusted_keys(&dist);
+    assert_eq!(keys.len(), 1, "{keys:?}");
+    assert_eq!(keys[0].key_id, "ops-key");
+}
+
+#[test]
+fn a_key_id_keeps_its_role() {
+    use obsign_audit_core::checkpoint::KeyRole;
+    let src = tmp("role-src");
+    write_source_tree(&src);
+    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", &ops()).unwrap();
+
+    // The ops key's id and material, already trusted as an origin key: the
+    // same id under a second role is refused, not silently merged.
+    let dist = tmp("role-dist-origin");
+    let mut entry = ops().public_entry();
+    entry.role = KeyRole::Origin;
+    std::fs::write(dist.join("trusted-keys.json"), serde_json::to_string(&[&entry]).unwrap()).unwrap();
+    assert!(matches!(
+        publish(&dist, &v1, &ops(), 1_000),
+        Err(Error::KeyRoleConflict { .. })
+    ));
+    assert_eq!(trusted_keys(&dist)[0].role, KeyRole::Origin);
+
+    // An earlier build recorded the ops key under the default `seal` role:
+    // the documented upgrade tightens it to `ops` on the next publish.
+    let dist = tmp("role-dist-legacy");
+    entry.role = KeyRole::Seal;
+    std::fs::write(dist.join("trusted-keys.json"), serde_json::to_string(&[&entry]).unwrap()).unwrap();
+    publish(&dist, &v1, &ops(), 1_000).unwrap();
+    let keys = trusted_keys(&dist);
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].role, KeyRole::Ops);
+}
+
 // ---------------------------------------------------------------------------
 // Export
 // ---------------------------------------------------------------------------
