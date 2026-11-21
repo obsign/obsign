@@ -851,10 +851,27 @@ fn resolve_session_certs(
             Some(identity_key) => {
                 match crate::origin::verify_session_cert_with(chain_id, cert, identity_key) {
                     Ok(session_vk) => {
-                        origin_keys.insert(
-                            crate::key_id_for(&session_vk),
-                            IdentityKey::Ed25519(session_vk),
-                        );
+                        // The deployment path's rule: an id already bound
+                        // keeps its key. Overwriting it would let one
+                        // certificate silently take over the records of
+                        // another signer. Re-certifying the same key is fine.
+                        let kid = crate::key_id_for(&session_vk);
+                        let key = IdentityKey::Ed25519(session_vk);
+                        match origin_keys.get(&kid) {
+                            Some(existing) if *existing != key => findings.push(Finding::error(
+                                "session_cert_invalid",
+                                format!(
+                                    "session certificate at seq={}: session key id \
+                                     \"{kid}\" is already bound to a different key \
+                                     elsewhere in the pack",
+                                    sr.record.seq
+                                ),
+                            )),
+                            Some(_) => {}
+                            None => {
+                                origin_keys.insert(kid, key);
+                            }
+                        }
                     }
                     Err(e) => findings.push(Finding::error(
                         "session_cert_invalid",

@@ -34,8 +34,10 @@ use serde::{Deserialize, Serialize};
 /// One derivation, used by whoever signs (the gateway naming its key in a
 /// record envelope) and whoever verifies (resolving a session key from its
 /// certificate): two schemes drifting is the single-implementation risk this
-/// crate exists to remove. Sixteen hex chars of the public key; a collision
-/// there would already break the customer's key management.
+/// crate exists to remove. Sixteen hex chars of the public key. Widening it
+/// would orphan the `origin_key_id` every v2 record already names, so the
+/// verifier refuses an id that a certificate would rebind to another key
+/// instead of trusting 64 bits never to collide.
 pub fn key_id_for(key: &VerifyingKey) -> String {
     format!("origin-{}", &hex::encode(key.to_bytes())[..16])
 }

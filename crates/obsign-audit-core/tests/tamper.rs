@@ -1400,6 +1400,37 @@ mod session_certs {
         assert!(codes(&r).contains(&"origin_unverified"));
     }
 
+    #[test]
+    fn a_session_key_cannot_take_over_an_existing_key_id() {
+        // The bundle binds an id to one gateway key; a certificate whose
+        // session key derives the same id must not replace it. The session
+        // key used to overwrite the entry silently, and every record signed
+        // under that id then verified against the newcomer.
+        let session = SigningKey::from_bytes(&[31u8; 32]);
+        let identity = SigningKey::from_bytes(&[32u8; 32]);
+        let gateway = SigningKey::from_bytes(&[34u8; 32]);
+        let seal = signing_key();
+        let ops = SigningKey::from_bytes(&[33u8; 32]);
+        let cert = make_cert(CHAIN_ID, &session, &identity, IDENTITY_ID);
+        let mut ev = v2_pack(&session, &identity, &seal, &ops, cert);
+        ev.deployment = Some(
+            DeploymentBundle {
+                format: DFMT.into(),
+                version: "deployment@v2".into(),
+                origin_keys: vec![
+                    origin_entry(IDENTITY_ID, &identity),
+                    origin_entry(&key_id_for(&session.verifying_key()), &gateway),
+                ],
+                attestations: Vec::new(),
+            }
+            .sign("ops-1", &ops),
+        );
+
+        let r = evidence::verify_with(&ev, &trust(&seal, &ops), &REQUIRE);
+        assert!(!r.is_valid(), "a rebinding must not pass");
+        assert!(codes(&r).contains(&"session_cert_invalid"), "findings: {:?}", r.findings);
+    }
+
     // --- P-256 identity key (a TPM without EdDSA) ----------------------
     // There is no P-256 signer in this tree, by design (`p256` verifies
     // only), so the certificate signature is a fixture: an OpenSSL
