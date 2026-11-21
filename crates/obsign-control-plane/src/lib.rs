@@ -79,6 +79,13 @@ pub enum Error {
     #[error("no version for this compilation: {0}")]
     NoVersion(String),
 
+    #[error(
+        "invalid version \"{0}\": a version names one directory under \
+         releases/, so it is 1 to 128 characters of [A-Za-z0-9._+-] and does \
+         not start with a dot"
+    )]
+    InvalidVersion(String),
+
     /// The version stamps a commit sha onto bytes read from disk. When the
     /// working tree has drifted from that commit, every decision in the log
     /// citing `policies@<sha>` would point auditors at rules that were never

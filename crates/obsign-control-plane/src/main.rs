@@ -186,7 +186,12 @@ fn load_and_compile(args: &CompileArgs) -> Result<(obsign_control_plane::Compile
 
     let mut head = None;
     let source_ref = match &args.label {
-        Some(l) => l.clone(),
+        Some(l) => {
+            // Refused here, before signing, not only at publish: the label
+            // is stamped into every bundle version.
+            obsign_control_plane::release::check_version(l)?;
+            l.clone()
+        }
         None => {
             let sha = git_head(&args.source)?;
             // The version will cite this sha. Refuse to sign bytes the

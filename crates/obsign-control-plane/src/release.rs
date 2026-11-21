@@ -160,6 +160,7 @@ pub fn publish(
     let (trusted, trusted_changed) = merge_trusted_key(&trusted_path, &ops.public_entry())?;
 
     let version = compiled.source_ref.clone();
+    check_version(&version)?;
     let release_dir = dist.join("releases").join(&version);
 
     // Immutability check, with crash repair: an artifact missing from an
@@ -263,6 +264,24 @@ pub fn publish(
         release_dir,
         reused,
     })
+}
+
+/// A version names a directory under releases/: it must be exactly one
+/// plain path component. A `--label` of `../../x` would otherwise write a
+/// "release" anywhere the operator can write, and `..` would make
+/// releases/ itself the release directory. A short sha always passes.
+pub fn check_version(version: &str) -> Result<(), Error> {
+    let ok = !version.is_empty()
+        && version.len() <= 128
+        && !version.starts_with('.')
+        && version
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'+'));
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::InvalidVersion(version.to_string()))
+    }
 }
 
 /// Returns the existing manifest bytes if they parse, name exactly the

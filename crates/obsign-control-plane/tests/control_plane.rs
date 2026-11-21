@@ -1694,6 +1694,27 @@ fn a_planted_temp_file_cannot_steer_an_atomic_write() {
 }
 
 #[test]
+fn a_label_cannot_escape_the_releases_directory() {
+    let src = tmp("label-src");
+    let dist = tmp("label-dist").join("dist");
+    write_source_tree(&src);
+    let tree = SourceTree::load(&src).unwrap();
+
+    for label in ["../../escaped", "..", ".", "a/b", "", ".hidden", "v1\\x"] {
+        let compiled = compile(&tree, label, &ops()).unwrap();
+        let result = publish(&dist, &compiled, &ops(), 1_000);
+        assert!(matches!(result, Err(Error::InvalidVersion(_))), "{label:?}: {result:?}");
+    }
+    assert!(!dist.parent().unwrap().join("escaped").exists());
+    assert!(!dist.join("manifest.json").exists());
+
+    // What a short sha or an ordinary label looks like still publishes.
+    for label in ["abcd12345678", "v1.2.3-rc_1+build"] {
+        publish(&dist, &compile(&tree, label, &ops()).unwrap(), &ops(), 1_000).unwrap();
+    }
+}
+
+#[test]
 fn a_hostile_payload_kind_cannot_inject_html() {
     // The `kind` column used to be one of ten compile-time literals, which is
     // why it was interpolated raw. An unknown payload's kind is whatever the
