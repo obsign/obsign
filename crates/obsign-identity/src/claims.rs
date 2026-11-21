@@ -111,15 +111,25 @@ fn resolve<'a>(root: &'a Value, path: &str) -> Vec<&'a Value> {
 ///
 /// Accepts both shapes seen in practice: a space-separated string (`scope` in
 /// Keycloak) or an array (`scp` in Entra ID).
+///
+/// Only a top-level string is split. An array element is one exact name:
+/// splitting it turns a directory group `"Domain Admins"` into the two groups
+/// `Domain` and `Admins`, and a policy granting either one to whoever holds it.
 fn flatten(v: &Value, out: &mut Vec<String>) {
     match v {
         Value::String(s) => out.extend(s.split_whitespace().map(String::from)),
-        Value::Array(a) => {
-            for item in a {
-                flatten(item, out);
-            }
-        }
+        Value::Array(a) => flatten_items(a, out),
         _ => {}
+    }
+}
+
+fn flatten_items(a: &[Value], out: &mut Vec<String>) {
+    for item in a {
+        match item {
+            Value::String(s) => out.push(s.clone()),
+            Value::Array(inner) => flatten_items(inner, out),
+            _ => {}
+        }
     }
 }
 
@@ -367,6 +377,20 @@ mod tests {
         let m = ClaimMap::default();
         assert_eq!(m.scopes(&json!({ "scope": "a b c" })), vec!["a", "b", "c"]);
         assert_eq!(m.scopes(&json!({ "scp": ["b", "a"] })), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn group_names_in_an_array_are_not_split() {
+        let m = ClaimMap::default();
+        let g = m.groups(&json!({ "groups": ["Domain Admins", "dba"] }));
+        assert_eq!(g, vec!["Domain Admins", "dba"]);
+        // A space-delimited `scope` string is still a list.
+        assert_eq!(
+            m.scopes(&json!({ "scope": "read write" })),
+            vec!["read", "write"]
+        );
+        // An `scp` array element is one exact scope.
+        assert_eq!(m.scopes(&json!({ "scp": ["a b"] })), vec!["a b"]);
     }
 
     #[test]
