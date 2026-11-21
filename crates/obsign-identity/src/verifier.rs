@@ -177,6 +177,16 @@ impl Verifier {
             .get("exp")
             .and_then(Value::as_i64)
             .ok_or(Error::MissingExpiry)?;
+        // Seconds to milliseconds, checked: a far-future `exp` (or `iat`)
+        // would otherwise overflow, which panics in a debug build and, in a
+        // release one, wraps to an arbitrary expiry the token never stated.
+        let expires_at_ms = exp
+            .checked_mul(1000)
+            .ok_or(Error::ClaimOutOfRange("exp"))?;
+        let issued_at_ms = match claims.get("iat").and_then(Value::as_i64) {
+            Some(i) => Some(i.checked_mul(1000).ok_or(Error::ClaimOutOfRange("iat"))?),
+            None => None,
+        };
 
         let scopes = self.claims.scopes(&claims);
         if scopes.is_empty() {
@@ -198,8 +208,8 @@ impl Verifier {
             issuer,
             scopes,
             groups: self.claims.groups(&claims),
-            expires_at_ms: exp * 1000,
-            issued_at_ms: claims.get("iat").and_then(Value::as_i64).map(|i| i * 1000),
+            expires_at_ms,
+            issued_at_ms,
             actor_chain,
             kind,
             label,

@@ -80,6 +80,9 @@ pub enum Error {
     #[error("the token carries no exp claim")]
     MissingExpiry,
 
+    #[error("the token's {0} claim is out of range")]
+    ClaimOutOfRange(&'static str),
+
     #[error("invalid identity bundle signature")]
     BadBundleSignature,
 

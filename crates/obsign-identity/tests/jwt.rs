@@ -252,6 +252,28 @@ fn an_actor_without_a_subject_is_refused_not_read_as_human() {
 }
 
 #[test]
+fn an_exp_or_iat_too_large_for_milliseconds_is_refused() {
+    // In the future, so jsonwebtoken accepts it, but past i64::MAX once
+    // converted to milliseconds.
+    let idp = Idp::new("k1", 1);
+    let far = i64::MAX / 1000 + 1;
+
+    let mut c = claims();
+    c["exp"] = json!(far);
+    assert!(matches!(
+        verifier(&idp).verify(&idp.mint(c)).unwrap_err(),
+        Error::ClaimOutOfRange("exp")
+    ));
+
+    let mut c = claims();
+    c["iat"] = json!(far);
+    assert!(matches!(
+        verifier(&idp).verify(&idp.mint(c)).unwrap_err(),
+        Error::ClaimOutOfRange("iat")
+    ));
+}
+
+#[test]
 fn token_without_scope_is_refused() {
     // An empty delegation would only authorize tools requiring no scope.
     // That is nearly always a configuration mistake: better to fail loudly
