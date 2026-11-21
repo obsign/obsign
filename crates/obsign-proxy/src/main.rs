@@ -95,6 +95,14 @@ struct Cli {
     #[arg(long = "allowed-origin")]
     allowed_origins: Vec<String>,
 
+    /// Ceiling on simultaneous HTTP connections, open GET streams included.
+    /// Past it, a new connection is answered 503 and closed before anything
+    /// is read from it: the listener is reachable before any token is
+    /// checked, and one thread per connection must not become one thread
+    /// per attacker socket.
+    #[arg(long, default_value_t = 256)]
+    http_max_connections: usize,
+
     // --- Identity: OIDC (normal) --------------------------------------
     /// Signed identity bundle: issuer, audience, JWKS, claim mapping.
     ///
@@ -442,6 +450,7 @@ fn run_http(
             chain_id: cli.chain_id.clone(),
             server_cmd: cli.server_cmd.clone(),
             allowed_origins: cli.allowed_origins.clone(),
+            max_connections: cli.http_max_connections,
             keys,
         },
         addr,

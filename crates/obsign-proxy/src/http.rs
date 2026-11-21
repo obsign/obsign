@@ -34,12 +34,13 @@ use anyhow::{Context as _, Result};
 use obsign_identity::BundleSource;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use obsign_wal::Wal;
 
 /// The single MCP endpoint.
@@ -55,6 +56,12 @@ const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 /// Idle time after which a kept-alive connection is closed. Closing is always
 /// safe: HTTP clients reconnect.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Budget for reading one whole request, from its first byte to the last
+/// byte of its body. A per-read timeout alone bounds nothing: a client
+/// trickling one byte every few seconds never trips it, and holds a thread
+/// and a buffer for as long as it likes, before any token is checked.
+const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Interval between comment lines on the GET stream, so that a dead client is
 /// eventually detected by a write failing.
@@ -88,6 +95,8 @@ pub struct Gateway {
     pub chain_id: String,
     pub server_cmd: Vec<String>,
     pub allowed_origins: Vec<String>,
+    /// Ceiling on simultaneous connections (`--http-max-connections`).
+    pub max_connections: usize,
     /// The gateway's signing keys and deployment trust, shared by every
     /// session: each derives its own per-chain signer (a fresh session key
     /// under the two-tier scheme) from this.
@@ -129,15 +138,44 @@ pub fn serve(gw: Gateway, addr: &str) -> Result<()> {
     let gw = Arc::new(gw);
     let registry: Registry = Arc::new(Mutex::new(HashMap::new()));
 
+    // Every connection holds a thread until it closes, and the listener is
+    // reachable before any token is checked. Past the ceiling, a newcomer
+    // is turned away before a byte of it is read; the connections already
+    // admitted, sessions in flight among them, are not disturbed.
+    let live = Arc::new(AtomicUsize::new(0));
     for conn in listener.incoming() {
-        let Ok(stream) = conn else { continue };
+        let Ok(mut stream) = conn else { continue };
+        if live.fetch_add(1, Ordering::SeqCst) >= gw.max_connections {
+            live.fetch_sub(1, Ordering::SeqCst);
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+            let _ = respond_json(
+                &mut stream,
+                503,
+                "Service Unavailable",
+                &[("Retry-After", "1")],
+                &rpc_error(&Value::Null, -32000, "too many connections"),
+            );
+            continue;
+        }
+        let slot = Slot(Arc::clone(&live));
         let gw = Arc::clone(&gw);
         let registry = Arc::clone(&registry);
         std::thread::spawn(move || {
+            let _slot = slot;
             let _ = handle_connection(stream, &gw, &registry);
         });
     }
     Ok(())
+}
+
+/// One admitted connection, given back when its thread ends, however it
+/// ends.
+struct Slot(Arc<AtomicUsize>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -160,7 +198,7 @@ fn handle_connection(
     let mut stream = stream;
 
     loop {
-        let req = match read_request(&mut reader, &mut stream) {
+        let req = match read_request(&mut reader, &mut stream, REQUEST_DEADLINE) {
             Ok(Some(r)) => r,
             // Clean close or idle timeout: nothing to answer.
             Ok(None) => return Ok(()),
@@ -1126,22 +1164,37 @@ impl HttpError {
 /// Reads one request. `Ok(None)` means the connection ended between requests
 /// (closed by the client or idle past the timeout), which calls for silence,
 /// not an error page.
+///
+/// Nothing is buffered beyond its bound: a line is read up to what is left
+/// of `MAX_HEADER_BYTES`, never to whatever newline the client eventually
+/// sends, and a body grows as its bytes arrive, never allocated from a
+/// `Content-Length` nobody has backed with data yet. The whole request must
+/// arrive within `deadline` of its first byte.
 fn read_request(
     reader: &mut BufReader<TcpStream>,
     stream: &mut TcpStream,
+    deadline: Duration,
 ) -> std::result::Result<Option<Request>, HttpError> {
-    let mut line = String::new();
-    match reader.read_line(&mut line) {
-        Ok(0) => return Ok(None),
+    // Between requests the connection may idle; once a request starts, the
+    // deadline runs.
+    match fill(reader, Instant::now() + IDLE_TIMEOUT) {
         Ok(_) => {}
-        Err(e)
-            if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut =>
-        {
-            return Ok(None)
-        }
         Err(_) => return Ok(None),
     }
+    let deadline = Instant::now() + deadline;
+    let too_large =
+        || HttpError::new(431, "Request Header Fields Too Large", "headers too large");
+    let timed_out = || HttpError::new(408, "Request Timeout", "request not received in time");
+
+    let line = match read_line_bounded(reader, deadline, MAX_HEADER_BYTES) {
+        Ok(l) => l,
+        Err(ReadFail::Closed) => return Ok(None),
+        Err(ReadFail::TimedOut) => return Err(timed_out()),
+        Err(ReadFail::TooLarge) => return Err(too_large()),
+    };
+    let mut total = line.len();
+    let line = String::from_utf8(line)
+        .map_err(|_| HttpError::new(400, "Bad Request", "malformed request line"))?;
 
     let mut parts = line.split_whitespace();
     let (Some(method), Some(target), Some(version)) =
@@ -1156,18 +1209,16 @@ fn read_request(
     let target = target.to_string();
 
     let mut headers = Vec::new();
-    let mut total = line.len();
     loop {
-        let mut h = String::new();
-        match reader.read_line(&mut h) {
-            Ok(0) => return Ok(None),
-            Ok(_) => {}
-            Err(_) => return Ok(None),
-        }
+        let h = match read_line_bounded(reader, deadline, MAX_HEADER_BYTES - total) {
+            Ok(h) => h,
+            Err(ReadFail::Closed) => return Ok(None),
+            Err(ReadFail::TimedOut) => return Err(timed_out()),
+            Err(ReadFail::TooLarge) => return Err(too_large()),
+        };
         total += h.len();
-        if total > MAX_HEADER_BYTES {
-            return Err(HttpError::new(431, "Request Header Fields Too Large", "headers too large"));
-        }
+        let h = String::from_utf8(h)
+            .map_err(|_| HttpError::new(400, "Bad Request", "malformed header"))?;
         let t = h.trim_end();
         if t.is_empty() {
             break;
@@ -1209,14 +1260,92 @@ fn read_request(
             let _ = stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n");
             let _ = stream.flush();
         }
-        let mut body = vec![0u8; len];
-        reader
-            .read_exact(&mut body)
-            .map_err(|_| HttpError::new(400, "Bad Request", "body shorter than Content-Length"))?;
+        // Grown as the bytes arrive: a 4 MiB `Content-Length` with nothing
+        // behind it costs the client a header line, not the gateway 4 MiB.
+        let mut body = Vec::with_capacity(len.min(64 * 1024));
+        while body.len() < len {
+            let buf = match fill(reader, deadline) {
+                Ok(b) => b,
+                Err(ReadFail::TimedOut) => return Err(timed_out()),
+                Err(_) => {
+                    return Err(HttpError::new(
+                        400,
+                        "Bad Request",
+                        "body shorter than Content-Length",
+                    ))
+                }
+            };
+            let n = buf.len().min(len - body.len());
+            body.extend_from_slice(&buf[..n]);
+            reader.consume(n);
+        }
         req.body = body;
     }
 
     Ok(Some(req))
+}
+
+/// Why a bounded read stopped short.
+enum ReadFail {
+    /// End of stream, or a socket error: nothing to answer.
+    Closed,
+    /// The deadline passed first.
+    TimedOut,
+    /// The line outgrew its bound before its newline arrived.
+    TooLarge,
+}
+
+/// The buffered bytes, reading more if there are none, waiting no later than
+/// `deadline`. The socket timeout is reset before every read, so the
+/// deadline holds across any number of reads, however slowly each one is
+/// fed.
+fn fill(
+    reader: &mut BufReader<TcpStream>,
+    deadline: Instant,
+) -> std::result::Result<&[u8], ReadFail> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err(ReadFail::TimedOut);
+    }
+    reader
+        .get_ref()
+        .set_read_timeout(Some(left))
+        .map_err(|_| ReadFail::Closed)?;
+    match reader.fill_buf() {
+        Ok([]) => Err(ReadFail::Closed),
+        Ok(buf) => Ok(buf),
+        Err(e)
+            if e.kind() == std::io::ErrorKind::WouldBlock
+                || e.kind() == std::io::ErrorKind::TimedOut =>
+        {
+            Err(ReadFail::TimedOut)
+        }
+        Err(_) => Err(ReadFail::Closed),
+    }
+}
+
+/// One line, newline included, of at most `limit` bytes.
+fn read_line_bounded(
+    reader: &mut BufReader<TcpStream>,
+    deadline: Instant,
+    limit: usize,
+) -> std::result::Result<Vec<u8>, ReadFail> {
+    let mut line = Vec::new();
+    loop {
+        let buf = fill(reader, deadline)?;
+        let (n, done) = match buf.iter().position(|&b| b == b'\n') {
+            Some(i) => (i + 1, true),
+            None => (buf.len(), false),
+        };
+        if line.len() + n > limit {
+            return Err(ReadFail::TooLarge);
+        }
+        line.extend_from_slice(&buf[..n]);
+        reader.consume(n);
+        if done {
+            return Ok(line);
+        }
+    }
 }
 
 fn respond(
@@ -1270,4 +1399,71 @@ fn new_session_id() -> std::result::Result<String, getrandom::Error> {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes)?;
     Ok(hex::encode(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    /// A connected pair: the client end, and the server end wrapped the way
+    /// `handle_connection` wraps it.
+    fn pair() -> (TcpStream, BufReader<TcpStream>, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let reader = BufReader::new(server.try_clone().unwrap());
+        (client, reader, server)
+    }
+
+    #[test]
+    fn a_trickled_request_runs_out_of_time() {
+        // A byte every 50 ms never trips a per-read timeout. The request as
+        // a whole has a deadline, and that one does trip.
+        let (mut client, mut reader, mut server) = pair();
+        let feeder = std::thread::spawn(move || {
+            for b in b"POST /mcp HTTP/1.1\r\nHost: x\r\nX-Slow: ".iter().cycle().take(200) {
+                if client.write_all(&[*b]).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+
+        let started = Instant::now();
+        match read_request(&mut reader, &mut server, Duration::from_millis(500)) {
+            Err(e) => assert_eq!(e.status, 408, "{}", e.message),
+            Ok(_) => panic!("a trickled request must not be read to its end"),
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "the deadline must bound the whole request"
+        );
+        drop(server);
+        drop(reader);
+        let _ = feeder.join();
+    }
+
+    #[test]
+    fn a_body_is_read_as_it_arrives() {
+        // The body is no longer allocated from `Content-Length` up front;
+        // what arrives is still read exactly, across several reads.
+        let (mut client, mut reader, mut server) = pair();
+        let body = vec![b'x'; 200_000];
+        let writer = std::thread::spawn(move || {
+            write!(client, "POST /mcp HTTP/1.1\r\nContent-Length: {}\r\n\r\n", body.len())
+                .unwrap();
+            for chunk in body.chunks(7_000) {
+                client.write_all(chunk).unwrap();
+            }
+            client
+        });
+        let req = read_request(&mut reader, &mut server, REQUEST_DEADLINE)
+            .ok()
+            .flatten()
+            .expect("a whole request");
+        assert_eq!(req.body.len(), 200_000);
+        assert!(req.body.iter().all(|&b| b == b'x'));
+        drop(writer.join());
+    }
 }

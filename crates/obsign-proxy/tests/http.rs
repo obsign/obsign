@@ -1023,3 +1023,54 @@ fn batches_are_refused() {
     );
     assert_eq!(r.status, 400);
 }
+
+#[test]
+fn an_endless_header_line_is_cut_at_its_bound() {
+    // The header ceiling was checked after `read_line` returned, that is
+    // after the newline arrived: a line that never ends was buffered for as
+    // long as the client kept sending, before any token was looked at.
+    let gw = start("endless-header", false, &[]);
+    let mut stream = TcpStream::connect(&gw.addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    write!(stream, "POST /mcp HTTP/1.1\r\nX-Junk: ").unwrap();
+    // Past the 16 KiB ceiling, and no newline, ever.
+    stream.write_all(&[b'a'; 20 * 1024]).unwrap();
+
+    let mut status_line = String::new();
+    BufReader::new(&stream)
+        .read_line(&mut status_line)
+        .expect("the gateway must answer without waiting for the newline");
+    assert!(status_line.contains(" 431 "), "got: {status_line:?}");
+}
+
+#[test]
+fn connections_past_the_ceiling_are_turned_away() {
+    // One thread per connection, reachable before any token is checked:
+    // without a ceiling, idle sockets alone exhaust the gateway.
+    let gw = start("max-conns", false, &["--http-max-connections", "2"]);
+    let idle: Vec<TcpStream> = (0..2)
+        .map(|_| TcpStream::connect(&gw.addr).unwrap())
+        .collect();
+    // Let the accept loop admit both before the next one arrives.
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Answered before anything is read from it, so read before writing: a
+    // request already sent would be discarded unread, and the close reset.
+    let third = TcpStream::connect(&gw.addr).unwrap();
+    third
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut status_line = String::new();
+    BufReader::new(&third)
+        .read_line(&mut status_line)
+        .expect("the newcomer must be answered, not left hanging");
+    assert!(status_line.contains(" 503 "), "got: {status_line:?}");
+
+    // A slot frees up when its connection ends.
+    drop(idle);
+    std::thread::sleep(Duration::from_millis(200));
+    let (_, r) = initialize(&gw, &[]);
+    assert_eq!(r.status, 200);
+}
