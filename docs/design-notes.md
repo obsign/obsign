@@ -170,8 +170,9 @@ if a deployment ever needs them recorded too.
 
 **Dependency tree.** Measured as unique crates in `cargo tree -e normal`.
 The tree that carries the trust story is the auditor's: `obsign` builds
-from 31 crates (`obsign-audit-core` 29); argument parsing is hand-rolled, so
-`clap` and its subtree are gone from that build. Of the 31, five are the
+from 31 crates (`obsign-audit-core` 29); its argument parsing is
+hand-rolled (the other binaries use `clap`), so `clap` and its subtree are
+gone from that build. Of the 31, five are the
 `serde` derive machinery (`serde_derive`, `syn`, `quote`, `proc-macro2`,
 `unicode-ident`); manual `serde` implementations in `obsign-audit-core`, the
 remaining lever, would leave ~26, nearly all of it the cryptography itself

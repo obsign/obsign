@@ -50,6 +50,9 @@ flowchart TB
 - **Verifier**: the only binary the auditor needs. No network, no trust in
   you.
 
+A fifth, `obsign-tpm-enroll`, runs once per gateway host to bind its key
+to a TPM; it is a tool, not a service.
+
 </td>
 </tr>
 <tr>
