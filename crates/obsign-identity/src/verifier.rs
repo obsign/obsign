@@ -166,11 +166,7 @@ impl Verifier {
         let claims = data.claims;
 
         let subject = self.claims.subject(&claims).ok_or(Error::MissingSubject)?;
-        let issuer = claims
-            .get("iss")
-            .and_then(Value::as_str)
-            .ok_or(Error::MissingSubject)?
-            .to_string();
+        let issuer = issuer(&claims)?;
         // jsonwebtoken has already validated expiry, but we need the value to
         // re-evaluate it on every act.
         let exp = claims
@@ -214,5 +210,30 @@ impl Verifier {
             kind,
             label,
         })
+    }
+}
+
+/// The `iss` claim, as a string. jsonwebtoken has already required and
+/// matched it, so a failure here means that check moved; it must still read
+/// as what it is, not as a missing subject.
+fn issuer(claims: &Value) -> Result<String, Error> {
+    claims
+        .get("iss")
+        .and_then(Value::as_str)
+        .map(String::from)
+        .ok_or(Error::MissingIssuer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_missing_or_mistyped_issuer_is_reported_as_such() {
+        for c in [json!({ "sub": "u" }), json!({ "sub": "u", "iss": 42 })] {
+            assert!(matches!(issuer(&c), Err(Error::MissingIssuer)), "{c}");
+        }
+        assert_eq!(issuer(&json!({ "iss": "https://i" })).unwrap(), "https://i");
     }
 }

@@ -81,6 +81,9 @@ pub enum Error {
     #[error("the token carries no subject at the configured path")]
     MissingSubject,
 
+    #[error("the token carries no string iss claim")]
+    MissingIssuer,
+
     #[error("malformed delegation: {0}")]
     MalformedDelegation(String),
 
