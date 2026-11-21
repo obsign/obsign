@@ -885,6 +885,11 @@ pub(crate) fn handle_from_server(
         }),
     ];
 
+    // Every listing the result carries is filtered, not just the first one
+    // found: nothing obliges a server to answer `tools/list` with tools
+    // alone, and a `resources` array riding along a tools listing would
+    // otherwise reach the agent whole.
+    let mut filtered = msg.clone();
     for (pointer, id_field, label, allows) in listings {
         let Some(items) = msg.pointer(pointer).and_then(Value::as_array) else {
             continue;
@@ -914,14 +919,12 @@ pub(crate) fn handle_from_server(
             );
         }
 
-        let mut filtered = msg.clone();
         if let Some(slot) = filtered.pointer_mut(pointer) {
             *slot = Value::Array(kept);
         }
-        return Downstream::Forward(filtered);
     }
 
-    Downstream::Forward(msg)
+    Downstream::Forward(filtered)
 }
 
 /// Arbitrates the channels the *server* opens: `sampling/createMessage`
@@ -1481,6 +1484,34 @@ mod tests {
             handle_from_agent(pong(0), &state, &ctx, None).unwrap(),
             Forward::Reply(_)
         ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_listing_in_a_result_is_filtered() {
+        // The filter returned after the first listing it found: a server
+        // answering with `tools` *and* `resources` had the resources reach
+        // the agent unfiltered, names the policy hides included.
+        let (dir, state) = open_state("listings");
+        let ctx = ctx_with(
+            "@id(\"allow_tools\")\n\
+             permit (principal, action == Action::\"tool_call\", resource);\n",
+        );
+        let resp = json!({ "jsonrpc": "2.0", "id": 3, "result": {
+            "tools": [ { "name": "search_docs" } ],
+            "resources": [ { "uri": "db://prod/customers", "name": "Customer table dump" } ],
+            "prompts": [ { "name": "summarize" } ]
+        }});
+        let Downstream::Forward(out) = handle_from_server(resp, &state, &ctx, "sess") else {
+            panic!("a listing is delivered, filtered");
+        };
+        assert_eq!(out.pointer("/result/tools").and_then(Value::as_array).map(Vec::len), Some(1));
+        assert_eq!(
+            out.pointer("/result/resources"),
+            Some(&json!([])),
+            "no resource is readable under this policy: {out}"
+        );
+        assert_eq!(out.pointer("/result/prompts"), Some(&json!([])), "{out}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
