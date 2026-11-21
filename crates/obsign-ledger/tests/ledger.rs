@@ -383,7 +383,8 @@ fn a_cron_seal_overlapping_a_pass_neither_forks_the_store_nor_stops_run() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut sealed = false;
     while std::time::Instant::now() < deadline && still_running {
-        if Store::open(&store_dir, "c1").map(|s| s.checkpoints().len()).unwrap_or(0) == 1 {
+        // Read-only: a repairing open could trim the line `run` is writing.
+        if Store::open_read_only(&store_dir, "c1").map(|s| s.checkpoints().len()).unwrap_or(0) == 1 {
             sealed = true;
             break;
         }
@@ -528,6 +529,49 @@ fn torn_final_store_line_is_survivable() {
     grow_wal(&wal_dir, 1);
     let records = obsign_wal::read(&wal_dir, "c1").unwrap();
     assert!(seal_pass(&records, &mut store, &s, &no_origin(), 2000, 1).unwrap().is_some());
+
+    let _ = std::fs::remove_dir_all(&wal_dir);
+    let _ = std::fs::remove_dir_all(&store_dir);
+}
+
+#[test]
+fn readers_leave_a_torn_tail_as_found() {
+    // `export` and `anchor request` only read. Pointed at a backup copy, or
+    // at a store `run` is appending to, they must not trim or complete the
+    // last line: that is the writer's repair, made under its lock.
+    let wal_dir = tmpdir("ro-wal");
+    let store_dir = tmpdir("ro-store");
+    grow_wal(&wal_dir, 3);
+    {
+        let mut store = Store::open(&store_dir, "c1").unwrap();
+        let records = obsign_wal::read(&wal_dir, "c1").unwrap();
+        seal_pass(&records, &mut store, &sealer(), &no_origin(), 1000, 1).unwrap().unwrap();
+    }
+    let path = store_dir.join("c1.checkpoints.jsonl");
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes.extend_from_slice(b"{\"checkpoint\":{\"chain_id\":\"c1\",\"from_s");
+    std::fs::write(&path, &bytes).unwrap();
+
+    let store = Store::open_read_only(&store_dir, "c1").unwrap();
+    assert_eq!(store.checkpoints().len(), 1);
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
+    let out = wal_dir.join("pack.json");
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_obsign-ledger"))
+        .arg("export")
+        .args(["--store", store_dir.to_str().unwrap()])
+        .args(["--wal", wal_dir.to_str().unwrap()])
+        .args(["--chain-id", "c1", "--out", out.to_str().unwrap()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert_eq!(std::fs::read(&path).unwrap(), bytes, "export repaired the store it read");
+
+    // A missing store is read as empty, not created.
+    let missing = store_dir.join("nope");
+    assert!(Store::open_read_only(&missing, "c1").unwrap().checkpoints().is_empty());
+    assert!(!missing.exists());
 
     let _ = std::fs::remove_dir_all(&wal_dir);
     let _ = std::fs::remove_dir_all(&store_dir);

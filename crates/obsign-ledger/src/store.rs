@@ -29,6 +29,21 @@ impl Store {
     /// Opens (or creates) the store and re-verifies everything in it.
     pub fn open(dir: &Path, chain_id: &str) -> Result<Self, Error> {
         std::fs::create_dir_all(dir)?;
+        Self::load(dir, chain_id, true)
+    }
+
+    /// Opens the store without writing to it: for readers (export, anchor
+    /// request, the console), which may be pointed at a backup copy or at a
+    /// store a sealing pass is appending to right now. A torn final line is
+    /// reported on stderr and left as found: an unterminated line that
+    /// parses is read (it is a whole seal, verified like any other), one
+    /// that does not is skipped. Repairing either is the writer's job. A
+    /// missing directory is an empty store, not one to create.
+    pub fn open_read_only(dir: &Path, chain_id: &str) -> Result<Self, Error> {
+        Self::load(dir, chain_id, false)
+    }
+
+    fn load(dir: &Path, chain_id: &str, repair: bool) -> Result<Self, Error> {
 
         let keys: Vec<PublicKeyEntry> = {
             let path = dir.join("keys.json");
@@ -60,7 +75,7 @@ impl Store {
         }
 
         let checkpoints: Vec<SignedCheckpoint> =
-            read_jsonl(&dir.join(format!("{chain_id}.checkpoints.jsonl")))?;
+            read_jsonl(&dir.join(format!("{chain_id}.checkpoints.jsonl")), repair)?;
 
         // Full re-validation, not a format check. The threat is someone with
         // write access to this directory; the answer is that nothing loaded
@@ -105,7 +120,7 @@ impl Store {
         }
 
         let anchors: Vec<Anchor> =
-            read_jsonl(&dir.join(format!("{chain_id}.anchors.jsonl")))?;
+            read_jsonl(&dir.join(format!("{chain_id}.anchors.jsonl")), repair)?;
         for a in &anchors {
             if !checkpoints
                 .iter()
@@ -153,7 +168,7 @@ impl Store {
             }
             Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
         }
-        let mut store = Store::open(dir, chain_id)?;
+        let mut store = Self::load(dir, chain_id, true)?;
         store._lock = Some(f);
         Ok(store)
     }
@@ -326,7 +341,10 @@ fn sync_dir(dir: &Path) -> Result<(), Error> {
 /// and it is refused wherever it sits. Trimming it would erase the sealed
 /// boundary the next pass compares the WAL against, and a rewritten WAL
 /// would then be sealed as if it were history.
-fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T>, Error> {
+///
+/// With `repair` false, nothing is written: the torn tail is reported and
+/// read as it would be after the repair, without making it.
+fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path, repair: bool) -> Result<Vec<T>, Error> {
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -337,6 +355,18 @@ fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T>, Err
     for (i, chunk) in content.split_inclusive('\n').enumerate() {
         let Some(line) = chunk.strip_suffix('\n') else {
             // The unterminated tail, necessarily the last chunk.
+            if !repair {
+                let parsed = serde_json::from_str::<T>(chunk).ok();
+                eprintln!(
+                    "[ledger] {}: unterminated final line ({} bytes, {}), left as \
+                     found: the next sealing pass repairs it",
+                    path.display(),
+                    chunk.len(),
+                    if parsed.is_some() { "a whole entry, read" } else { "torn, skipped" }
+                );
+                items.extend(parsed);
+                break;
+            }
             let mut f = OpenOptions::new().write(true).open(path)?;
             match serde_json::from_str::<T>(chunk) {
                 Ok(v) => {

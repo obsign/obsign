@@ -181,7 +181,7 @@ pub fn export_all(
     pinned_seal_keys: Option<&[PublicKeyEntry]>,
 ) -> Result<(Vec<ChainExport>, bool), Error> {
     if !store_dir.is_dir() {
-        // Store::open would silently create an empty store, and every chain
+        // An absent store reads as empty, and every chain
         // would export as "0 sealed", technically true, operationally a
         // mistyped path. Refuse instead.
         return Err(Error::Source(format!(
@@ -238,7 +238,7 @@ pub fn export_all(
 
     for chain_id in chains {
         let records = obsign_wal::read(wal_dir, &chain_id)?;
-        let store = Store::open(store_dir, &chain_id)?;
+        let store = Store::open_read_only(store_dir, &chain_id)?;
         let trusted = match &pinned {
             None => store.keys().to_vec(),
             Some(pinned) => {

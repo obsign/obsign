@@ -92,9 +92,10 @@ for f in backup/wal/*.jsonl; do
 done
 ```
 
-Exit code 0 or the backup is not a backup. (Opening the store copy may trim
-a torn final line captured mid-append. The copy is undamaged; that is the
-normal crash-recovery path.)
+Exit code 0 or the backup is not a backup. (A store copy taken mid-append
+may end in an unterminated line. `export` reports it on stderr and leaves
+the copy as found; the copy is undamaged, and the next sealing pass on a
+live store repairs such a line under its lock.)
 
 For the fleet dossier, pin the sealing keys too. `obsign-control export`
 otherwise verifies each pack against the store's own `keys.json`, which

@@ -478,8 +478,8 @@ fn do_export(
     deployment_bundle: Option<&Path>,
 ) -> Result<()> {
     let records = obsign_wal::read(wal_dir, &store_args.chain_id).context("reading the log")?;
-    let store =
-        Store::open(&store_args.store, &store_args.chain_id).context("opening the store")?;
+    let store = Store::open_read_only(&store_args.store, &store_args.chain_id)
+        .context("opening the store")?;
 
     let origin_keys = match origin_keys {
         None => Vec::new(),
@@ -543,8 +543,8 @@ fn anchor_request(
     checkpoint: Option<&str>,
     out: &Path,
 ) -> Result<()> {
-    let store =
-        Store::open(&store_args.store, &store_args.chain_id).context("opening the store")?;
+    let store = Store::open_read_only(&store_args.store, &store_args.chain_id)
+        .context("opening the store")?;
 
     let hash = match checkpoint {
         Some(hex) => Hash::from_hex(hex).context("--checkpoint is not a valid hash")?,

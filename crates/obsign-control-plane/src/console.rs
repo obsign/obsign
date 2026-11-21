@@ -336,7 +336,7 @@ fn chain_row(console: &Console, id: &str) -> ChainRow {
     let last_ms = records.last().map(|r| r.ts_ms);
 
     let store = match &console.store_dir {
-        Some(dir) if dir.is_dir() => match Store::open(dir, id) {
+        Some(dir) if dir.is_dir() => match Store::open_read_only(dir, id) {
             Ok(s) => Some(s),
             Err(e) => {
                 return ChainRow {
