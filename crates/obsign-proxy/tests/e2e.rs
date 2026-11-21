@@ -563,6 +563,42 @@ fn an_unparsable_line_is_refused_not_relayed() {
 }
 
 #[test]
+fn a_server_message_that_is_not_one_object_never_reaches_the_agent() {
+    // Regression: a batch from the server matched neither `method` nor `id`
+    // and was delivered untouched, past the listing filter and the
+    // server-initiated arbitration; a non-JSON line was relayed as-is.
+    let f = run(
+        "server-unreadable",
+        CEDAR,
+        declared(),
+        &[
+            TRAFFIC[0],
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_docs","arguments":{"emit":"unreadable"}}}"#,
+        ],
+    );
+
+    // The call itself still completes.
+    assert_eq!(f.reply(2).pointer("/result/isError"), Some(&Value::Bool(false)));
+    assert!(
+        f.stdout.iter().all(Value::is_object),
+        "a batch reached the agent: {:?}",
+        f.stdout
+    );
+    assert!(
+        f.stdout
+            .iter()
+            .all(|v| v.get("method").and_then(Value::as_str) != Some("sampling/createMessage")),
+        "an unarbitrated sampling request reached the agent"
+    );
+
+    // Both are in the log, refused.
+    assert_eq!(
+        accesses(&f),
+        vec!["(unreadable server message)", "(unreadable server message)"]
+    );
+}
+
+#[test]
 fn tools_list_is_filtered() {
     let f = run("list", CEDAR, declared(), TRAFFIC);
     let tools: Vec<&str> = f

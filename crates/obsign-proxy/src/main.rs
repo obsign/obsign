@@ -36,8 +36,8 @@ use anyhow::{bail, Context as _, Result};
 use auth::Auth;
 use clap::Parser;
 use gateway::{
-    handle_from_agent, handle_from_server, spawn_server, unreadable_from_agent, Ctx,
-    Downstream, Forward,
+    handle_from_agent, handle_from_server, spawn_server, unreadable_from_agent,
+    unreadable_from_server, Ctx, Downstream, Forward,
 };
 use obsign_identity::BundleSource;
 use origin::OriginSigner as _;
@@ -594,24 +594,26 @@ fn run_stdio(
                 if line.trim().is_empty() {
                     continue;
                 }
-                let out = match serde_json::from_str::<Value>(&line) {
-                    Ok(msg) => match handle_from_server(msg, &state, &ctx, &session_id) {
-                        Downstream::Forward(v) => v.to_string(),
-                        Downstream::Reply(v) => {
-                            // Refusal of a server-initiated request: answered
-                            // upstream, nothing reaches the agent.
-                            let mut guard = child_stdin.lock().unwrap();
-                            if let Some(stdin) = guard.as_mut() {
-                                let _ = writeln!(stdin, "{v}");
-                                let _ = stdin.flush();
-                            }
-                            continue;
+                let downstream = match serde_json::from_str::<Value>(&line) {
+                    Ok(msg) => handle_from_server(msg, &state, &ctx, &session_id),
+                    // Non-JSON line: recorded and dropped, never relayed. An
+                    // agent parser more lenient than ours would read in it
+                    // whatever the filters were meant to hide.
+                    Err(_) => unreadable_from_server(&line, &state, &ctx),
+                };
+                let out = match downstream {
+                    Downstream::Forward(v) => v.to_string(),
+                    Downstream::Reply(v) => {
+                        // Refusal of a server-initiated request: answered
+                        // upstream, nothing reaches the agent.
+                        let mut guard = child_stdin.lock().unwrap();
+                        if let Some(stdin) = guard.as_mut() {
+                            let _ = writeln!(stdin, "{v}");
+                            let _ = stdin.flush();
                         }
-                        Downstream::Drop => continue,
-                    },
-                    // Non-JSON line: relayed as-is rather than breaking a
-                    // protocol we do not understand.
-                    Err(_) => line.clone(),
+                        continue;
+                    }
+                    Downstream::Drop => continue,
                 };
                 let mut lock = stdout.lock();
                 if writeln!(lock, "{out}").is_err() || lock.flush().is_err() {

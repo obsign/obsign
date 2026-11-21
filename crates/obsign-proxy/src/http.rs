@@ -724,13 +724,13 @@ fn dispatch_from_server(
         if line.trim().is_empty() {
             continue;
         }
-        let Ok(msg) = serde_json::from_str::<Value>(&line) else {
-            // stdio relays unknown bytes as-is; HTTP has no channel for them.
-            eprintln!("[obsign] session {}: non-JSON server line dropped", &sess.id[..8]);
-            continue;
+        let downstream = match serde_json::from_str::<Value>(&line) {
+            Ok(msg) => gateway::handle_from_server(msg, &sess.state, &sess.ctx, &sess.id),
+            // Recorded and dropped, as on stdio.
+            Err(_) => gateway::unreadable_from_server(&line, &sess.state, &sess.ctx),
         };
 
-        let out = match gateway::handle_from_server(msg, &sess.state, &sess.ctx, &sess.id) {
+        let out = match downstream {
             gateway::Downstream::Forward(v) => v,
             gateway::Downstream::Reply(v) => {
                 // Refused server-initiated request: answered in the agent's

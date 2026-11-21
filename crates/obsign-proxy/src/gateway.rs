@@ -239,6 +239,33 @@ pub(crate) fn unreadable_from_agent(
     ))
 }
 
+/// A message from the server that is not a single JSON object: a line that
+/// does not parse, or a batch.
+///
+/// Never delivered, for the same parser-differential reason as
+/// [`unreadable_from_agent`]; a batch in particular would carry listings and
+/// server-initiated requests past the filters, which read one object at a
+/// time. Nothing can be answered, so the record is the only trace.
+pub(crate) fn unreadable_from_server(
+    raw: &str,
+    state: &Arc<Mutex<session::Session>>,
+    ctx: &Ctx,
+) -> Downstream {
+    let mut s = state.lock().unwrap();
+    if let Err(e) = record_refused(
+        &mut s,
+        ctx,
+        "(unreadable server message)",
+        raw.as_bytes(),
+        "server message is not a single JSON object (default-deny)",
+    ) {
+        eprintln!("[obsign] audit write failed while refusing a server message: {e}");
+    }
+    drop(s);
+    eprintln!("[obsign] DROPPED server message that is not a single JSON object");
+    Downstream::Drop
+}
+
 pub(crate) fn spawn_server(cmd: &[String]) -> Result<Child> {
     let (prog, args) = cmd.split_first().expect("non-empty command");
     Command::new(prog)
@@ -704,6 +731,12 @@ pub(crate) fn handle_from_server(
     ctx: &Ctx,
     session_id: &str,
 ) -> Downstream {
+    // Everything below reads one object at a time; anything else would pass
+    // the filters untouched, because `get` on an array finds nothing.
+    if !msg.is_object() {
+        return unreadable_from_server(&msg.to_string(), state, ctx);
+    }
+
     // A method means this is not a response: the server is speaking first.
     // Routed before the response-matching below, a server-initiated request
     // carries an id from the *server's* id space, and matching it against
