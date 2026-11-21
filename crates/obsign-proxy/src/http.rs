@@ -320,6 +320,15 @@ fn handle_post(
     }
 
     let has_id = msg.get("id").is_some_and(|v| !v.is_null());
+    // Read from the message, not from `method`: a `method` that is present
+    // but not a string makes a request the gateway refuses as out of scope,
+    // never a response.
+    let is_response = msg.get("method").is_none();
+    let arbitrated = match msg.get("method") {
+        Some(Value::String(m)) => gateway::arbitrated(Some(m)),
+        Some(_) => true,
+        None => false,
+    };
 
     // Requests the gateway does not arbitrate never reach the auth path
     // inside `handle_from_agent`, but their *responses* consult the
@@ -327,97 +336,58 @@ fn handle_post(
     // a renewal takes effect before the request is forwarded, not one call
     // later. Arbitrated methods present it themselves, under the session
     // lock, where it belongs.
-    if !gateway::arbitrated(method) {
+    if !arbitrated {
         present_bearer(&sess, bearer);
     }
 
-    // No method: the agent is *answering* a server-initiated request
-    // (sampling, elicitation). The server does not respond to a response,
-    // so there is nothing to wait for; `forward_and_wait` would block
-    // this POST forever. `handle_from_agent` closes the pending effect
-    // with the response's hash; the bytes are then relayed. 202 per spec.
-    if method.is_none() && has_id {
-        let _ = gateway::handle_from_agent(msg.clone(), &sess.state, &sess.ctx, bearer);
-        return match forward_raw(&sess, &msg.to_string()) {
-            Ok(()) => {
-                respond(stream, 202, "Accepted", &[], None, b"")?;
-                Ok(Next::KeepAlive)
-            }
-            Err(_) => {
+    // Nothing to wait for: a response to a server-initiated request (the
+    // server does not respond to a response, so `forward_and_wait` would
+    // block this POST forever), or a message without an id. An arbitrated
+    // method without an id is not machinery: JSON-RPC calls the shape a
+    // notification, but a lenient server parser may execute it anyway, and
+    // a `resources/subscribe` processed that way has a lasting effect.
+    //
+    // All of them go through `handle_from_agent`, exactly as on stdio, and
+    // its answer is the one enforced: a response matching no in-flight
+    // request, an act refused by policy, a record that cannot be written,
+    // none of them reaches the server. Only the transport answer differs:
+    // 202 on a pass, the refusal with a null id otherwise.
+    if is_response || !has_id {
+        let fwd = match gateway::handle_from_agent(msg, &sess.state, &sess.ctx, bearer) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("[obsign] audit write failed, message refused: {e}");
                 respond_json(
                     stream,
-                    502,
-                    "Bad Gateway",
+                    500,
+                    "Internal Server Error",
                     &[],
-                    &rpc_error(&Value::Null, -32603, "wrapped MCP server is gone"),
+                    &rpc_error(&Value::Null, -32603, "audit log unavailable"),
                 )?;
-                Ok(Next::KeepAlive)
+                return Ok(Next::KeepAlive);
             }
         };
-    }
-
-    if !has_id {
-        // An arbitrated method with no id is not machinery: JSON-RPC calls
-        // the shape a notification, but a lenient server parser may execute
-        // it anyway, and a `resources/subscribe` processed that way has a
-        // lasting effect. It goes through arbitration like any other act,
-        // exactly as the stdio path does; only the transport answer differs
-        // (nothing to wait for on a pass, the refusal carries a null id).
-        if gateway::arbitrated(method) {
-            let fwd = match gateway::handle_from_agent(msg, &sess.state, &sess.ctx, bearer) {
-                Ok(f) => f,
-                Err(e) => {
-                    eprintln!("[obsign] audit write failed, call refused: {e}");
-                    respond_json(
-                        stream,
-                        500,
-                        "Internal Server Error",
-                        &[],
-                        &rpc_error(&Value::Null, -32603, "audit log unavailable"),
-                    )?;
-                    return Ok(Next::KeepAlive);
-                }
-            };
-            return match fwd {
-                Forward::Reply(resp) => {
-                    respond_json(stream, 200, "OK", &[], resp.as_bytes())?;
+        return match fwd {
+            Forward::Reply(resp) => {
+                respond_json(stream, 200, "OK", &[], resp.as_bytes())?;
+                Ok(Next::KeepAlive)
+            }
+            Forward::Pass(raw) => match forward_raw(&sess, &raw) {
+                Ok(()) => {
+                    respond(stream, 202, "Accepted", &[], None, b"")?;
                     Ok(Next::KeepAlive)
                 }
-                Forward::Pass(raw) => match forward_raw(&sess, &raw) {
-                    Ok(()) => {
-                        respond(stream, 202, "Accepted", &[], None, b"")?;
-                        Ok(Next::KeepAlive)
-                    }
-                    Err(_) => {
-                        respond_json(
-                            stream,
-                            502,
-                            "Bad Gateway",
-                            &[],
-                            &rpc_error(&Value::Null, -32603, "wrapped MCP server is gone"),
-                        )?;
-                        Ok(Next::KeepAlive)
-                    }
-                },
-            };
-        }
-        // Notification, or a response to a server-initiated request: forward,
-        // nothing to wait for. 202 per spec.
-        return match forward_raw(&sess, &msg.to_string()) {
-            Ok(()) => {
-                respond(stream, 202, "Accepted", &[], None, b"")?;
-                Ok(Next::KeepAlive)
-            }
-            Err(_) => {
-                respond_json(
-                    stream,
-                    502,
-                    "Bad Gateway",
-                    &[],
-                    &rpc_error(&Value::Null, -32603, "wrapped MCP server is gone"),
-                )?;
-                Ok(Next::KeepAlive)
-            }
+                Err(_) => {
+                    respond_json(
+                        stream,
+                        502,
+                        "Bad Gateway",
+                        &[],
+                        &rpc_error(&Value::Null, -32603, "wrapped MCP server is gone"),
+                    )?;
+                    Ok(Next::KeepAlive)
+                }
+            },
         };
     }
 

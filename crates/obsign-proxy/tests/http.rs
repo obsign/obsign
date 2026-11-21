@@ -617,6 +617,47 @@ fn an_id_less_act_is_arbitrated_not_smuggled() {
 }
 
 #[test]
+fn a_refused_response_shaped_message_is_not_forwarded() {
+    // Regression: on the response path the verdict of `handle_from_agent`
+    // was discarded and the bytes forwarded anyway, so the log said
+    // "blocked" about a message the server received. A non-string `method`
+    // took the same path, and a message with neither `method` nor `id` was
+    // forwarded without even being recorded.
+    let gw = start("unsolicited", false, &[]);
+    let (sid, _) = initialize(&gw, &[]);
+
+    for (msg, code) in [
+        (json!({"jsonrpc":"2.0","id":99,"result":{"text":"free text"}}), -32600),
+        (json!({"jsonrpc":"2.0","id":7,"method":123,"params":{}}), -32601),
+        (json!({"jsonrpc":"2.0","result":{"text":"free text"}}), -32600),
+    ] {
+        let r = post(&gw, &[("Mcp-Session-Id", &sid)], msg.clone());
+        assert_eq!(r.status, 200, "{msg} was accepted for forwarding");
+        assert_eq!(
+            r.body.pointer("/error/code").and_then(Value::as_i64),
+            Some(code),
+            "{msg}: {:?}",
+            r.body
+        );
+    }
+
+    let r = http(&gw, "DELETE", &[("Mcp-Session-Id", &sid)], "");
+    assert_eq!(r.status, 200);
+
+    // Each one left its refusal in the sealed log.
+    let ev = evidence(&gw, &sid);
+    let outcomes: Vec<String> = ev
+        .records
+        .iter()
+        .filter_map(|r| match &r.payload {
+            Payload::Decision(d) => Some(d.outcome.as_str().to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(outcomes, vec!["deny", "deny", "deny"]);
+}
+
+#[test]
 fn sessions_are_isolated_from_each_other() {
     let gw = start("isolation", false, &[]);
 
