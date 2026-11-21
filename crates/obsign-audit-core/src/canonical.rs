@@ -42,8 +42,7 @@ impl Encoder {
     }
 
     pub fn bytes(&mut self, b: &[u8]) -> &mut Self {
-        self.buf
-            .extend_from_slice(&(b.len() as u32).to_be_bytes());
+        self.buf.extend_from_slice(&length_prefix(b.len()).to_be_bytes());
         self.buf.extend_from_slice(b);
         self
     }
@@ -99,9 +98,36 @@ impl Encoder {
     }
 }
 
+/// The 4-byte length prefix, refusing what it cannot represent.
+///
+/// `as u32` would wrap a field of 4 GiB + n bytes to n, and two different
+/// byte strings would then share an encoding: the one property this format
+/// exists for. Every caller returns a bare digest, so the refusal is a
+/// panic, not an error to thread through; no honest record or checkpoint
+/// comes near the limit, and `obsign verify` caps the pack it reads well
+/// below it.
+fn length_prefix(len: usize) -> u32 {
+    u32::try_from(len).unwrap_or_else(|_| {
+        panic!("canonical encoding: a {len}-byte field exceeds the 4 GiB length prefix")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[should_panic(expected = "exceeds the 4 GiB length prefix")]
+    fn a_field_over_4_gib_is_refused_not_wrapped() {
+        // Allocating 4 GiB in a test is not an option; the prefix is what
+        // `bytes` writes, and it used to be `len as u32`, i.e. 0 here.
+        length_prefix(u32::MAX as usize + 1);
+    }
+
+    #[test]
+    fn the_largest_representable_length_still_encodes() {
+        assert_eq!(length_prefix(u32::MAX as usize), u32::MAX);
+    }
 
     #[test]
     fn length_prefix_prevents_concatenation_collisions() {

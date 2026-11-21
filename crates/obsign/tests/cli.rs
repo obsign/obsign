@@ -218,3 +218,22 @@ fn the_legacy_opt_out_does_not_tolerate_an_untrusted_signature() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(out.status.code(), Some(1), "stdout: {stdout}");
 }
+
+#[test]
+fn an_oversized_pack_is_refused_before_it_is_read() {
+    // A sparse file: 1 GiB + 1 byte on paper, nothing on disk. The verifier
+    // used to read it whole into memory before failing to parse it.
+    let path = write_tmp("oversized.json", "");
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len((1 << 30) + 1)
+        .unwrap();
+
+    let out = obsign(&["verify", path.to_str().unwrap()]);
+    let _ = std::fs::remove_file(&path);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "stderr: {stderr}");
+    assert!(stderr.contains("larger than"), "stderr: {stderr}");
+}
