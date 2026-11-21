@@ -122,6 +122,12 @@ pub enum Error {
         requested: &'static str,
     },
 
+    #[error(
+        "{0} is locked by another publish — wait for it to finish; releases \
+         are published one at a time"
+    )]
+    Busy(String),
+
     #[error("invalid manifest signature")]
     BadManifestSignature,
 
@@ -189,15 +195,64 @@ impl OpsKey {
 
 /// Write-then-rename. This is what makes `publish` safe to run against live
 /// gateways: a reader sees the old file or the new one, never a torn one.
+///
+/// The temporary file has a name of its own (pid and a counter), created
+/// exclusively: a fixed `<name>.tmp` was shared by every writer of that path
+/// and followed whatever sat there. The directory is synced after the
+/// rename, or a crash could forget the rename the caller was told happened.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), Error> {
-    let tmp = path.with_extension("tmp");
-    {
-        let mut f = std::fs::File::create(&tmp)?;
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = path.with_file_name(format!(".{name}.{}.{n}.tmp", std::process::id()));
+    let written = (|| {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
         f.write_all(bytes)?;
         f.sync_data()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
     }
-    std::fs::rename(&tmp, path)?;
+    sync_parent_dir(path)
+}
+
+/// Makes a rename or a creation in `path`'s directory durable.
+pub(crate) fn sync_parent_dir(path: &Path) -> Result<(), Error> {
+    #[cfg(unix)]
+    {
+        let parent = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => Path::new("."),
+        };
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
+}
+
+/// An exclusive advisory lock on `dir`, held until the returned file is
+/// dropped. Two publishes interleaving their writes into one dist/ could
+/// each pass the other's checks and leave a manifest naming the other's
+/// artifacts; the second one fails fast instead. The kernel drops the lock
+/// with the process, so a crash leaves nothing to clean up.
+pub(crate) fn lock_dir(dir: &Path) -> Result<std::fs::File, Error> {
+    let path = dir.join(".publish.lock");
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)?;
+    match f.try_lock() {
+        Ok(()) => Ok(f),
+        Err(std::fs::TryLockError::WouldBlock) => Err(Error::Busy(dir.display().to_string())),
+        Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
+    }
 }
 
 /// Records the ops key's public half in a trusted-keys file, the file a

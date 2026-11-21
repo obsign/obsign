@@ -1624,6 +1624,76 @@ fn the_same_version_with_another_artifact_set_is_a_conflict() {
 }
 
 #[test]
+fn a_second_publish_fails_fast_while_one_holds_the_lock() {
+    let src = tmp("lock-src");
+    let dist = tmp("lock-dist");
+    write_source_tree(&src);
+    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", &ops()).unwrap();
+
+    // Another publish in flight holds dist/'s lock: interleaving with it
+    // could leave a manifest naming the other's artifacts.
+    let held = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dist.join(".publish.lock"))
+        .unwrap();
+    held.lock().unwrap();
+    assert!(matches!(publish(&dist, &v1, &ops(), 1_000), Err(Error::Busy(_))));
+    assert!(!dist.join("manifest.json").exists());
+
+    drop(held);
+    publish(&dist, &v1, &ops(), 1_000).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_release_file_is_an_error_not_a_crash_to_repair() {
+    use std::os::unix::fs::PermissionsExt;
+    let src = tmp("unreadable-src");
+    let dist = tmp("unreadable-dist");
+    write_source_tree(&src);
+    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", &ops()).unwrap();
+    let published = publish(&dist, &v1, &ops(), 1_000).unwrap();
+
+    let file = published.release_dir.join("policy-bundle.json");
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&file).is_ok() {
+        return; // running as root: permissions do not bite, nothing to prove
+    }
+    let result = publish(&dist, &v1, &ops(), 2_000);
+    // Still the unreadable file: replacing what cannot be read is replacing
+    // an immutable release without knowing what it held.
+    let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(matches!(result, Err(Error::Io(_))), "{result:?}");
+    assert_eq!(mode, 0o000, "the release file was replaced");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_planted_temp_file_cannot_steer_an_atomic_write() {
+    let src = tmp("tmpname-src");
+    let dist = tmp("tmpname-dist");
+    write_source_tree(&src);
+    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", &ops()).unwrap();
+
+    // A symlink where a fixed `<name>.tmp` would be written: followed, it
+    // overwrites its target, and the rename then makes the current bundle a
+    // symlink to wherever it points.
+    let victim = tmp("tmpname-victim").join("victim");
+    std::fs::write(&victim, b"untouched").unwrap();
+    std::os::unix::fs::symlink(&victim, dist.join("policy-bundle.tmp")).unwrap();
+
+    publish(&dist, &v1, &ops(), 1_000).unwrap();
+    assert_eq!(std::fs::read(&victim).unwrap(), b"untouched");
+    assert!(std::fs::symlink_metadata(dist.join("policy-bundle.json"))
+        .unwrap()
+        .file_type()
+        .is_file());
+}
+
+#[test]
 fn a_hostile_payload_kind_cannot_inject_html() {
     // The `kind` column used to be one of ten compile-time literals, which is
     // why it was interpolated raw. An unknown payload's kind is whatever the

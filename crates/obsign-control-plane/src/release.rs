@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use crate::compile::Compiled;
-use crate::{merge_trusted_key, write_atomic, Error, OpsKey};
+use crate::{lock_dir, merge_trusted_key, write_atomic, Error, OpsKey};
 
 pub const FORMAT: &str = "obsign-release/1";
 
@@ -127,6 +127,7 @@ pub fn publish(
     ts_ms: i64,
 ) -> Result<Published, Error> {
     std::fs::create_dir_all(dist)?;
+    let _lock = lock_dir(dist)?;
 
     // Serialized once; these exact bytes are hashed, written into the release
     // directory and copied to the current files. Manifest hash == file bytes,
@@ -170,7 +171,10 @@ pub fn publish(
         match std::fs::read(release_dir.join(name)) {
             Ok(existing) if &existing == bytes => {}
             Ok(_) => return Err(Error::VersionConflict { version }),
-            Err(_) => missing.push((name, bytes)),
+            // Only "not there" is a publish that died halfway. A file that
+            // exists but cannot be read is not evidence it may be replaced.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => missing.push((name, bytes)),
+            Err(e) => return Err(e.into()),
         }
     }
     let reused = missing.is_empty();
@@ -186,7 +190,12 @@ pub fn publish(
         }
     }
     let manifest_path = release_dir.join("manifest.json");
-    if let Ok(bytes) = std::fs::read(&manifest_path) {
+    let existing_manifest = match std::fs::read(&manifest_path) {
+        Ok(bytes) => Some(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e.into()),
+    };
+    if let Some(bytes) = existing_manifest {
         if let Ok(existing) = serde_json::from_slice::<SignedManifest>(&bytes) {
             let names: Vec<&str> = existing.manifest.artifacts.iter().map(|a| a.name.as_str()).collect();
             if names.iter().any(|n| !published(n)) || names.len() != artifacts.len() {
