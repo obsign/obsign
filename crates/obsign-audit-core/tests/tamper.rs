@@ -1049,6 +1049,24 @@ mod deployment {
     }
 
     #[test]
+    fn an_origin_key_cannot_sign_a_deployment_bundle() {
+        // A gateway holding a trusted origin key signs a bundle enrolling a
+        // key of its choosing, then writes records under it. The bundle
+        // signer was looked up by key id whatever its role, so the gateway
+        // vouched for itself and the pack exited 0.
+        let gw = SigningKey::from_bytes(&[21u8; 32]);
+        let rogue = SigningKey::from_bytes(&[23u8; 32]);
+        let seal = signing_key();
+        let ev = pack_with_bundle(&rogue, &seal, &gw, "gw-1");
+
+        let trusted = vec![pubkey_entry(&seal), origin_entry("ops-1", &gw)];
+        let r = evidence::verify_with(&ev, &trusted, &REQUIRE);
+        assert!(!r.is_valid(), "an origin key must not enrol origin keys");
+        assert!(codes(&r).contains(&"key_role_mismatch"), "findings: {:?}", r.findings);
+        assert_eq!(r.records_origin_ok, 0);
+    }
+
+    #[test]
     fn an_ops_key_cannot_seal() {
         // The separation this role exists for: whoever publishes the rules
         // must not be able to mint a checkpoint certifying the history those

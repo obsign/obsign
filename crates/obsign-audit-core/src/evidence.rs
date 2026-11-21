@@ -296,11 +296,11 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     // Verified here so its keys join the origin set before the origin pass:
     // one artifact and one root (the ops key) instead of hand-listed origin
     // keys. The ops key is resolved from the trusted set by the key id the
-    // bundle names, whatever role it carries: `KeyRole::Ops` is what it
-    // should say, but trusted-key files written before that role existed
-    // declare the ops key `seal` by default, and they must keep meaning what
-    // they meant (as with the policy/identity bundles the gateway already
-    // trusts by key id).
+    // bundle names: `KeyRole::Ops` is what it should say, but trusted-key
+    // files written before that role existed declare the ops key `seal` by
+    // default, and they must keep meaning what they meant (as with the
+    // policy/identity bundles the gateway already trusts by key id). An
+    // `origin` key is refused: it would let a gateway enrol gateways.
     if let Some(sdb) = &ev.deployment {
         resolve_deployment_bundle(sdb, key_source, &mut origin_keys, opts, &mut findings);
     }
@@ -893,11 +893,28 @@ fn resolve_deployment_bundle(
     opts: &VerifyOptions,
     findings: &mut Vec<Finding>,
 ) {
-    let ops_vk: Option<VerifyingKey> = key_source
+    // `ops`, or `seal` for trusted-key files written before the ops role
+    // existed (see the call site). Never `origin`: a gateway key signing the
+    // bundle would let a gateway enrol more gateways, minting the very
+    // authority the bundle exists to grant.
+    let named: Vec<&PublicKeyEntry> = key_source.iter().filter(|k| k.key_id == sdb.key_id).collect();
+    let ops_vk: Option<VerifyingKey> = named
         .iter()
-        .find(|k| k.key_id == sdb.key_id)
+        .find(|k| k.role != KeyRole::Origin)
         .and_then(|k| k.to_verifying_key().ok());
 
+    if ops_vk.is_none() && !named.is_empty() {
+        findings.push(Finding::error(
+            "key_role_mismatch",
+            format!(
+                "the deployment bundle is signed with key \"{}\", which is an \
+                 origin key. A gateway key enrolling gateways would mint origin \
+                 authority on its own.",
+                sdb.key_id
+            ),
+        ));
+        return;
+    }
     let Some(ops_vk) = ops_vk else {
         findings.push(Finding::warning(
             "deployment_bundle_unverified",
