@@ -572,22 +572,24 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
             ));
             cp_ok = false;
         } else {
-            let mut leaves = Vec::new();
-            let mut missing = Vec::new();
-            for seq in cp.from_seq..=cp.to_seq {
-                match hash_by_seq.get(&seq) {
-                    Some(h) => leaves.push(*h),
-                    None => missing.push(seq),
-                }
-            }
+            // The bounds are attacker-chosen and read before anything is
+            // proven: walking `from_seq..=to_seq` would let `[0..u64::MAX]`
+            // spin the verifier for ever. Only the records the pack actually
+            // holds are visited; the width is counted, never iterated, in
+            // u128 so the full u64 range does not overflow.
+            let leaves: Vec<Hash> = hash_by_seq
+                .range(cp.from_seq..=cp.to_seq)
+                .map(|(_, h)| *h)
+                .collect();
+            let width = u128::from(cp.to_seq) - u128::from(cp.from_seq) + 1;
+            let missing = width - leaves.len() as u128;
 
-            if !missing.is_empty() {
+            if missing > 0 {
                 findings.push(Finding::error(
                     "missing_records",
                     format!(
-                        "checkpoint {label}: {} record(s) of the interval are \
-                         absent from the pack, the root cannot be recomputed",
-                        missing.len()
+                        "checkpoint {label}: {missing} record(s) of the interval \
+                         are absent from the pack, the root cannot be recomputed"
                     ),
                 ));
                 cp_ok = false;
@@ -728,10 +730,22 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     // Frequently overlooked property: a record that is present and consistent
     // but covered by no valid seal is not proven. It may have been appended
     // after the fact. The report has to say so.
-    let sealed_count = records_by_seq
-        .keys()
-        .filter(|seq| sealed.iter().any(|(a, b)| *seq >= a && *seq <= b))
-        .count();
+    //
+    // Counted over merged intervals: testing every record against every
+    // checkpoint is records × checkpoints, and a self-referential pack picks
+    // both numbers.
+    sealed.sort_unstable();
+    let mut merged: Vec<(u64, u64)> = Vec::new();
+    for (a, b) in sealed {
+        match merged.last_mut() {
+            Some((_, end)) if a <= end.saturating_add(1) => *end = (*end).max(b),
+            _ => merged.push((a, b)),
+        }
+    }
+    let sealed_count: usize = merged
+        .iter()
+        .map(|(a, b)| records_by_seq.range(*a..=*b).count())
+        .sum();
 
     let unsealed = records_by_seq.len() - sealed_count;
     if unsealed > 0 {

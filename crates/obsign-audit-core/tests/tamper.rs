@@ -240,6 +240,28 @@ fn removing_a_checkpoint_is_visible() {
 }
 
 #[test]
+fn a_checkpoint_claiming_the_whole_u64_range_cannot_stall_the_verifier() {
+    // The interval bounds are read before the signature means anything, so
+    // anyone can write `[0..u64::MAX]`. The verifier used to walk it seq by
+    // seq, collecting every absent one: a pack that never returns. It must
+    // answer, and answer "tampered".
+    let (mut ev, keys) = sample();
+    ev.checkpoints[0].checkpoint.from_seq = 0;
+    ev.checkpoints[0].checkpoint.to_seq = u64::MAX;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(evidence::verify(&ev, &keys));
+    });
+    let r = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("verify must not iterate an attacker-sized interval");
+    assert!(!r.is_valid());
+    assert!(codes(&r).contains(&"missing_records"));
+    assert_eq!(r.checkpoints_valid, 0);
+}
+
+#[test]
 fn records_appended_after_sealing_are_reported() {
     // Consistent with the chain but covered by no seal: they are not proven,
     // and the report must say so instead of concluding "all good".
