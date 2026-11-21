@@ -199,9 +199,10 @@ impl KeyRole {
 #[serde(deny_unknown_fields)]
 pub struct PublicKeyEntry {
     pub key_id: String,
-    /// Only algorithm accepted for now: `ed25519`.
+    /// `ed25519`; an origin-role identity key may also be `ecdsa-p256`
+    /// (see `crate::origin::IdentityKey`).
     pub algo: String,
-    /// Raw public key, 32 bytes in hex.
+    /// Raw public key in hex: 32 bytes, or the 65-byte uncompressed point.
     pub public_key: String,
     /// Serialized only when it departs from the default: files and packs
     /// written before roles existed keep both their bytes and their meaning.

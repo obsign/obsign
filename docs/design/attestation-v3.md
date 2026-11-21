@@ -51,6 +51,15 @@ system signs ed25519, so on an EdDSA-less TPM the *identity key in the
 bundle* cannot yet be the TPM-resident key; closing that (P-256 session
 certificates, or EdDSA hardware) is a follow-on decision, left open here.
 
+*Update:* the offline verifier now takes the P-256 session-certificate
+side. `obsign verify` accepts an `ecdsa-p256` origin entry as an identity
+key (`DeploymentBundle::active_identity_keys`, `origin::IdentityKey`): it
+verifies a session certificate as raw `r || s` over the SHA-256 of
+`session_cert_signing_bytes`, and refuses a record that names it as its
+signer, since records stay ed25519. The sealing and compiling paths
+(`active_origin_keys`) still refuse P-256, and no gateway signs a
+certificate with a TPM-resident key yet.
+
 *The first-landing status follows.*
 
 Status: **verification layer implemented** (2026-07-30, branch

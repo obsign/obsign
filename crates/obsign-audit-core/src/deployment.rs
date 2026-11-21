@@ -21,6 +21,7 @@ use crate::canonical::Encoder;
 use crate::checkpoint::{KeyRole, PublicKeyEntry};
 use crate::error::Error;
 use crate::hash::{digest, domain};
+use crate::origin::IdentityKey;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -100,14 +101,31 @@ impl DeploymentBundle {
     /// another. Both are refused outright, because a deployment bundle that
     /// quietly dropped a key is precisely the failure this whole design
     /// removes.
+    ///
+    /// Ed25519 only: this is the set records are signed under directly (v0/v1)
+    /// and what the sealing and resuming paths consume. A P-256 identity key
+    /// is refused here as `UnsupportedAlgo`; see [`Self::active_identity_keys`].
     pub fn active_origin_keys(&self) -> Result<BTreeMap<String, VerifyingKey>, Error> {
+        self.active_identity_keys()?
+            .into_iter()
+            .map(|(kid, key)| match key {
+                IdentityKey::Ed25519(vk) => Ok((kid, vk)),
+                other => Err(Error::UnsupportedAlgo(other.algo().to_string())),
+            })
+            .collect()
+    }
+
+    /// The active origin keys with the same refusals, ECDSA-P256 identity
+    /// keys included: the key a TPM without EdDSA holds, which certifies v2
+    /// session keys and nothing else (see [`IdentityKey`]).
+    pub fn active_identity_keys(&self) -> Result<BTreeMap<String, IdentityKey>, Error> {
         let mut map = BTreeMap::new();
         for entry in &self.origin_keys {
             if entry.role != KeyRole::Origin {
                 return Err(Error::NonOriginKeyInBundle(entry.key_id.clone()));
             }
-            let vk = entry.to_verifying_key()?;
-            if map.insert(entry.key_id.clone(), vk).is_some() {
+            let key = IdentityKey::from_entry(entry)?;
+            if map.insert(entry.key_id.clone(), key).is_some() {
                 return Err(Error::DuplicateBundleKey(entry.key_id.clone()));
             }
         }
@@ -208,6 +226,18 @@ mod tests {
             .active_origin_keys()
             .unwrap_err();
         assert!(matches!(err, Error::DuplicateBundleKey(_)));
+    }
+
+    #[test]
+    fn a_p256_identity_key_is_an_identity_key_not_a_record_key() {
+        let mut entry = origin_entry("gw-tpm", 10);
+        entry.algo = "ecdsa-p256".into();
+        entry.public_key = format!("04{}", "11".repeat(64));
+        let b = bundle(vec![origin_entry("gw-a", 11), entry]);
+        let ids = b.active_identity_keys().unwrap();
+        assert!(matches!(ids["gw-tpm"], IdentityKey::EcdsaP256(_)));
+        // The record-key set, which the sealing path consumes, stays ed25519.
+        assert!(matches!(b.active_origin_keys(), Err(Error::UnsupportedAlgo(_))));
     }
 
     #[test]

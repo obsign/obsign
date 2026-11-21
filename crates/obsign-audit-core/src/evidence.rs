@@ -2,7 +2,7 @@ use crate::checkpoint::{KeyRole, PublicKeyEntry, SignedCheckpoint};
 use crate::deployment::SignedDeploymentBundle;
 use crate::hash::{Hash, GENESIS};
 use crate::merkle::merkle_root;
-use crate::origin::SignedRecord;
+use crate::origin::{IdentityKey, SignedRecord};
 use crate::record::Record;
 use crate::rfc3161::{parse_timestamp_response, Anchor};
 use ed25519_dalek::VerifyingKey;
@@ -270,18 +270,24 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     let mut origin_keys = BTreeMap::new();
     let mut ops_keys = BTreeMap::new();
     for entry in key_source {
-        match entry.to_verifying_key() {
-            Ok(vk) => {
-                match entry.role {
-                    KeyRole::Seal => keys.insert(entry.key_id.clone(), vk),
-                    KeyRole::Origin => origin_keys.insert(entry.key_id.clone(), vk),
-                    KeyRole::Ops => ops_keys.insert(entry.key_id.clone(), vk),
-                };
-            }
-            Err(e) => findings.push(Finding::error(
+        // Only an origin entry may be an ECDSA-P256 identity key (see
+        // `IdentityKey`); seal and ops keys stay ed25519.
+        let resolved = match entry.role {
+            KeyRole::Seal => entry.to_verifying_key().map(|vk| {
+                keys.insert(entry.key_id.clone(), vk);
+            }),
+            KeyRole::Origin => IdentityKey::from_entry(entry).map(|k| {
+                origin_keys.insert(entry.key_id.clone(), k);
+            }),
+            KeyRole::Ops => entry.to_verifying_key().map(|vk| {
+                ops_keys.insert(entry.key_id.clone(), vk);
+            }),
+        };
+        if let Err(e) = resolved {
+            findings.push(Finding::error(
                 "invalid_key",
                 format!("key \"{}\" unusable: {e}", entry.key_id),
-            )),
+            ));
         }
     }
 
@@ -432,11 +438,21 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     for sr in &ev.records {
         match (&sr.origin_sig, &sr.origin_key_id) {
             (None, None) => origin_unverified += 1,
-            (Some(_), Some(kid)) => match origin_keys.get(kid) {
-                Some(vk) => match sr.verify_origin(&ev.chain_id, vk) {
+            (Some(_), Some(kid)) => match origin_keys.get(kid).map(|k| (k, k.record_key())) {
+                Some((_, Some(vk))) => match sr.verify_origin(&ev.chain_id, vk) {
                     Ok(()) => records_origin_ok += 1,
                     Err(e) => findings.push(Finding::error("origin_invalid", e.to_string())),
                 },
+                Some((key, None)) => findings.push(Finding::error(
+                    "origin_invalid",
+                    format!(
+                        "record seq={} claims origin key \"{kid}\", an {} \
+                         identity key: such a key certifies session keys, it \
+                         never signs records",
+                        sr.seq,
+                        key.algo()
+                    ),
+                )),
                 None if keys.contains_key(kid) => findings.push(Finding::error(
                     "key_role_mismatch",
                     format!(
@@ -818,7 +834,7 @@ fn conflicting_key_ids(entries: &[PublicKeyEntry]) -> BTreeSet<String> {
 fn resolve_session_certs(
     records: &[SignedRecord],
     chain_id: &str,
-    origin_keys: &mut BTreeMap<String, VerifyingKey>,
+    origin_keys: &mut BTreeMap<String, IdentityKey>,
     opts: &VerifyOptions,
     findings: &mut Vec<Finding>,
 ) {
@@ -832,10 +848,13 @@ fn resolve_session_certs(
         };
         match identity_keys.get(&cert.identity_key_id) {
             None => unverified += 1,
-            Some(identity_vk) => {
-                match crate::origin::verify_session_cert(chain_id, cert, identity_vk) {
+            Some(identity_key) => {
+                match crate::origin::verify_session_cert_with(chain_id, cert, identity_key) {
                     Ok(session_vk) => {
-                        origin_keys.insert(crate::key_id_for(&session_vk), session_vk);
+                        origin_keys.insert(
+                            crate::key_id_for(&session_vk),
+                            IdentityKey::Ed25519(session_vk),
+                        );
                     }
                     Err(e) => findings.push(Finding::error(
                         "session_cert_invalid",
@@ -870,7 +889,7 @@ fn resolve_session_certs(
 fn resolve_deployment_bundle(
     sdb: &SignedDeploymentBundle,
     key_source: &[PublicKeyEntry],
-    origin_keys: &mut BTreeMap<String, VerifyingKey>,
+    origin_keys: &mut BTreeMap<String, IdentityKey>,
     opts: &VerifyOptions,
     findings: &mut Vec<Finding>,
 ) {
@@ -897,7 +916,7 @@ fn resolve_deployment_bundle(
             "deployment_bundle_invalid",
             format!("deployment bundle \"{}\": {e}", sdb.bundle.version),
         )),
-        Ok(bundle) => match bundle.active_origin_keys() {
+        Ok(bundle) => match bundle.active_identity_keys() {
             Err(e) => findings.push(Finding::error(
                 "deployment_bundle_invalid",
                 format!("deployment bundle \"{}\": {e}", bundle.version),
@@ -906,9 +925,9 @@ fn resolve_deployment_bundle(
                 // The bundle's keys join those listed directly. A key id that
                 // appears in both must not disagree: same id, same material,
                 // or the pack is self-contradictory about who a gateway is.
-                for (kid, vk) in active {
+                for (kid, key) in active {
                     if let Some(existing) = origin_keys.get(&kid) {
-                        if existing.to_bytes() != vk.to_bytes() {
+                        if *existing != key {
                             findings.push(Finding::error(
                                 "deployment_bundle_invalid",
                                 format!(
@@ -920,7 +939,7 @@ fn resolve_deployment_bundle(
                             ));
                         }
                     } else {
-                        origin_keys.insert(kid, vk);
+                        origin_keys.insert(kid, key);
                     }
                 }
                 resolve_attestations(bundle, opts, findings);

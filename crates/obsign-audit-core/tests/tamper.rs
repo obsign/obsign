@@ -1381,6 +1381,94 @@ mod session_certs {
         assert!(!r.is_valid(), "an uncertified session key proves nothing");
         assert!(codes(&r).contains(&"origin_unverified"));
     }
+
+    // --- P-256 identity key (a TPM without EdDSA) ----------------------
+    // There is no P-256 signer in this tree, by design (`p256` verifies
+    // only), so the certificate signature is a fixture: an OpenSSL
+    // prime256v1 key signed the SHA-256 of `session_cert_signing_bytes` for
+    // the certificate `p256_cert` builds, checked with `openssl dgst -verify`
+    // before being embedded.
+    const P256_ID: &str = "id-gw-p256";
+    const P256_PUB: &str = "045ff7d8c7e8f2de4f601acf51e05fdf02ec625daa30a2a0267b6c82d0ad0848b7\
+                            f83a509eb7b1d3dba3fda9e872a4db6f7a3f921c21339c75ac7ae8af9fa1e97f";
+    const P256_SIG: &str = "0fbac7c5cef1b78e968dbf55f31f7c5bc0788d4e631afbe2a6fbc36b32b160f2\
+                            fc7082021f2df47651abf4af1713cf7b1a05ae363a7409941a88d67a09fb075b";
+
+    fn p256_cert(session: &SigningKey) -> SessionCert {
+        SessionCert {
+            session_pubkey: hex::encode(session.verifying_key().to_bytes()),
+            identity_key_id: P256_ID.into(),
+            gateway_id: "gw-1".into(),
+            not_before_ms: 0,
+            not_after_ms: 1_000_000,
+            identity_sig: P256_SIG.into(),
+        }
+    }
+
+    /// The v2 pack, its bundle enrolling the P-256 identity key instead.
+    fn p256_pack(cert: SessionCert, ops: &SigningKey) -> Evidence {
+        let session = SigningKey::from_bytes(&[31u8; 32]);
+        let unused_identity = SigningKey::from_bytes(&[32u8; 32]);
+        let mut ev = v2_pack(&session, &unused_identity, &signing_key(), ops, cert);
+        ev.deployment = Some(
+            DeploymentBundle {
+                format: DFMT.into(),
+                version: "deployment@p256".into(),
+                origin_keys: vec![PublicKeyEntry {
+                    key_id: P256_ID.into(),
+                    algo: "ecdsa-p256".into(),
+                    public_key: P256_PUB.into(),
+                    role: KeyRole::Origin,
+                }],
+                attestations: Vec::new(),
+            }
+            .sign("ops-1", ops),
+        );
+        ev
+    }
+
+    #[test]
+    fn a_p256_identity_key_certifies_a_session_end_to_end() {
+        // docs/design/attestation-v3.md: a TPM with no EdDSA holds a P-256
+        // identity key. Enrolled in the bundle, it must carry the chain of
+        // trust through `verify`; the whole bundle used to be refused as
+        // `deployment_bundle_invalid`.
+        let session = SigningKey::from_bytes(&[31u8; 32]);
+        let ops = SigningKey::from_bytes(&[33u8; 32]);
+        let ev = p256_pack(p256_cert(&session), &ops);
+
+        let r = evidence::verify_with(&ev, &trust(&signing_key(), &ops), &REQUIRE);
+        assert!(r.is_valid(), "findings: {:?}", r.findings);
+        assert_eq!(r.records_origin_ok, 3, "cert record included");
+    }
+
+    #[test]
+    fn a_forged_p256_certificate_is_rejected() {
+        let session = SigningKey::from_bytes(&[31u8; 32]);
+        let ops = SigningKey::from_bytes(&[33u8; 32]);
+        let mut cert = p256_cert(&session);
+        // Same signature, another gateway: the signed bytes no longer match.
+        cert.gateway_id = "gw-2".into();
+        let ev = p256_pack(cert, &ops);
+
+        let r = evidence::verify_with(&ev, &trust(&signing_key(), &ops), &REQUIRE);
+        assert!(!r.is_valid());
+        assert!(codes(&r).contains(&"session_cert_invalid"));
+    }
+
+    #[test]
+    fn a_p256_identity_key_never_signs_records_directly() {
+        // A record naming the P-256 identity key as its signer: that key
+        // certifies sessions only, so the record is refused outright.
+        let session = SigningKey::from_bytes(&[31u8; 32]);
+        let ops = SigningKey::from_bytes(&[33u8; 32]);
+        let mut ev = p256_pack(p256_cert(&session), &ops);
+        ev.records[1].origin_key_id = Some(P256_ID.into());
+
+        let r = evidence::verify_with(&ev, &trust(&signing_key(), &ops), &REQUIRE);
+        assert!(!r.is_valid());
+        assert!(codes(&r).contains(&"origin_invalid"));
+    }
 }
 
 #[test]

@@ -30,7 +30,8 @@ pub use deployment::{DeploymentBundle, SignedDeploymentBundle};
 pub use error::Error;
 pub use hash::{Hash, GENESIS};
 pub use origin::{
-    key_id_for, origin_signing_bytes, session_cert_signing_bytes, verify_session_cert, SignedRecord,
+    key_id_for, origin_signing_bytes, session_cert_signing_bytes, verify_session_cert,
+    verify_session_cert_with, IdentityKey, SignedRecord,
 };
 pub use record::{
     Actor, AgentSession, ApprovalMode, Decision, Delegation, Effect, EffectStatus, LlmTurn,
