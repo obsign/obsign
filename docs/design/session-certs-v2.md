@@ -195,10 +195,11 @@ New findings:
 - `session_cert_invalid` (**error**): a certificate whose `identity_sig` does
   not verify under a trusted identity key, or whose `chain_id`/`gateway_id`
   binding is wrong. Only tampering produces these.
-- `session_cert_unverified` (**warning**, error under `require_origin`): a
+- `session_cert_unverified` (**error**, whatever the options): a
   certificate whose `identity_key_id` resolves to no trusted key, the
-  self-referential / unenrolled case, on the same logic as
-  `deployment_bundle_unverified`.
+  self-referential / unenrolled case. *(First landed as a warning outside
+  `require_origin`; tightened because `--allow-unsigned-legacy-chains`
+  tolerates the absence of a signature, and a certificate is one.)*
 - Records whose session key has no valid certificate fall to
   `origin_unverified`, exactly as an unsigned record does today.
 

@@ -43,10 +43,11 @@ Options:
                              Ops-signed deployment bundle naming the gateway
                              origin keys, when the pack does not embed one.
       --allow-unsigned-legacy-chains
-                             Tolerate records with no verifiable origin
-                             signature (a warning, not an error). Origin
-                             authentication is required by default; this is
-                             the explicit opt-out for pre-origin logs.
+                             Tolerate records that carry no origin signature
+                             (a warning, not an error). Origin authentication
+                             is required by default; this is the explicit
+                             opt-out for pre-origin logs. A signature under a
+                             key absent from the trusted set stays an error.
       --require-attestation  Treat an enrolled identity key with no valid
                              remote attestation as an error, not a warning
                              (v3; the EK vendor-root check stays out of band).

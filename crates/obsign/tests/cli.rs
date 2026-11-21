@@ -189,3 +189,32 @@ fn anchored_pack_with_unsealed_records_exits_3_and_says_not_proven() {
     assert_eq!(out.status.code(), Some(3), "stdout: {stdout}");
     assert!(stdout.contains("NOT PROVEN"), "stdout: {stdout}");
 }
+
+#[test]
+fn the_legacy_opt_out_does_not_tolerate_an_untrusted_signature() {
+    // `--allow-unsigned-legacy-chains` is for logs that predate origin
+    // signatures. A record signed by a key absent from the trusted set is
+    // not one of those, and used to exit 0 under the flag.
+    use ed25519_dalek::Signer;
+    let key = SigningKey::from_bytes(&[1u8; 32]);
+    let attacker = SigningKey::from_bytes(&[9u8; 32]);
+    let mut ev = pack(&key, "k1");
+    let rec = ev.records[1].record.clone();
+    let msg = obsign_audit_core::origin_signing_bytes("cli-chain", &rec.hash());
+    ev.records[1] = SignedRecord::signed(rec, "attacker", attacker.sign(&msg).to_bytes());
+    let ev = write_tmp("untrusted-sig.json", &serde_json::to_string(&ev).unwrap());
+    let keys = write_tmp(
+        "untrusted-sig.keys.json",
+        &serde_json::to_string(&vec![entry(&key, "k1")]).unwrap(),
+    );
+
+    let out = obsign(&[
+        "verify",
+        "--allow-unsigned-legacy-chains",
+        "--trusted-keys",
+        keys.to_str().unwrap(),
+        ev.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "stdout: {stdout}");
+}

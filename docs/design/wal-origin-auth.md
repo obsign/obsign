@@ -248,7 +248,10 @@ sessions.
   `origin_key_id` resolves to no trusted origin key *(implementation note:
   the unresolvable-key case was moved here from `origin_invalid`; see the
   status header)*. Self-referential key material is already covered by
-  `keys_not_anchored`.
+  `keys_not_anchored`. *(Later tightening: only the unsigned case is a
+  warning; a signature under an unresolvable key is `origin_unverified` at
+  error severity whatever the options, since a pre-origin log carries no
+  signature for the legacy opt-out to tolerate.)*
 - `origin_not_required` semantics via `--require-origin` on `obsign
   verify`: upgrades `origin_unverified` to an error. Auditors of deployments
   that mandate origin auth run with the flag; `--strict` already fails on

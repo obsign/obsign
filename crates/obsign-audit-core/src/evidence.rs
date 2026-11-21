@@ -313,7 +313,7 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     // key the identity key vouched for, while a v0/v1 record still verifies
     // against a bundle key directly. The set is the union, which keeps older
     // packs working.
-    resolve_session_certs(&ev.records, &ev.chain_id, &mut origin_keys, opts, &mut findings);
+    resolve_session_certs(&ev.records, &ev.chain_id, &mut origin_keys, &mut findings);
 
     // --- Integrity chain ----------------------------------------------
     // We do not sort the input: an audit tool that silently reorders what it
@@ -427,14 +427,18 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     //
     // Severity is calibrated to what each state proves. An *invalid*
     // signature under a trusted key, or a key used outside its role, is
-    // positive evidence of tampering: always an error. An *absent or
-    // unresolvable* signature is an absence of proof, indistinguishable
-    // from a log written before origin authentication existed, so it is a
-    // warning, upgraded to an error when the caller states the deployment
-    // mandates origin (`require_origin`). Anything softer would let an
-    // attacker strip signatures back into silence.
+    // positive evidence of tampering: always an error. An *absent*
+    // signature is an absence of proof, indistinguishable from a log
+    // written before origin authentication existed, so it is a warning,
+    // upgraded to an error when the caller states the deployment mandates
+    // origin (`require_origin`). Anything softer would let an attacker
+    // strip signatures back into silence. A signature under a key absent
+    // from the trusted set is not an absence: legacy logs carry none, so
+    // the legacy opt-out has nothing to tolerate there, and it stays an
+    // error whatever the options.
     let mut records_origin_ok = 0usize;
     let mut origin_unverified = 0usize;
+    let mut origin_unknown_key = 0usize;
     for sr in &ev.records {
         match (&sr.origin_sig, &sr.origin_key_id) {
             (None, None) => origin_unverified += 1,
@@ -472,7 +476,7 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
                         sr.seq
                     ),
                 )),
-                None => origin_unverified += 1,
+                None => origin_unknown_key += 1,
             },
             _ => findings.push(Finding::error(
                 "origin_invalid",
@@ -487,16 +491,28 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     }
     if origin_unverified > 0 {
         let msg = format!(
-            "{origin_unverified} record(s) have no verifiable origin \
-             signature: nothing proves the gateway wrote them. Expected for \
-             logs written before origin authentication; otherwise supply the \
-             origin keys (--trusted-keys, role \"origin\")."
+            "{origin_unverified} record(s) carry no origin signature: \
+             nothing proves the gateway wrote them. Expected for logs written \
+             before origin authentication; otherwise the signatures were \
+             stripped."
         );
         findings.push(if opts.require_origin {
             Finding::error("origin_unverified", msg)
         } else {
             Finding::warning("origin_unverified", msg)
         });
+    }
+    if origin_unknown_key > 0 {
+        findings.push(Finding::error(
+            "origin_unverified",
+            format!(
+                "{origin_unknown_key} record(s) are signed by an origin key \
+                 absent from the trusted set: a signature nobody can check \
+                 proves nothing, and a log older than origin authentication \
+                 carries none. Supply the deployment bundle or the origin \
+                 keys (--trusted-keys, role \"origin\")."
+            ),
+        ));
     }
 
     // --- Checkpoints ---------------------------------------------------
@@ -821,10 +837,10 @@ fn conflicting_key_ids(entries: &[PublicKeyEntry]) -> BTreeSet<String> {
 /// The identity key that certifies a session key is resolved among the keys
 /// already in the origin set (the enrolled identity keys); the session key it
 /// authorizes is then keyed by [`key_id_for`], the id its records name. A
-/// certificate whose identity key is unknown is unverified (a warning, an
-/// error under `require_origin`), the self-referential logic; one whose
-/// signature is *wrong* is invalid (always an error), because only tampering
-/// produces that.
+/// certificate whose identity key is unknown is unverified, one whose
+/// signature is *wrong* is invalid; both are errors whatever the options. A
+/// certificate is a signature, and the legacy opt-out tolerates only its
+/// absence.
 ///
 /// The validity window (`not_before`/`not_after`) is carried but not enforced
 /// here: enforcing it needs trusted time, and the pack's RFC 3161 anchors are
@@ -835,7 +851,6 @@ fn resolve_session_certs(
     records: &[SignedRecord],
     chain_id: &str,
     origin_keys: &mut BTreeMap<String, IdentityKey>,
-    opts: &VerifyOptions,
     findings: &mut Vec<Finding>,
 ) {
     // Certificates name identity keys, never each other: resolve against the
@@ -882,16 +897,15 @@ fn resolve_session_certs(
         }
     }
     if unverified > 0 {
-        let msg = format!(
-            "{unverified} session certificate(s) are signed by an identity key \
-             absent from the trusted set: the session keys they authorize prove \
-             nothing. Supply the deployment bundle enrolling that identity key."
-        );
-        findings.push(if opts.require_origin {
-            Finding::error("session_cert_unverified", msg)
-        } else {
-            Finding::warning("session_cert_unverified", msg)
-        });
+        findings.push(Finding::error(
+            "session_cert_unverified",
+            format!(
+                "{unverified} session certificate(s) are signed by an identity \
+                 key absent from the trusted set: the session keys they \
+                 authorize prove nothing. Supply the deployment bundle \
+                 enrolling that identity key."
+            ),
+        ));
     }
 }
 

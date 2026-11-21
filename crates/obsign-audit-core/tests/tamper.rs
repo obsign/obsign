@@ -843,6 +843,14 @@ fn an_attacker_signature_under_an_unknown_key_proves_nothing() {
     let r = evidence::verify_with(&ev, &trusted, &REQUIRE_ORIGIN);
     assert!(!r.is_valid());
     assert!(codes(&r).contains(&"origin_unverified"));
+
+    // The legacy opt-out tolerates records with no signature, which a log
+    // older than origin authentication has. This record has one, under a
+    // key nobody trusts: the opt-out used to turn it into a warning and let
+    // the forgery exit 0.
+    let legacy = evidence::verify_with(&ev, &trusted, &VerifyOptions::default());
+    assert!(!legacy.is_valid(), "an untrusted signature is not a legacy record");
+    assert!(codes(&legacy).contains(&"origin_unverified"));
 }
 
 #[test]
@@ -1368,6 +1376,12 @@ mod session_certs {
         let r = evidence::verify_with(&ev, &trust(&seal, &ops), &REQUIRE);
         assert!(!r.is_valid());
         assert!(codes(&r).contains(&"session_cert_unverified"));
+
+        // Same verdict under the legacy opt-out: a certificate is a
+        // signature, and the opt-out tolerates only the absence of one.
+        let legacy = evidence::verify_with(&ev, &trust(&seal, &ops), &VerifyOptions::default());
+        assert!(!legacy.is_valid());
+        assert!(codes(&legacy).contains(&"session_cert_unverified"));
     }
 
     #[test]
