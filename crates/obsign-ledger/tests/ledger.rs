@@ -398,6 +398,79 @@ fn a_cron_seal_overlapping_a_pass_neither_forks_the_store_nor_stops_run() {
     let _ = std::fs::remove_dir_all(&store_dir);
 }
 
+fn checkpoint_to(to_seq: u64, s: &FileSealer) -> obsign_audit_core::checkpoint::SignedCheckpoint {
+    let cp = obsign_audit_core::checkpoint::Checkpoint {
+        chain_id: "c1".to_string(),
+        from_seq: 0,
+        to_seq,
+        root: obsign_audit_core::Hash([1u8; 32]),
+        head_hash: obsign_audit_core::Hash([2u8; 32]),
+        prev_checkpoint_hash: None,
+        ts_ms: 1,
+        key_id: s.key_id().to_string(),
+    };
+    obsign_ledger::sign_checkpoint(cp, s).unwrap()
+}
+
+#[test]
+fn coverage_reaching_the_last_seq_is_refused_not_wrapped() {
+    // `to_seq + 1` on u64::MAX: a panic in a debug build, and in release a
+    // wrap to 0 that tells the next pass coverage resumes at the start.
+    let store_dir = tmpdir("overflow-store");
+    let s = sealer();
+    let mut store = Store::open(&store_dir, "c1").unwrap();
+    let err = store.append_checkpoint(checkpoint_to(u64::MAX, &s), &s.public_key()).unwrap_err();
+    assert!(matches!(err, obsign_ledger::Error::StoreBroken(_)), "{err:?}");
+    drop(store);
+
+    // Written to disk by hand: refused on open, not a panic.
+    std::fs::write(store_dir.join("keys.json"), serde_json::to_string(&[s.public_key()]).unwrap()).unwrap();
+    std::fs::write(
+        store_dir.join("c1.checkpoints.jsonl"),
+        format!("{}\n", serde_json::to_string(&checkpoint_to(u64::MAX, &s)).unwrap()),
+    )
+    .unwrap();
+    let err = Store::open(&store_dir, "c1").unwrap_err();
+    assert!(matches!(err, obsign_ledger::Error::StoreBroken(_)), "{err:?}");
+    let _ = std::fs::remove_dir_all(&store_dir);
+}
+
+#[test]
+fn a_seal_that_fails_verification_records_no_key() {
+    let store_dir = tmpdir("verify-first-store");
+    let s = sealer();
+    let mut store = Store::open(&store_dir, "c1").unwrap();
+    // The right id, the wrong key material: the signature cannot verify.
+    let wrong = FileSealer::from_seed([9u8; 32], s.key_id()).public_key();
+    assert!(store.append_checkpoint(checkpoint_to(2, &s), &wrong).is_err());
+    assert!(store.keys().is_empty());
+    assert!(!store_dir.join("keys.json").exists(), "a failed seal bound its key id");
+
+    // So the real key is not locked out as a "conflict" afterwards.
+    store.append_checkpoint(checkpoint_to(2, &s), &s.public_key()).unwrap();
+    let _ = std::fs::remove_dir_all(&store_dir);
+}
+
+#[test]
+fn keys_json_holds_unique_seal_keys_only() {
+    let s = sealer();
+    for (name, keys) in [
+        ("role", {
+            let mut k = s.public_key();
+            k.role = obsign_audit_core::checkpoint::KeyRole::Origin;
+            vec![k]
+        }),
+        ("dup", vec![s.public_key(), s.public_key()]),
+    ] {
+        let store_dir = tmpdir(&format!("keys-{name}-store"));
+        std::fs::create_dir_all(&store_dir).unwrap();
+        std::fs::write(store_dir.join("keys.json"), serde_json::to_string(&keys).unwrap()).unwrap();
+        let err = Store::open(&store_dir, "c1").unwrap_err();
+        assert!(matches!(err, obsign_ledger::Error::StoreBroken(_)), "{name}: {err:?}");
+        let _ = std::fs::remove_dir_all(&store_dir);
+    }
+}
+
 #[test]
 fn removed_checkpoint_breaks_the_store_chain() {
     let wal_dir = tmpdir("storedrop-wal");
