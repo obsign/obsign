@@ -39,6 +39,12 @@ pub enum Error {
     #[error("unknown deployment bundle format: {0}")]
     UnknownDeploymentFormat(String),
 
+    #[error(
+        "deployment bundle {0} carries an attestation activation its format does not sign: \
+         recompile it as obsign-deployment/2"
+    )]
+    UnsignedAttestationActivation(String),
+
     #[error("deployment bundle lists key \"{0}\" with a non-origin role")]
     NonOriginKeyInBundle(String),
 

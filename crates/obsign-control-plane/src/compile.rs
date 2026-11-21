@@ -5,7 +5,7 @@
 //! source tree is read in a fixed order). This is what makes `publish`
 //! idempotent and releases comparable by hash.
 
-use obsign_audit_core::deployment::{DeploymentBundle, SignedDeploymentBundle, FORMAT as DEPLOYMENT_FORMAT};
+use obsign_audit_core::deployment::{format_for as deployment_format_for, DeploymentBundle, SignedDeploymentBundle};
 use obsign_identity::bundle::{IdentityBundle, SignedIdentityBundle};
 use obsign_policy::bundle::{Bundle, SignedBundle};
 
@@ -120,7 +120,8 @@ pub fn compile(
         None => None,
         Some(origin_keys) => {
             let db = DeploymentBundle {
-                format: DEPLOYMENT_FORMAT.to_string(),
+                // obsign-deployment/2 only once an attestation needs it.
+                format: deployment_format_for(&tree.attestations).to_string(),
                 version: format!("deployment@{source_ref}"),
                 origin_keys: origin_keys.clone(),
                 attestations: tree.attestations.clone(),

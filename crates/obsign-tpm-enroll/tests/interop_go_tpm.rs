@@ -277,6 +277,7 @@ fn the_wire_format_agrees_with_go_tpm_in_both_directions() {
             digest: field("pcr_value"),
         }],
         identity_pub: Some(field("identity_pub")),
+        activation: None,
     };
     let entry = PublicKeyEntry {
         key_id: "gw-go-tpm".into(),

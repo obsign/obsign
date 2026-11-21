@@ -70,18 +70,19 @@ const TAG_SEQUENCE: u8 = 0x30;
 const TAG_SET: u8 = 0x31;
 const TAG_CONTEXT_0: u8 = 0xA0;
 
-/// Cursor over a run of sibling TLV elements.
-struct Der<'a> {
+/// Cursor over a run of sibling TLV elements. Crate-visible: the EK
+/// certificate walk in `attestation` reads DER with the same discipline.
+pub(crate) struct Der<'a> {
     b: &'a [u8],
 }
 
 impl<'a> Der<'a> {
-    fn new(b: &'a [u8]) -> Self {
+    pub(crate) fn new(b: &'a [u8]) -> Self {
         Der { b }
     }
 
     /// Reads one element, returns (tag, content) and advances past it.
-    fn tlv(&mut self) -> Result<(u8, &'a [u8]), Error> {
+    pub(crate) fn tlv(&mut self) -> Result<(u8, &'a [u8]), Error> {
         let b = self.b;
         if b.len() < 2 {
             return Err(Error::BadDer("truncated element".into()));
@@ -117,7 +118,7 @@ impl<'a> Der<'a> {
     }
 
     /// Reads one element and checks its tag.
-    fn expect(&mut self, tag: u8, what: &str) -> Result<&'a [u8], Error> {
+    pub(crate) fn expect(&mut self, tag: u8, what: &str) -> Result<&'a [u8], Error> {
         let (t, v) = self.tlv()?;
         if t != tag {
             return Err(Error::BadDer(format!(
@@ -130,7 +131,7 @@ impl<'a> Der<'a> {
     /// Requires that the container held nothing beyond what was read. Trailing
     /// bytes tolerated anywhere would let one blob parse as two different
     /// tokens depending on the reader.
-    fn finish(self, what: &str) -> Result<(), Error> {
+    pub(crate) fn finish(self, what: &str) -> Result<(), Error> {
         if !self.b.is_empty() {
             return Err(Error::BadDer(format!("{what}: trailing bytes")));
         }

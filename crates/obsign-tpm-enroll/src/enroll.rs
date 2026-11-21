@@ -100,6 +100,7 @@ fn ceremony(
                 digest: hex::encode(&pcr_value),
             }],
             identity_pub: Some(hex::encode(&identity.public)),
+            activation: None,
         },
         identity_entry: PublicKeyEntry {
             key_id: req.key_id.clone(),

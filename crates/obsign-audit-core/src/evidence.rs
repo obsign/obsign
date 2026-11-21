@@ -1063,12 +1063,18 @@ fn resolve_attestations(
     findings: &mut Vec<Finding>,
 ) {
     let mut attested = 0usize;
+    let mut unbound = 0usize;
     let mut unattested = 0usize;
     for entry in &bundle.origin_keys {
         match bundle.attestations.iter().find(|a| a.key_id == entry.key_id) {
             None => unattested += 1,
             Some(att) => match crate::attestation::verify_attestation(entry, att) {
-                Ok(()) => attested += 1,
+                Ok(()) => {
+                    attested += 1;
+                    if att.activation.is_none() {
+                        unbound += 1;
+                    }
+                }
                 Err(e) => findings.push(Finding::error(
                     "attestation_invalid",
                     format!(
@@ -1091,6 +1097,22 @@ fn resolve_attestations(
                  genuine silicon: check the EK chain out of band."
             ),
         ));
+    }
+    if unbound > 0 {
+        // Structurally valid, but in the pre-v4 form: what it lacks is named,
+        // and under --require-attestation it does not count as attested.
+        let msg = format!(
+            "{unbound} identity key(s) carry an attestation without credential \
+             activation: nothing binds their AK to the TPM's EK, the quote and \
+             certify carry no enrollment nonce, and nothing shows the identity \
+             key is gated by a PCR policy. Re-enroll with obsign-tpm-enroll's \
+             challenge exchange."
+        );
+        findings.push(if opts.require_attestation {
+            Finding::error("attestation_unbound", msg)
+        } else {
+            Finding::warning("attestation_unbound", msg)
+        });
     }
     if unattested > 0 {
         let msg = format!(
@@ -1321,7 +1343,7 @@ mod tests {
                 index: 7,
                 digest: hex::encode(crate::hash::sha256(b"gateway-binary").as_bytes()),
             }];
-            vec![att_testutil::attestation(
+            vec![att_testutil::attestation_activated(
                 "id-gw",
                 &origin.verifying_key(),
                 &ak,
@@ -1331,7 +1353,7 @@ mod tests {
             Vec::new()
         };
         let bundle = DeploymentBundle {
-            format: DFMT.into(),
+            format: crate::deployment::format_for(&attestations).into(),
             version: "deployment@v3".into(),
             origin_keys: vec![origin_entry.clone()],
             attestations,
@@ -1396,6 +1418,31 @@ mod tests {
         let r = verify_with(&ev, &[ops_entry], &VerifyOptions::default());
         assert!(!r.is_valid());
         assert!(r.errors().any(|f| f.code == "attestation_invalid"));
+    }
+
+    #[test]
+    fn an_attestation_without_activation_is_named_and_fails_when_required() {
+        // A v1 bundle carrying a pre-v4 attestation: it still verifies (it
+        // was valid when published), but what it does not prove is said,
+        // and it does not satisfy --require-attestation.
+        let origin = SigningKey::from_bytes(&[40u8; 32]);
+        let (mut bundle, ops_entry, ops) = ops_and_bundle(&origin, true);
+        bundle.bundle.attestations[0].activation = None;
+        bundle.bundle.format = DFMT.into();
+        let bundle = bundle.bundle.sign("ops-1", &ops);
+        let ev = pack_with_bundle(bundle, &ops_entry);
+
+        let permissive = verify_with(&ev, std::slice::from_ref(&ops_entry), &VerifyOptions::default());
+        assert!(!permissive.errors().any(|f| f.code.starts_with("attestation")));
+        assert!(permissive.warnings().any(|f| f.code == "attestation_unbound"));
+
+        let strict = verify_with(
+            &ev,
+            &[ops_entry],
+            &VerifyOptions { require_origin: false, require_attestation: true },
+        );
+        assert!(!strict.is_valid());
+        assert!(strict.errors().any(|f| f.code == "attestation_unbound"));
     }
 
     #[test]
