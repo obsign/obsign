@@ -46,6 +46,15 @@ struct CompileArgs {
 
     #[arg(long, default_value = "ops-key")]
     key_id: String,
+
+    /// Identity bundle epoch, in seconds. Gateways refuse to reload an
+    /// identity bundle older than the one in force, so this must grow from
+    /// one release to the next. Defaults to `SOURCE_DATE_EPOCH`, then to the
+    /// commit time of HEAD (read with `git`); required with `--label` and no
+    /// `SOURCE_DATE_EPOCH`. Never the wall clock: the same commit compiles
+    /// to the same bytes.
+    #[arg(long)]
+    epoch: Option<u64>,
 }
 
 #[derive(Subcommand)]
@@ -175,6 +184,7 @@ fn load_and_compile(args: &CompileArgs) -> Result<(obsign_control_plane::Compile
     let ops = OpsKey::from_seed_file(&args.key, &args.key_id).context("loading the ops key")?;
     let tree = SourceTree::load(&args.source).context("loading the source tree")?;
 
+    let mut head = None;
     let source_ref = match &args.label {
         Some(l) => l.clone(),
         None => {
@@ -187,11 +197,21 @@ fn load_and_compile(args: &CompileArgs) -> Result<(obsign_control_plane::Compile
                 let listed: Vec<String> = divergence.iter().map(|d| format!("  {d}")).collect();
                 return Err(obsign_control_plane::Error::DirtyTree(listed.join("\n")).into());
             }
-            short_ref(&sha).to_string()
+            let short = short_ref(&sha).to_string();
+            head = Some(sha);
+            short
         }
     };
 
-    let compiled = compile(&tree, &source_ref, &ops).context("compiling")?;
+    // Only the identity bundle carries an epoch: a tree without one needs
+    // none.
+    let epoch = if tree.identity.is_none() {
+        0
+    } else {
+        source_epoch(args, &args.source, head.as_deref())?
+    };
+
+    let compiled = compile(&tree, &source_ref, epoch, &ops).context("compiling")?;
     for w in &compiled.warnings {
         eprintln!("[control] warning: {w}");
     }
@@ -208,6 +228,50 @@ fn load_and_compile(args: &CompileArgs) -> Result<(obsign_control_plane::Compile
         }
     );
     Ok((compiled, ops))
+}
+
+/// The identity bundle epoch: explicit, then `SOURCE_DATE_EPOCH` (the
+/// reproducible-builds convention), then the commit time of `head`.
+///
+/// The commit time is read with the `git` binary because reading it from the
+/// object store means inflating zlib and walking packs; a host with no `git`
+/// passes `--epoch` or `SOURCE_DATE_EPOCH` instead.
+fn source_epoch(
+    args: &CompileArgs,
+    source: &std::path::Path,
+    head: Option<&str>,
+) -> Result<u64> {
+    if let Some(e) = args.epoch {
+        return Ok(e);
+    }
+    if let Ok(v) = std::env::var("SOURCE_DATE_EPOCH") {
+        return v
+            .trim()
+            .parse()
+            .with_context(|| format!("SOURCE_DATE_EPOCH is not a number of seconds: {v:?}"));
+    }
+    let Some(sha) = head else {
+        bail!(
+            "an identity bundle needs an epoch: with --label, pass --epoch or set \
+             SOURCE_DATE_EPOCH, and keep it above the last published one"
+        );
+    };
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(source)
+        .args(["show", "-s", "--format=%ct", sha])
+        .output()
+        .context("reading the commit time with git: pass --epoch or set SOURCE_DATE_EPOCH")?;
+    if !out.status.success() {
+        bail!(
+            "git could not read the time of commit {sha}: pass --epoch or set \
+             SOURCE_DATE_EPOCH"
+        );
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .context("git returned a commit time that is not a number")
 }
 
 fn do_compile(args: &CompileArgs, out: &std::path::Path) -> Result<()> {

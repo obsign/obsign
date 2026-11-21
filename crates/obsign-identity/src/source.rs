@@ -58,6 +58,8 @@ pub struct BundleSource {
     trusted: Vec<PublicKeyEntry>,
     verifier: Verifier,
     version: String,
+    /// Epoch of the bundle in force. A reload may not go below it.
+    epoch: u64,
     content: Hash,
     /// Timestamp of the last *attempt*, successful or not.
     last_attempt_ms: i64,
@@ -69,13 +71,14 @@ impl BundleSource {
     /// starting without a valid identity configuration is meaningless.
     pub fn load(path: &Path, trusted: &[PublicKeyEntry]) -> Result<Self, Error> {
         let raw = std::fs::read_to_string(path)?;
-        let (verifier, version) = verify_bundle(&raw, trusted)?;
+        let (verifier, version, epoch) = verify_bundle(&raw, trusted)?;
 
         Ok(BundleSource {
             path: path.to_path_buf(),
             trusted: trusted.to_vec(),
             verifier,
             version,
+            epoch,
             content: content_hash(raw.as_bytes()),
             last_attempt_ms: i64::MIN,
             // Key rotation happens on a scale of hours or days. One second
@@ -97,6 +100,10 @@ impl BundleSource {
 
     pub fn version(&self) -> &str {
         &self.version
+    }
+
+    pub fn epoch(&self) -> u64 {
+        self.epoch
     }
 
     pub fn path(&self) -> &Path {
@@ -135,11 +142,30 @@ impl BundleSource {
         // The signature is revalidated on every reload. Without that, hot
         // rotation would become the easiest way to inject a JWKS: writing the
         // file would be enough.
-        match verify_bundle(&raw, &self.trusted) {
-            Ok((verifier, version)) => {
+        //
+        // So is the order. A signature proves the control plane once
+        // published these bytes, not that it still stands by them: an older
+        // bundle, still listing an IdP key revoked since, verifies as well
+        // as the current one. The epoch only ever moves up; an older format
+        // counts as epoch 0, so once a /4 bundle is in force no pre-/4 one
+        // takes its place. Between two pre-/4 bundles there is no order to
+        // enforce.
+        let verified = verify_bundle(&raw, &self.trusted).and_then(|v| {
+            if v.2 < self.epoch {
+                Err(Error::BundleRollback {
+                    in_force: self.epoch,
+                    offered: v.2,
+                })
+            } else {
+                Ok(v)
+            }
+        });
+        match verified {
+            Ok((verifier, version, epoch)) => {
                 let keys = verifier.key_count();
                 self.verifier = verifier;
                 self.version = version.clone();
+                self.epoch = epoch;
                 self.content = digest;
                 ReloadOutcome::Reloaded {
                     version,
@@ -163,7 +189,7 @@ impl BundleSource {
 fn verify_bundle(
     raw: &str,
     trusted: &[PublicKeyEntry],
-) -> Result<(Verifier, String), Error> {
+) -> Result<(Verifier, String, u64), Error> {
     let signed: SignedIdentityBundle = serde_json::from_str(raw)?;
 
     let mut keys = BTreeMap::new();
@@ -178,13 +204,17 @@ fn verify_bundle(
         .ok_or_else(|| Error::UnknownBundleKey(signed.key_id.clone()))?;
 
     let bundle = signed.verify(vk)?;
-    Ok((Verifier::from_bundle(bundle)?, bundle.version.clone()))
+    Ok((
+        Verifier::from_bundle(bundle)?,
+        bundle.version.clone(),
+        bundle.epoch,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bundle::{IdentityBundle, FORMAT};
+    use crate::bundle::{IdentityBundle, FORMAT, FORMAT_V3};
     use crate::{ClaimMap, JwkSet};
     use base64::Engine;
     use ed25519_dalek::SigningKey;
@@ -199,6 +229,16 @@ mod tests {
 
     /// Bundle holding the keys named by `kids` (seed = the kid's byte).
     fn bundle_json(version: &str, kids: &[(&str, u8)], signer: &SigningKey) -> String {
+        bundle_json_at(FORMAT, 0, version, kids, signer)
+    }
+
+    fn bundle_json_at(
+        format: &str,
+        epoch: u64,
+        version: &str,
+        kids: &[(&str, u8)],
+        signer: &SigningKey,
+    ) -> String {
         let keys: Vec<_> = kids
             .iter()
             .map(|(kid, seed)| {
@@ -212,12 +252,13 @@ mod tests {
 
         let jwks: JwkSet = serde_json::from_value(json!({ "keys": keys })).unwrap();
         let bundle = IdentityBundle {
-            format: FORMAT.to_string(),
+            format: format.to_string(),
             version: version.to_string(),
             issuer: ISSUER.to_string(),
             audience: AUDIENCE.to_string(),
             jwks,
             claims: ClaimMap::default(),
+            epoch,
         };
         serde_json::to_string(&bundle.sign("identity-key", signer)).unwrap()
     }
@@ -263,6 +304,50 @@ mod tests {
             other => panic!("expected Reloaded, got {other:?}"),
         }
         assert_eq!(src.verifier().key_count(), 2);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn an_older_epoch_is_refused_and_the_current_bundle_kept() {
+        // The rollback: k1 was revoked at epoch 200, the bundle of epoch 100
+        // still lists it, and its signature is as valid as the day it was
+        // published.
+        let signer = SigningKey::from_bytes(&[0x22; 32]);
+        let p = tmpfile("rollback");
+        let old = bundle_json_at(FORMAT, 100, "identity@old", &[("k1", 1), ("k2", 2)], &signer);
+        let new = bundle_json_at(FORMAT, 200, "identity@new", &[("k2", 2)], &signer);
+        std::fs::write(&p, &new).unwrap();
+        let mut src = BundleSource::load(&p, &keyring(&signer))
+            .unwrap()
+            .with_min_interval(0);
+
+        std::fs::write(&p, &old).unwrap();
+        match src.reload(1) {
+            ReloadOutcome::Failed { reason, content } => {
+                assert!(reason.contains("rollback"), "{reason}");
+                assert_eq!(content, Some(content_hash(old.as_bytes())));
+            }
+            other => panic!("an older bundle was accepted: {other:?}"),
+        }
+        assert_eq!(src.version(), "identity@new");
+        assert_eq!(src.epoch(), 200);
+        assert_eq!(src.verifier().key_count(), 1);
+
+        // A pre-/4 bundle counts as epoch 0: no way around the order by
+        // replaying a bundle from before the format had one.
+        let v3 = bundle_json_at(FORMAT_V3, 0, "identity@v3", &[("k1", 1)], &signer);
+        std::fs::write(&p, &v3).unwrap();
+        assert!(matches!(src.reload(2), ReloadOutcome::Failed { .. }));
+        assert_eq!(src.version(), "identity@new");
+
+        // The same epoch, or a newer one, still goes through.
+        let same = bundle_json_at(FORMAT, 200, "identity@same", &[("k2", 2), ("k3", 3)], &signer);
+        std::fs::write(&p, &same).unwrap();
+        assert!(matches!(src.reload(3), ReloadOutcome::Reloaded { .. }));
+        let newer = bundle_json_at(FORMAT, 300, "identity@newer", &[("k3", 3)], &signer);
+        std::fs::write(&p, &newer).unwrap();
+        assert!(matches!(src.reload(4), ReloadOutcome::Reloaded { .. }));
+        assert_eq!(src.epoch(), 300);
         let _ = std::fs::remove_file(p);
     }
 

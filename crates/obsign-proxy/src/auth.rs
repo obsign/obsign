@@ -676,6 +676,7 @@ mod rotation_tests {
             audience: crate::testutil::AUDIENCE.into(),
             jwks,
             claims: ClaimMap::default(),
+            epoch: 0,
         }
         .sign("identity-key", &SigningKey::from_bytes(&[0x99; 32]));
         std::fs::write(&bp, serde_json::to_string(&rogue).unwrap()).unwrap();

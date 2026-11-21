@@ -174,6 +174,16 @@ token into a disk-access loop.
 **The signature is revalidated on every reload.** Without it, hot rotation
 would be the easiest way to inject a JWKS: writing the file would be enough.
 
+**An older bundle is refused on reload.** A signature proves the control
+plane published a bundle once, not that it still stands by it: an old bundle
+still listing an IdP key revoked since verifies as well as the current one.
+`obsign-identity/4` signs an epoch (the source commit time, in seconds; see
+`obsign-control compile --epoch`), and a reload below the epoch in force is
+refused like any other invalid bundle. A pre-`/4` bundle counts as epoch 0,
+so it cannot replace a `/4` one; between two pre-`/4` bundles there is no
+order. The epoch in force lives in memory: a gateway restarted on an older
+file starts on it, so the file's own write access stays the boundary.
+
 **An invalid bundle never takes the gateway down.** Botched deployment,
 truncated or deleted file, bad signature: the previous configuration stays in
 force and the service keeps running. The return type enforces it.

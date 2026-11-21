@@ -87,12 +87,20 @@ pub enum Error {
     UnknownBundleFormat(String),
 
     #[error("a obsign-identity/1 bundle carries machine markers its signature \
-             does not cover: recompile it as obsign-identity/3")]
+             does not cover: recompile it as obsign-identity/4")]
     UnsignedMachineMarkers,
 
     #[error("this bundle carries display-label paths its signature does not \
-             cover: recompile it as obsign-identity/3")]
+             cover: recompile it as obsign-identity/4")]
     UnsignedLabelPaths,
+
+    #[error("this bundle carries an epoch its signature does not cover: \
+             recompile it as obsign-identity/4")]
+    UnsignedEpoch,
+
+    #[error("identity bundle epoch {offered} is older than the one in force \
+             ({in_force}): refusing a rollback")]
+    BundleRollback { in_force: u64, offered: u64 },
 
     #[error("identity bundle signed with key \"{0}\", absent from the trusted keys")]
     UnknownBundleKey(String),

@@ -133,20 +133,25 @@ have just been invalidated".
 Signed *bundles* evolve differently: their format string is part of the
 signed bytes, so a revision is a new string, and every revision an artifact
 was published under keeps verifying with the signing bytes of its day.
-Exercised three times: `obsign-identity/2` extended the signed bytes with the
-machine markers, `obsign-policy/2` with the argument declarations, and
-`obsign-identity/3` with the display-label claim paths. All follow the same
-two rules: an older bundle keeps its hash and signature, and an older file
-carrying fields only a newer format signs is refused instead of trusted
-(`UnsignedMachineMarkers`, `UnsignedLabelPaths`); otherwise those fields
-would be unsigned authority.
+Exercised four times: `obsign-identity/2` extended the signed bytes with the
+machine markers, `obsign-policy/2` with the argument declarations,
+`obsign-identity/3` with the display-label claim paths, and
+`obsign-identity/4` with a monotonic epoch a gateway will not reload below.
+All follow the same two rules: an older bundle keeps its hash and signature,
+and an older file carrying fields only a newer format signs is refused
+instead of trusted (`UnsignedMachineMarkers`, `UnsignedLabelPaths`,
+`UnsignedEpoch`); otherwise those fields would be unsigned authority. Identity
+bundles older than `/4` carry no order: one counts as epoch 0, so it never
+replaces a `/4` bundle on reload, but nothing orders two of them.
 
 They differ on one point that decides the upgrade order. `obsign-policy/2` is
 emitted only when a tool actually declares arguments, so a fleet that never
-uses the feature never forces a gateway upgrade. `obsign-identity/3` is
-emitted **unconditionally**, so upgrading the control plane alone takes a
-fleet down: gateways first, control plane second
-([deploy-docker.md](deploy-docker.md)).
+uses the feature never forces a gateway upgrade. `obsign-identity/3` was
+emitted **unconditionally**, and `/4` is the same: upgrading the control plane
+alone takes a fleet down, gateways first, control plane second
+([deploy-docker.md](deploy-docker.md)). `/4` also needs an epoch at compile
+time: the commit time of HEAD, `SOURCE_DATE_EPOCH`, or `--epoch` (required
+with `--label`, or where no `git` binary can read the commit).
 
 ## Known debt
 

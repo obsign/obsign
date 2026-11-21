@@ -76,6 +76,7 @@ fn identity_bundle_json() -> String {
         audience: AUDIENCE.to_string(),
         jwks,
         claims: obsign_identity::ClaimMap::default(),
+        epoch: 0,
     };
     let signed = bundle.sign("identity-key", &SigningKey::from_bytes(&IDENTITY_SEED));
     serde_json::to_string(&signed).unwrap()

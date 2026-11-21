@@ -81,6 +81,9 @@ fn write_source_tree(root: &Path) {
     .unwrap();
 }
 
+/// Source epoch the tests compile at, a commit time in seconds.
+const EPOCH: u64 = 1_700_000_000;
+
 fn ops() -> OpsKey {
     OpsKey::from_seed([0x21u8; 32], "ops-key")
 }
@@ -95,8 +98,8 @@ fn compilation_is_deterministic_and_verifiable() {
     write_source_tree(&dir);
 
     let tree = SourceTree::load(&dir).unwrap();
-    let a = compile(&tree, "aaaa11112222", &ops()).unwrap();
-    let b = compile(&SourceTree::load(&dir).unwrap(), "aaaa11112222", &ops()).unwrap();
+    let a = compile(&tree, "aaaa11112222", EPOCH, &ops()).unwrap();
+    let b = compile(&SourceTree::load(&dir).unwrap(), "aaaa11112222", EPOCH, &ops()).unwrap();
 
     // Byte-identical artifacts: same tree, same ref, same key. This is what
     // makes publish idempotent and releases comparable by hash.
@@ -112,6 +115,10 @@ fn compilation_is_deterministic_and_verifiable() {
     let idb = a.identity.expect("identity bundle expected");
     assert_eq!(idb.bundle.version, "identity@aaaa11112222");
     idb.verify(&vk).expect("identity bundle must verify");
+    assert_eq!(
+        serde_json::to_vec(&idb).unwrap(),
+        serde_json::to_vec(&b.identity.unwrap()).unwrap()
+    );
 
     let other = ed25519_dalek::SigningKey::from_bytes(&[0x22u8; 32]).verifying_key();
     assert!(
@@ -121,11 +128,33 @@ fn compilation_is_deterministic_and_verifiable() {
 }
 
 #[test]
+fn the_identity_bundle_carries_the_signed_source_epoch() {
+    // The epoch is what lets a gateway refuse an older bundle on reload, so
+    // the emitted bundle must be /4, carry the epoch it was given, and sign
+    // it.
+    let dir = tmp("epoch");
+    write_source_tree(&dir);
+    let tree = SourceTree::load(&dir).unwrap();
+    let idb = compile(&tree, "v1", EPOCH, &ops()).unwrap().identity.unwrap();
+    assert_eq!(idb.bundle.format, obsign_identity::bundle::FORMAT);
+    assert_eq!(idb.bundle.epoch, EPOCH);
+
+    let later = compile(&tree, "v1", EPOCH + 1, &ops()).unwrap().identity.unwrap();
+    assert_eq!(later.bundle.epoch, EPOCH + 1);
+    assert_ne!(idb.bundle.hash(), later.bundle.hash());
+
+    let vk = ops().signing_key().verifying_key();
+    let mut tampered = idb.clone();
+    tampered.bundle.epoch = u64::MAX;
+    assert!(tampered.verify(&vk).is_err(), "the epoch must be signed");
+}
+
+#[test]
 fn argument_declarations_bump_the_bundle_format() {
     // No tool declares policy_args: v1, pre-upgrade gateways keep working.
     let dir = tmp("fmt-v1");
     write_source_tree(&dir);
-    let compiled = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap();
+    let compiled = compile(&SourceTree::load(&dir).unwrap(), "v1", EPOCH, &ops()).unwrap();
     assert_eq!(compiled.policy.bundle.format, obsign_policy::FORMAT);
 
     // One declaration: v2. An old gateway must refuse this bundle rather
@@ -147,7 +176,7 @@ fn argument_declarations_bump_the_bundle_format() {
         serde_json::json!({"default": "closed"}).to_string(),
     )
     .unwrap();
-    let compiled = compile(&SourceTree::load(&dir).unwrap(), "v2", &ops()).unwrap();
+    let compiled = compile(&SourceTree::load(&dir).unwrap(), "v2", EPOCH, &ops()).unwrap();
     assert_eq!(compiled.policy.bundle.format, obsign_policy::FORMAT_V2);
     assert_eq!(compiled.policy.bundle.tools[0].policy_args.len(), 1);
 }
@@ -186,7 +215,7 @@ fn a_typoed_argument_rule_is_rejected_at_compile_time() {
     )
     .unwrap();
 
-    let err = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap_err();
+    let err = compile(&SourceTree::load(&dir).unwrap(), "v1", EPOCH, &ops()).unwrap_err();
     match err {
         Error::Source(msg) => {
             assert!(msg.contains("support_channel_only"), "must name the rule: {msg}");
@@ -208,7 +237,7 @@ fn a_typoed_argument_rule_is_rejected_at_compile_time() {
         "##,
     )
     .unwrap();
-    compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap();
+    compile(&SourceTree::load(&dir).unwrap(), "v1", EPOCH, &ops()).unwrap();
 }
 
 #[test]
@@ -255,7 +284,7 @@ fn a_rule_whose_verdict_depends_on_values_still_compiles() {
     )
     .unwrap();
 
-    let compiled = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap();
+    let compiled = compile(&SourceTree::load(&dir).unwrap(), "v1", EPOCH, &ops()).unwrap();
     assert_eq!(compiled.policy.bundle.format, obsign_policy::FORMAT);
 
     // The premise, so "still compiles" is not satisfied by any rule at all:
@@ -304,7 +333,7 @@ fn a_rule_that_can_never_evaluate_is_refused_whatever_the_fail_mode() {
     )
     .unwrap();
 
-    let err = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap_err();
+    let err = compile(&SourceTree::load(&dir).unwrap(), "v1", EPOCH, &ops()).unwrap_err();
     match err {
         Error::Source(msg) => {
             assert!(msg.contains("dept_gate"), "must name the rule: {msg}");
@@ -325,7 +354,7 @@ fn a_rule_without_id_is_rejected_at_compile_time() {
     .unwrap();
 
     let tree = SourceTree::load(&dir).unwrap();
-    let err = compile(&tree, "v1", &ops()).unwrap_err();
+    let err = compile(&tree, "v1", EPOCH, &ops()).unwrap_err();
     match err {
         Error::Source(msg) => assert!(msg.contains("@id"), "message must name @id: {msg}"),
         other => panic!("expected Source, got {other}"),
@@ -655,7 +684,7 @@ fn no_schema_is_written_for_a_catalogue_compile_would_refuse() {
 
     // And the same tree is refused by compile, which is the point: the two
     // agree about what a usable catalogue is.
-    assert!(compile(&tree, "v1", &ops()).is_err());
+    assert!(compile(&tree, "v1", EPOCH, &ops()).is_err());
 }
 
 #[test]
@@ -688,7 +717,7 @@ fn a_tool_name_carrying_a_newline_still_yields_a_parseable_schema() {
     let path = obsign_control_plane::default_schema_path(&dir);
     obsign_control_plane::sync_schema(&tree, &path, false).expect("the schema must still generate");
     // Compilation runs the schema through Cedar's parser and validator.
-    compile(&tree, "v1", &ops()).expect("the tree must still compile");
+    compile(&tree, "v1", EPOCH, &ops()).expect("the tree must still compile");
 }
 
 #[test]
@@ -868,7 +897,7 @@ fn a_published_version_is_immutable() {
     write_source_tree(&src);
 
     let tree = SourceTree::load(&src).unwrap();
-    let v1 = compile(&tree, "v1", &ops()).unwrap();
+    let v1 = compile(&tree, "v1", EPOCH, &ops()).unwrap();
     let p = publish(&dist, &v1, &ops(), 1_000).unwrap();
     assert!(!p.reused);
 
@@ -904,13 +933,13 @@ fn a_published_version_is_immutable() {
         CEDAR_OK.replace("prod", "staging"),
     )
     .unwrap();
-    let modified = compile(&SourceTree::load(&src).unwrap(), "v1", &ops()).unwrap();
+    let modified = compile(&SourceTree::load(&src).unwrap(), "v1", EPOCH, &ops()).unwrap();
     assert!(matches!(
         publish(&dist, &modified, &ops(), 3_000),
         Err(Error::VersionConflict { .. })
     ));
     // And the paired legitimate path: the same change under a new version.
-    let v2 = compile(&SourceTree::load(&src).unwrap(), "v2", &ops()).unwrap();
+    let v2 = compile(&SourceTree::load(&src).unwrap(), "v2", EPOCH, &ops()).unwrap();
     publish(&dist, &v2, &ops(), 4_000).expect("a new version must publish");
 }
 
@@ -920,7 +949,7 @@ fn republishing_an_old_version_is_a_rollback() {
     let dist = tmp("rb-dist");
     write_source_tree(&src);
 
-    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", &ops()).unwrap();
+    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", EPOCH, &ops()).unwrap();
     publish(&dist, &v1, &ops(), 1_000).unwrap();
 
     std::fs::write(
@@ -928,7 +957,7 @@ fn republishing_an_old_version_is_a_rollback() {
         CEDAR_OK.replace("prod", "staging"),
     )
     .unwrap();
-    let v2 = compile(&SourceTree::load(&src).unwrap(), "v2", &ops()).unwrap();
+    let v2 = compile(&SourceTree::load(&src).unwrap(), "v2", EPOCH, &ops()).unwrap();
     publish(&dist, &v2, &ops(), 2_000).unwrap();
 
     // Roll back: point current at v1 again. No dedicated tooling, publish is
@@ -958,13 +987,13 @@ fn a_key_id_cannot_be_rebound() {
     write_source_tree(&src);
     let tree = SourceTree::load(&src).unwrap();
 
-    let v1 = compile(&tree, "v1", &ops()).unwrap();
+    let v1 = compile(&tree, "v1", EPOCH, &ops()).unwrap();
     publish(&dist, &v1, &ops(), 1_000).unwrap();
 
     // Same key id, different key material: whoever can do that can sign
     // rules the fleet will trust under an already-trusted name.
     let imposter = OpsKey::from_seed([0x99u8; 32], "ops-key");
-    let v2 = compile(&tree, "v2", &imposter).unwrap();
+    let v2 = compile(&tree, "v2", EPOCH, &imposter).unwrap();
     assert!(matches!(
         publish(&dist, &v2, &imposter, 2_000),
         Err(Error::KeyConflict(_))
@@ -972,7 +1001,7 @@ fn a_key_id_cannot_be_rebound() {
 
     // A new id is the legitimate path, and both keys end up trusted.
     let rotated = OpsKey::from_seed([0x99u8; 32], "ops-key-2");
-    let v2 = compile(&tree, "v2", &rotated).unwrap();
+    let v2 = compile(&tree, "v2", EPOCH, &rotated).unwrap();
     publish(&dist, &v2, &rotated, 3_000).unwrap();
     let keys: Vec<obsign_audit_core::checkpoint::PublicKeyEntry> =
         serde_json::from_str(&std::fs::read_to_string(dist.join("trusted-keys.json")).unwrap())
@@ -1186,7 +1215,7 @@ fn console_is_read_only_and_shows_the_log() {
     let src = tmp("con-src");
 
     write_source_tree(&src);
-    let compiled = compile(&SourceTree::load(&src).unwrap(), "v1", &ops()).unwrap();
+    let compiled = compile(&SourceTree::load(&src).unwrap(), "v1", EPOCH, &ops()).unwrap();
     publish(&dist, &compiled, &ops(), 1_000).unwrap();
     fill_chain(&wal_dir, "alpha", 3, 0);
     seal_chain(&wal_dir, &store_dir, "alpha");
@@ -1307,7 +1336,7 @@ fn a_tampered_release_manifest_is_resigned_not_republished() {
     let dist = tmp("tampered-manifest-dist");
     let src = tmp("tampered-manifest-src");
     write_source_tree(&src);
-    let compiled = compile(&SourceTree::load(&src).unwrap(), "v1", &ops()).unwrap();
+    let compiled = compile(&SourceTree::load(&src).unwrap(), "v1", EPOCH, &ops()).unwrap();
     publish(&dist, &compiled, &ops(), 1_000).unwrap();
 
     let archived = dist.join("releases").join("v1").join("manifest.json");
@@ -1361,7 +1390,7 @@ fn a_deployment_bundle_compiles_signs_and_verifies() {
     write_source_tree(&dir);
     write_deployment(&dir, &[("gw-a", 40), ("gw-b", 41)]);
 
-    let compiled = compile(&SourceTree::load(&dir).unwrap(), "abcd12345678", &ops()).unwrap();
+    let compiled = compile(&SourceTree::load(&dir).unwrap(), "abcd12345678", EPOCH, &ops()).unwrap();
     let db = compiled.deployment.expect("a deployment bundle was expected");
     assert_eq!(db.bundle.version, "deployment@abcd12345678");
 
@@ -1405,7 +1434,7 @@ fn the_deployment_bundle_is_published_as_an_immutable_artifact() {
     write_source_tree(&dir);
     write_deployment(&dir, &[("gw-a", 40)]);
 
-    let compiled = compile(&SourceTree::load(&dir).unwrap(), "abcd12345678", &ops()).unwrap();
+    let compiled = compile(&SourceTree::load(&dir).unwrap(), "abcd12345678", EPOCH, &ops()).unwrap();
     let published = publish(&dist, &compiled, &ops(), 1_000).unwrap();
 
     // Current file and immutable release copy both present and identical.

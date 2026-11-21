@@ -79,6 +79,7 @@ fn main() {
         audience: AUDIENCE.to_string(),
         jwks,
         claims: ClaimMap::default(),
+        epoch: 0,
     };
 
     let bundle_key = SigningKey::from_bytes(&bundle_seed);

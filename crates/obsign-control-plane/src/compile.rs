@@ -45,7 +45,17 @@ pub(crate) fn format_for(tools: &[obsign_policy::ToolDef]) -> &'static str {
 /// Compiles and signs. Loading the result through the same code paths the
 /// gateway uses (`Engine::load`, `KeyStore::from_set`) is the point: what
 /// passes here cannot fail there, because it *is* there.
-pub fn compile(tree: &SourceTree, source_ref: &str, ops: &OpsKey) -> Result<Compiled, Error> {
+///
+/// `epoch` orders identity bundles: a gateway refuses to reload one below the
+/// epoch in force. It is an input, never the wall clock, so that compiling
+/// the same commit twice stays byte-identical; the CLI passes the commit
+/// time.
+pub fn compile(
+    tree: &SourceTree,
+    source_ref: &str,
+    epoch: u64,
+    ops: &OpsKey,
+) -> Result<Compiled, Error> {
     let bundle = Bundle {
         format: format_for(&tree.tools).to_string(),
         version: format!("policies@{source_ref}"),
@@ -98,6 +108,7 @@ pub fn compile(tree: &SourceTree, source_ref: &str, ops: &OpsKey) -> Result<Comp
                 audience: src.audience.clone(),
                 jwks: src.jwks.clone(),
                 claims: src.claims.clone(),
+                epoch,
             };
             let signed = ib.sign(ops.key_id(), ops.signing_key());
             signed.verify(&vk)?;
