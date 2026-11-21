@@ -119,9 +119,19 @@ impl IdentityBundle {
         }
 
         // v4 extends again, with the epoch. Signed, or rewriting it would
-        // be all a rollback needs.
+        // be all a rollback needs. And with each key's `use` and `key_ops`,
+        // which decide whether the key verifies at all.
         if self.format != FORMAT_V1 && self.format != FORMAT_V2 && self.format != FORMAT_V3 {
             e.u64(self.epoch);
+            let mut keys: Vec<&Jwk> = self.jwks.keys.iter().collect();
+            keys.sort_by(|a, b| a.kid.cmp(&b.kid));
+            for k in keys {
+                e.opt_str(k.key_use.as_deref());
+                match &k.key_ops {
+                    None => e.u8(0),
+                    Some(ops) => e.u8(1).str_seq(ops),
+                };
+            }
         }
 
         digest(domain::IDENTITY_BUNDLE, e.finish())
@@ -168,6 +178,18 @@ impl SignedIdentityBundle {
             // No older signature covers the epoch: an unsigned one would let
             // whoever writes the file order an old bundle above a new one.
             return Err(Error::UnsignedEpoch);
+        }
+        if format != FORMAT
+            && self
+                .bundle
+                .jwks
+                .keys
+                .iter()
+                .any(|k| k.key_use.is_some() || k.key_ops.is_some())
+        {
+            // Same rule: no older signature covers them, and they decide
+            // which keys verify.
+            return Err(Error::UnsignedKeyUse);
         }
         match format {
             FORMAT => {}
@@ -298,6 +320,53 @@ mod tests {
             signed.verify(&k.verifying_key()),
             Err(Error::BadBundleSignature)
         ));
+    }
+
+    fn jwk(kid: &str) -> Jwk {
+        Jwk {
+            kty: "OKP".into(),
+            kid: kid.into(),
+            alg: None,
+            crv: Some("Ed25519".into()),
+            n: None,
+            e: None,
+            x: Some("x".into()),
+            y: None,
+            key_use: None,
+            key_ops: None,
+        }
+    }
+
+    #[test]
+    fn v4_key_use_is_covered_by_the_signature() {
+        let k = key();
+        let mut b = bundle(FORMAT);
+        b.jwks.keys = vec![jwk("k1"), jwk("k2")];
+        let signed = b.sign("k1", &k);
+        assert!(signed.verify(&k.verifying_key()).is_ok());
+
+        let mut t = signed.clone();
+        t.bundle.jwks.keys[1].key_use = Some("enc".into());
+        assert!(matches!(t.verify(&k.verifying_key()), Err(Error::BadBundleSignature)));
+
+        let mut t = signed.clone();
+        t.bundle.jwks.keys[0].key_ops = Some(vec!["verify".into()]);
+        assert!(matches!(t.verify(&k.verifying_key()), Err(Error::BadBundleSignature)));
+    }
+
+    #[test]
+    fn an_older_format_carrying_key_use_is_refused() {
+        let k = key();
+        for fmt in [FORMAT_V1, FORMAT_V2, FORMAT_V3] {
+            let mut b = bundle(fmt);
+            b.jwks.keys = vec![jwk("k1")];
+            let mut signed = b.sign("k1", &k);
+            signed.bundle.jwks.keys[0].key_use = Some("enc".into());
+            assert!(
+                matches!(signed.verify(&k.verifying_key()), Err(Error::UnsignedKeyUse)),
+                "{fmt} must refuse a key use its signature does not cover"
+            );
+        }
     }
 
     #[test]

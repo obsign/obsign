@@ -312,6 +312,86 @@ fn empty_jwks_is_refused() {
 }
 
 #[test]
+fn encryption_keys_are_skipped_not_used_and_do_not_fail_the_set() {
+    // What Keycloak's certs endpoint serves: a signing key beside an
+    // RSA-OAEP encryption key. The set must load, and only the signing key
+    // may verify anything.
+    let idp = Idp::new("sig", 1);
+    let mut enc_use = Idp::new("enc-use", 2).jwk();
+    enc_use["use"] = json!("enc");
+    let mut enc_ops = Idp::new("enc-ops", 3).jwk();
+    enc_ops["key_ops"] = json!(["encrypt"]);
+    let set: JwkSet = serde_json::from_value(json!({ "keys": [
+        idp.jwk(),
+        enc_use,
+        enc_ops,
+        { "kty": "RSA", "kid": "oaep", "alg": "RSA-OAEP", "use": "enc",
+          "n": "abc", "e": "AQAB" },
+        { "kty": "OKP", "kid": "x25519", "crv": "X25519", "x": "abc" },
+    ] }))
+    .unwrap();
+    let store = KeyStore::from_set(&set).unwrap();
+    assert_eq!(store.len(), 1);
+
+    // A token naming the `use: enc` key is refused, though its signature
+    // is valid for that key.
+    let v = Verifier::new(store, ISSUER, AUDIENCE);
+    assert!(matches!(
+        v.verify(&Idp::new("enc-use", 2).mint(claims())).unwrap_err(),
+        Error::UnknownKid(_)
+    ));
+    assert!(v.verify(&idp.mint(claims())).is_ok());
+
+    // A key_ops listing `verify` keeps the key.
+    let mut ok = Idp::new("k1", 1).jwk();
+    ok["key_ops"] = json!(["verify"]);
+    ok["use"] = json!("sig");
+    let set: JwkSet = serde_json::from_value(json!({ "keys": [ok] })).unwrap();
+    assert_eq!(KeyStore::from_set(&set).unwrap().len(), 1);
+}
+
+#[test]
+fn a_set_of_only_encryption_keys_is_empty() {
+    let mut enc = Idp::new("enc", 2).jwk();
+    enc["use"] = json!("enc");
+    let set: JwkSet = serde_json::from_value(json!({ "keys": [enc] })).unwrap();
+    assert!(matches!(KeyStore::from_set(&set).unwrap_err(), Error::EmptyJwks));
+}
+
+#[test]
+fn a_curve_that_contradicts_the_algorithm_is_refused() {
+    let set: JwkSet = serde_json::from_value(json!({ "keys": [
+        { "kty": "EC", "kid": "ec-1", "alg": "ES256", "crv": "P-384",
+          "x": EC_X, "y": EC_Y },
+    ] }))
+    .unwrap();
+    assert!(matches!(KeyStore::from_set(&set).unwrap_err(), Error::MalformedJwk(_)));
+
+    let mut okp = Idp::new("k1", 1).jwk();
+    okp["alg"] = json!("ES256");
+    let set: JwkSet = serde_json::from_value(json!({ "keys": [okp] })).unwrap();
+    assert!(matches!(KeyStore::from_set(&set).unwrap_err(), Error::MalformedJwk(_)));
+}
+
+#[test]
+fn an_rsa_modulus_under_2048_bits_is_refused() {
+    // 1024 bits: factorable within reach of a motivated adversary.
+    let n = b64(&[0xc5u8; 128]);
+    let set: JwkSet = serde_json::from_value(json!({ "keys": [
+        { "kty": "RSA", "kid": "weak", "alg": "RS256", "n": n, "e": "AQAB" },
+    ] }))
+    .unwrap();
+    assert!(matches!(KeyStore::from_set(&set).unwrap_err(), Error::WeakRsaKey(_)));
+
+    // The 2048-bit test key passes.
+    let set: JwkSet = serde_json::from_value(json!({ "keys": [
+        { "kty": "RSA", "kid": "rsa-1", "alg": "RS256", "n": RSA_N, "e": "AQAB" },
+    ] }))
+    .unwrap();
+    assert!(KeyStore::from_set(&set).is_ok());
+}
+
+#[test]
 fn symmetric_algorithm_is_forbidden_in_a_jwks() {
     // An HMAC key in a distributed JWKS would be a published shared secret.
     let set: JwkSet = serde_json::from_value(json!({

@@ -136,11 +136,12 @@ was published under keeps verifying with the signing bytes of its day.
 Exercised four times: `obsign-identity/2` extended the signed bytes with the
 machine markers, `obsign-policy/2` with the argument declarations,
 `obsign-identity/3` with the display-label claim paths, and
-`obsign-identity/4` with a monotonic epoch a gateway will not reload below.
+`obsign-identity/4` with a monotonic epoch a gateway will not reload below
+and each key's `use`/`key_ops`.
 All follow the same two rules: an older bundle keeps its hash and signature,
 and an older file carrying fields only a newer format signs is refused
 instead of trusted (`UnsignedMachineMarkers`, `UnsignedLabelPaths`,
-`UnsignedEpoch`); otherwise those fields would be unsigned authority. Identity
+`UnsignedEpoch`, `UnsignedKeyUse`); otherwise those fields would be unsigned authority. Identity
 bundles older than `/4` carry no order: one counts as epoch 0, so it never
 replaces a `/4` bundle on reload, but nothing orders two of them.
 

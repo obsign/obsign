@@ -55,6 +55,13 @@ pub enum Error {
     #[error("unsupported or forbidden algorithm: {0}")]
     UnsupportedAlgorithm(String),
 
+    #[error("rsa key \"{0}\" has a modulus under 2048 bits")]
+    WeakRsaKey(String),
+
+    #[error("this bundle carries key use restrictions its signature does not \
+             cover: recompile it as obsign-identity/4")]
+    UnsignedKeyUse,
+
     #[error("kid \"{0}\" appears more than once in the jwks")]
     DuplicateKid(String),
 

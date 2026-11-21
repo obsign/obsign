@@ -378,8 +378,10 @@ curl -s https://idp.example.com/realms/corp/protocol/openid-connect/certs \
 | `keys[].kty` | enum | **yes** | — | `RSA` \| `EC` \| `OKP`. Anything else is refused. |
 | `keys[].kid` | string | **yes** | — | Matched against the token's `kid` header. **Mandatory in the token too**: without it we would have to try every key, which hides a failed rotation and muddies diagnosis. |
 | `keys[].alg` | string | no | per `kty`, below | Signing algorithm. |
-| `keys[].crv` | string | no | — | Carried and signed, not otherwise interpreted; the curve is implied by `alg` for `EC` and by `kty` for `OKP`. |
-| `keys[].n`, `keys[].e` | base64url | for `RSA` | — | Modulus and exponent. |
+| `keys[].crv` | string | no | — | When present, must match `alg`: `P-256` for `ES256`, `P-384` for `ES384`, `Ed25519` for `OKP`. Names the `alg` of an `EC` key that has none. |
+| `keys[].use` | string | no | — | A key with anything but `sig` (an IdP's `enc` key) is skipped. Signed. |
+| `keys[].key_ops` | array | no | — | When present, a key not listing `verify` is skipped. Signed. |
+| `keys[].n`, `keys[].e` | base64url | for `RSA` | — | Modulus (2048 bits at least) and exponent. |
 | `keys[].x` | base64url | for `EC` and `OKP` | — | X coordinate (`EC`) or the raw public key (`OKP`/Ed25519). |
 | `keys[].y` | base64url | for `EC` | — | Y coordinate. Ignored for `OKP`. |
 
@@ -394,10 +396,16 @@ curl -s https://idp.example.com/realms/corp/protocol/openid-connect/certs \
 **HMAC algorithms (`HS256` …) and `none` are deliberately absent.** A
 symmetric key in a published JWKS is a vulnerability.
 
+**Skipped, not refused:** a key that is not a signing key here, by its `use`,
+its `key_ops`, an `alg` outside the table above (`RSA-OAEP`, `ECDH-ES`, ...)
+or an `OKP` curve other than `Ed25519`. The JWKS an IdP serves holds its
+encryption keys too, and stays usable as fetched.
+
 **Refused at compile** (the same checks the gateway runs, moved to CI): an
-empty or all-unusable key set; a duplicate `kid` (two keys for one id means we
-can no longer tell which one signed); a missing component for the declared
-`kty`; an unsupported `kty` or `alg`.
+empty key set or one with no signing key left; a duplicate `kid` (two keys for
+one id means we can no longer tell which one signed); a missing component for
+the declared `kty`; an unsupported `kty`; an HMAC `alg` or `none`; a `crv` that
+contradicts `alg`; an RSA modulus under 2048 bits.
 
 **Rotation does not need a restart.** The identity bundle is re-read at
 runtime, and every reload (applied or rejected) lands in the log as a
