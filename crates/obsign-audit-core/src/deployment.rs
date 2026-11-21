@@ -22,7 +22,7 @@ use crate::checkpoint::{KeyRole, PublicKeyEntry};
 use crate::error::Error;
 use crate::hash::{digest, domain};
 use crate::origin::IdentityKey;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -155,11 +155,11 @@ pub struct SignedDeploymentBundle {
 impl SignedDeploymentBundle {
     /// Verifies the signature under one ops key and returns the bundle.
     pub fn verify(&self, ops_key: &VerifyingKey) -> Result<&DeploymentBundle, Error> {
-        let raw = hex::decode(&self.signature).map_err(|_| Error::BadDeploymentSignature)?;
-        let bytes: [u8; 64] = raw.try_into().map_err(|_| Error::BadDeploymentSignature)?;
-        ops_key
-            .verify(&self.bundle.signing_bytes(), &Signature::from_bytes(&bytes))
+        let sig = crate::signature_from_hex(&self.signature)
             .map_err(|_| Error::BadDeploymentSignature)?;
+        if !crate::ed25519_verify(ops_key, &self.bundle.signing_bytes(), &sig) {
+            return Err(Error::BadDeploymentSignature);
+        }
         if self.bundle.format != FORMAT {
             return Err(Error::UnknownDeploymentFormat(self.bundle.format.clone()));
         }

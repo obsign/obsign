@@ -1629,3 +1629,70 @@ fn the_same_key_repeated_under_one_id_is_not_a_conflict() {
     assert!(r.is_valid(), "findings: {:?}", r.findings);
     assert!(r.proves_every_record());
 }
+
+/// The identity point, compressed: a small-order "public key".
+const WEAK_KEY: [u8; 32] = {
+    let mut k = [0u8; 32];
+    k[0] = 1;
+    k
+};
+
+/// `R` = the identity point, `s` = 0. Under non-strict Ed25519 verification
+/// and `WEAK_KEY`, this "signs" every message.
+fn universal_signature() -> String {
+    let mut sig = [0u8; 64];
+    sig[0] = 1;
+    hex::encode(sig)
+}
+
+#[test]
+fn a_small_order_key_signs_nothing() {
+    // A key entry whose point is the identity, and one 64-byte signature
+    // that matched it for any message: the checkpoint, every record, the
+    // deployment bundle and the session certificate all verified with it.
+    // Strict verification refuses both the key and the signature.
+    use obsign_audit_core::deployment::{DeploymentBundle, FORMAT as DFMT};
+    use obsign_audit_core::origin::IdentityKey;
+
+    let weak = PublicKeyEntry {
+        key_id: KEY_ID.into(),
+        algo: "ed25519".into(),
+        public_key: hex::encode(WEAK_KEY),
+        role: KeyRole::Seal,
+    };
+    let weak_vk = weak.to_verifying_key().expect("the point decodes");
+
+    let (mut ev, _) = sample();
+    ev.checkpoints[0].signature = universal_signature();
+    let r = evidence::verify(&ev, std::slice::from_ref(&weak));
+    assert!(codes(&r).contains(&"invalid_signature"), "checkpoint: {:?}", r.findings);
+
+    let mut sr = ev.records[0].clone();
+    sr.origin_sig = Some(universal_signature());
+    sr.origin_key_id = Some("weak".into());
+    assert!(sr.verify_origin(CHAIN_ID, &weak_vk).is_err(), "record");
+
+    let mut bundle = DeploymentBundle {
+        format: DFMT.into(),
+        version: "deployment@weak".into(),
+        origin_keys: Vec::new(),
+        attestations: Vec::new(),
+    }
+    .sign("ops-1", &signing_key());
+    bundle.signature = universal_signature();
+    assert!(bundle.verify(&weak_vk).is_err(), "deployment bundle");
+
+    let cert = SessionCert {
+        session_pubkey: hex::encode(signing_key().verifying_key().to_bytes()),
+        identity_key_id: "weak".into(),
+        gateway_id: "gw-1".into(),
+        not_before_ms: 0,
+        not_after_ms: 1,
+        identity_sig: universal_signature(),
+    };
+    assert!(
+        obsign_audit_core::verify_session_cert_with(CHAIN_ID, &cert, &IdentityKey::Ed25519(weak_vk))
+            .is_err(),
+        "session certificate"
+    );
+}

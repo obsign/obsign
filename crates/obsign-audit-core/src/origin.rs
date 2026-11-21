@@ -26,7 +26,7 @@ use crate::checkpoint::PublicKeyEntry;
 use crate::error::Error;
 use crate::hash::{digest, domain, sha256, Hash};
 use crate::record::{Record, SessionCert};
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::VerifyingKey;
 use serde::{Deserialize, Serialize};
 
 /// The canonical id an origin key is known by, derived from its public bytes.
@@ -106,7 +106,7 @@ impl IdentityKey {
 
     fn verify(&self, msg: &[u8], sig: &[u8; 64]) -> bool {
         match self {
-            IdentityKey::Ed25519(vk) => vk.verify(msg, &Signature::from_bytes(sig)).is_ok(),
+            IdentityKey::Ed25519(vk) => crate::ed25519_verify(vk, msg, sig),
             IdentityKey::EcdsaP256(point) => {
                 crate::p256::verify_ecdsa_p256(point, sha256(msg).as_bytes(), sig)
             }
@@ -134,8 +134,7 @@ pub fn verify_session_cert_with(
     cert: &SessionCert,
     identity_key: &IdentityKey,
 ) -> Result<VerifyingKey, Error> {
-    let raw = hex::decode(&cert.identity_sig).map_err(|_| Error::BadHex(cert.identity_sig.clone()))?;
-    let bytes: [u8; 64] = raw.try_into().map_err(|_| Error::BadSignatureLength)?;
+    let bytes = crate::signature_from_hex(&cert.identity_sig)?;
     let msg = session_cert_signing_bytes(chain_id, cert);
     if !identity_key.verify(&msg, &bytes) {
         return Err(Error::BadSessionCert {
@@ -254,14 +253,15 @@ impl SignedRecord {
                 seq: self.record.seq,
             });
         };
-        let raw = hex::decode(sig_hex).map_err(|_| Error::BadHex(sig_hex.clone()))?;
-        let bytes: [u8; 64] = raw.try_into().map_err(|_| Error::BadSignatureLength)?;
+        let sig = crate::signature_from_hex(sig_hex)?;
         let msg = origin_signing_bytes(chain_id, &self.record.hash());
-        key.verify(&msg, &Signature::from_bytes(&bytes))
-            .map_err(|_| Error::BadOriginSignature {
+        if !crate::ed25519_verify(key, &msg, &sig) {
+            return Err(Error::BadOriginSignature {
                 seq: self.record.seq,
                 key_id: self.origin_key_id.clone().unwrap_or_default(),
-            })
+            });
+        }
+        Ok(())
     }
 }
 
