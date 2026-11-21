@@ -1,6 +1,6 @@
 use crate::checkpoint::{KeyRole, PublicKeyEntry, SignedCheckpoint};
 use crate::deployment::SignedDeploymentBundle;
-use crate::hash::{Hash, GENESIS};
+use crate::hash::Hash;
 use crate::merkle::merkle_root;
 use crate::origin::{IdentityKey, SignedRecord};
 use crate::record::Record;
@@ -1089,11 +1089,6 @@ fn resolve_attestations(
             Finding::warning("identity_not_attested", msg)
         });
     }
-}
-
-/// Expected hash for the first record of a chain.
-pub fn genesis() -> Hash {
-    GENESIS
 }
 
 #[cfg(test)]
