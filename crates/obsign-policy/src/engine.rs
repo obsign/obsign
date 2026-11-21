@@ -359,6 +359,21 @@ impl Engine {
     pub fn evaluate_capability(&self, cap: Capability, req: &ToolRequest) -> Verdict {
         match self.authorize_capability(cap, req) {
             Ok(v) => v,
+            // The same line `evaluate` draws for tools with arguments. A
+            // resource URI or a prompt name is chosen by whoever sends the
+            // request and reaches policies as `context.target`, so an
+            // evaluation error over it can be input-dependent (a rule calling
+            // `ip(context.target)` raises on any target that is not an
+            // address) and must never reach the open path. A server-keyed
+            // channel is evaluated against the fixed literal, so its errors
+            // are a broken policy and keep the customer's fail mode.
+            Err(e) if !cap.keyed_on_server() => Verdict {
+                outcome: Outcome::Deny,
+                policy_id: None,
+                reason: Some(format!(
+                    "policy evaluation failed over the request target, denied: {e}"
+                )),
+            },
             Err(e) => self.on_failure(cap.action(), &e),
         }
     }

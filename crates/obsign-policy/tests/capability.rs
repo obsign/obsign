@@ -135,15 +135,17 @@ fn prompts_are_their_own_action_and_entity_type() {
 fn capability_evaluation_failures_follow_the_fail_mode_under_their_action_key() {
     // A policy that evaluates with an error (unknown context attribute on
     // this request shape) falls under the fail mode, keyed by the Cedar
-    // action name: the same identifier the customer writes in rules.
+    // action name: the same identifier the customer writes in rules. Only
+    // for a server-keyed channel: its request names nothing the caller
+    // chose.
     let broken = r#"@id("broken")
-        permit (principal, action == Action::"resource_read", resource)
+        permit (principal, action == Action::"sampling", resource)
         when { context.no_such_attribute == "x" };"#;
 
     let closed = engine(broken);
     let v = closed.evaluate_capability(
-        Capability::ResourceRead,
-        &ToolRequest::new("u:marie", "docs://runbook"),
+        Capability::Sampling,
+        &ToolRequest::new("u:marie", "mcp://wrapped"),
     );
     assert_eq!(v.outcome, Outcome::Deny);
     assert!(v.reason.unwrap().contains("fail-closed"));
@@ -152,16 +154,47 @@ fn capability_evaluation_failures_follow_the_fail_mode_under_their_action_key() 
         broken,
         FailMode {
             default: FailBehaviour::Closed,
-            tools: [("resource_read".to_string(), FailBehaviour::Open)]
+            tools: [("sampling".to_string(), FailBehaviour::Open)]
                 .into_iter()
                 .collect(),
         },
     );
     let v = open.evaluate_capability(
-        Capability::ResourceRead,
-        &ToolRequest::new("u:marie", "docs://runbook"),
+        Capability::Sampling,
+        &ToolRequest::new("u:marie", "mcp://wrapped"),
     );
     assert_eq!(v.outcome, Outcome::AllowFailOpen);
+}
+
+#[test]
+fn an_evaluation_error_over_a_caller_chosen_target_denies_even_fail_open() {
+    // The target is whatever URI the agent asked for. A rule that raises on
+    // some targets (`ip()` on anything that is not an address) must not let
+    // the caller pick a target that raises and walk through the open path.
+    let cedar = r#"@id("loopback_only")
+        forbid (principal, action == Action::"resource_read", resource)
+        unless { ip(context.target).isLoopback() };
+        @id("prompt_loopback_only")
+        forbid (principal, action == Action::"prompt_get", resource)
+        unless { ip(context.target).isLoopback() };
+        @id("allow")
+        permit (principal, action, resource);"#;
+    let open = engine_with(
+        cedar,
+        FailMode {
+            default: FailBehaviour::Open,
+            tools: Default::default(),
+        },
+    );
+
+    for cap in [Capability::ResourceRead, Capability::PromptGet] {
+        let v = open.evaluate_capability(cap, &ToolRequest::new("u:marie", "10.0.0.1"));
+        assert_eq!(v.outcome, Outcome::Deny, "{cap:?}: the rule itself denies");
+
+        let v = open.evaluate_capability(cap, &ToolRequest::new("u:marie", "not-an-address"));
+        assert_eq!(v.outcome, Outcome::Deny, "{cap:?}: {:?}", v.reason);
+        assert!(v.reason.unwrap().contains("denied"));
+    }
 }
 
 #[test]

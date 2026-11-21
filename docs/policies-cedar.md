@@ -235,6 +235,11 @@ nothing, letting a deletion through is indefensible.
 A degradation is never silent: a call allowed under a fail-open rule is
 recorded as `AllowFailOpen`, never as a clean `Allow`.
 
+The fail mode only covers failures the request cannot steer. When the
+input can steer the error, it denies whatever the fail mode says: a tool
+that declares arguments, and `resource_read` / `prompt_get`, whose
+`context.target` is the URI or prompt name the agent chose.
+
 ## Your editor
 
 Cedar is a language with an editor already. AWS publishes the [Cedar
