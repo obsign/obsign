@@ -239,6 +239,62 @@ fn removing_a_checkpoint_is_visible() {
     assert!(codes(&r).contains(&"broken_checkpoint_link"));
 }
 
+/// Edits one field of the (single) checkpoint and verifies against the
+/// trusted keys. Every field is under the signature, so every edit must at
+/// least break it; the content checks add their own finding where the field
+/// also describes the records.
+fn tamper_checkpoint(edit: impl FnOnce(&mut obsign_audit_core::checkpoint::Checkpoint)) -> Vec<String> {
+    let (mut ev, keys) = sample();
+    edit(&mut ev.checkpoints[0].checkpoint);
+    let r = evidence::verify(&ev, &keys);
+    assert!(!r.is_valid());
+    assert_eq!(r.checkpoints_valid, 0);
+    assert_eq!(r.records_sealed, 0, "an invalid seal covers nothing");
+    codes(&r).into_iter().map(String::from).collect()
+}
+
+#[test]
+fn a_checkpoint_head_hash_edit_is_detected() {
+    let c = tamper_checkpoint(|cp| cp.head_hash = content_hash(b"another head"));
+    assert!(c.contains(&"invalid_signature".into()), "{c:?}");
+    assert!(c.contains(&"head_mismatch".into()), "{c:?}");
+}
+
+#[test]
+fn a_backdated_checkpoint_is_detected() {
+    // ts_ms is the key holder's word; moving it after signing is not.
+    let c = tamper_checkpoint(|cp| cp.ts_ms -= 86_400_000);
+    assert_eq!(c, ["invalid_signature"]);
+}
+
+#[test]
+fn a_narrowed_checkpoint_interval_is_detected() {
+    // Narrowing from either end would leave the excluded records unsealed
+    // under a seal that still claims to be valid.
+    let c = tamper_checkpoint(|cp| cp.from_seq = 1);
+    assert!(c.contains(&"invalid_signature".into()), "{c:?}");
+    assert!(c.contains(&"root_mismatch".into()), "{c:?}");
+
+    let c = tamper_checkpoint(|cp| cp.to_seq = 4);
+    assert!(c.contains(&"invalid_signature".into()), "{c:?}");
+    assert!(c.contains(&"root_mismatch".into()), "{c:?}");
+}
+
+#[test]
+fn a_checkpoint_moved_under_another_trusted_key_is_detected() {
+    // Two trusted sealing keys; the checkpoint signed by one is relabelled
+    // as the other's. The key id is under the signature, and the other key
+    // did not sign these bytes either way.
+    let (mut ev, mut keys) = sample();
+    let other = SigningKey::from_bytes(&[4u8; 32]);
+    keys.push(PublicKeyEntry { key_id: "other-key".into(), ..pubkey_entry(&other) });
+    ev.checkpoints[0].checkpoint.key_id = "other-key".into();
+
+    let r = evidence::verify(&ev, &keys);
+    assert!(!r.is_valid());
+    assert_eq!(codes(&r), ["invalid_signature"]);
+}
+
 #[test]
 fn tail_truncation_is_a_documented_limit_not_a_detection() {
     // DOCUMENTS current behaviour, it does not endorse it. See "What
