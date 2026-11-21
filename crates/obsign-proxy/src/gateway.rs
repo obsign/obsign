@@ -960,9 +960,7 @@ fn handle_server_initiated(
             // check: relayed machinery earns a relayed answer, nothing more.
             if let Some(id) = msg.get("id").filter(|v| !v.is_null()) {
                 let mut s = state.lock().unwrap();
-                if s.relayed_to_agent.len() < 1024 {
-                    s.relayed_to_agent.insert(id.to_string());
-                }
+                s.relayed_to_agent.insert(id.to_string());
             }
             return Downstream::Forward(msg);
         }
@@ -1450,6 +1448,38 @@ mod tests {
         assert!(matches!(
             &first.payload,
             Payload::Effect(e) if e.status == EffectStatus::Error && e.result_hash.is_none()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn relayed_pings_past_the_cap_still_get_their_pongs_through() {
+        // The set of relayed ids stopped growing at 1024 and was only freed
+        // by a reply: an agent that ignored a thousand pings had every
+        // later, legitimate pong refused for the rest of the session.
+        let (dir, state) = open_state("relayed-cap");
+        let ctx = ctx();
+        let total = session::RelayedIds::CAP as u64 + 10;
+        for i in 0..total {
+            let ping = json!({ "jsonrpc": "2.0", "id": format!("srv-{i}"), "method": "ping" });
+            assert!(matches!(
+                handle_from_server(ping, &state, &ctx, "sess"),
+                Downstream::Forward(_)
+            ));
+        }
+
+        let pong = |i: u64| json!({ "jsonrpc": "2.0", "id": format!("srv-{i}"), "result": {} });
+        assert!(
+            matches!(
+                handle_from_agent(pong(total - 1), &state, &ctx, None).unwrap(),
+                Forward::Pass(_)
+            ),
+            "the latest ping's pong must pass"
+        );
+        // The oldest was forgotten to make room: its late pong is refused.
+        assert!(matches!(
+            handle_from_agent(pong(0), &state, &ctx, None).unwrap(),
+            Forward::Reply(_)
         ));
         let _ = std::fs::remove_dir_all(&dir);
     }

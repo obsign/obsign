@@ -1,7 +1,7 @@
 use crate::origin::OriginSigner;
 use obsign_audit_core::record::*;
 use obsign_audit_core::{content_hash, origin_signing_bytes, ChainWriter, SignedRecord};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use obsign_wal::Wal;
@@ -27,6 +27,45 @@ pub struct Pending {
     pub started: Instant,
 }
 
+/// Ids of server machinery relayed to the agent and not yet answered.
+///
+/// Bounded, since a server can ping an agent that never answers. Past the
+/// cap the *oldest* id is forgotten, not the newest refused: a hard cap
+/// that stopped remembering once full refused every later legitimate pong
+/// for the rest of the session, after the first thousand unanswered pings.
+/// An evicted id's reply, should it ever come, is refused and recorded as
+/// unsolicited, which fails toward refusal, never toward an unarbitrated
+/// channel.
+#[derive(Default)]
+pub struct RelayedIds {
+    order: VecDeque<String>,
+}
+
+impl RelayedIds {
+    pub const CAP: usize = 1024;
+
+    pub fn insert(&mut self, id: String) {
+        if self.order.contains(&id) {
+            return;
+        }
+        if self.order.len() == Self::CAP {
+            self.order.pop_front();
+        }
+        self.order.push_back(id);
+    }
+
+    /// Forgets `id`; true when it was remembered.
+    pub fn remove(&mut self, id: &str) -> bool {
+        match self.order.iter().position(|k| k == id) {
+            Some(i) => {
+                self.order.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
 /// Mutable gateway state, shared between the upstream direction (agent to
 /// server) and the downstream one (server to agent).
 pub struct Session {
@@ -49,10 +88,9 @@ pub struct Session {
     /// relayed to the agent without arbitration. The agent's reply to one of
     /// these passes like the request did; a "response" matching neither this
     /// set nor `pending_to_agent` is unsolicited (an arbitrary payload
-    /// aimed at the server) and is refused. Bounded: past the cap, new
-    /// machinery requests still relay but their replies will be refused,
-    /// which fails toward refusal, never toward an unarbitrated channel.
-    pub relayed_to_agent: HashSet<String>,
+    /// aimed at the server) and is refused. Bounded, oldest out: see
+    /// [`RelayedIds`].
+    pub relayed_to_agent: RelayedIds,
     /// Ids of agent machinery requests (`tools/list`, `ping`…) forwarded
     /// and not yet answered. Not recorded, but they share the agent's id
     /// space with the acts in `pending`: an act and a listing in flight
@@ -339,7 +377,7 @@ pub fn open(
         agent_record_id: String::new(),
         pending: HashMap::new(),
         pending_to_agent: HashMap::new(),
-        relayed_to_agent: HashSet::new(),
+        relayed_to_agent: RelayedIds::default(),
         machinery_in_flight: HashSet::new(),
         counter: 0,
         reload_counter: 0,
