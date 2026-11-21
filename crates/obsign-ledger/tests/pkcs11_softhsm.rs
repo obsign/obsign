@@ -118,6 +118,20 @@ fn seals_through_a_real_token() {
         );
     }
 
+    // A public object that shares the label but not the CKA_ID is not this
+    // private key's other half. Provisioned by the env script.
+    if let Ok(mismatch) = std::env::var("OBSIGN_TEST_PKCS11_MISMATCH_LABEL") {
+        let e = Pkcs11Sealer::open(
+            &env.module,
+            &TokenSelector::Only,
+            &env.pin,
+            &mismatch,
+            "seal-hsm",
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("CKA_ID"), "mismatched pair not refused: {e}");
+    }
+
     // Selecting a token that does not exist lists what does.
     let e = Pkcs11Sealer::open(
         &env.module,

@@ -198,10 +198,12 @@ other sixty-one.
     --key-id seal-prod
 ```
 
-The key pair (Ed25519, both halves under the same label) is provisioned with
+The key pair (Ed25519, both halves under the same label and the same
+`CKA_ID`, which is what binds them) is provisioned with
 the vendor's tooling; the ledger only ever asks the token to sign, over a
 read-only session. When the module exposes several tokens, `--hsm-token-label`
-or `--hsm-slot` picks one; the PIN comes from a file or `OBSIGN_HSM_PIN`,
+or `--hsm-slot` picks one (a label carried by several tokens is refused, not
+resolved by slot order); the PIN comes from a file or `OBSIGN_HSM_PIN`,
 never from an argument (arguments end up in `ps` and shell history). Both
 are trimmed of surrounding whitespace, and a PIN file readable by group or
 others is refused: `chmod 600` it, owned by the ledger's user.
