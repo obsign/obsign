@@ -422,6 +422,13 @@ fn handle_post(
     // none of them reaches the server. Only the transport answer differs:
     // 202 on a pass, the refusal with a null id otherwise.
     if is_response || !has_id {
+        // A cancelled request's POST is still blocked on its waiter. The
+        // gateway frees the id below; the waiter goes too, or the id stays
+        // taken here and the POST hangs until the session ends.
+        let cancelled = (method == Some("notifications/cancelled"))
+            .then(|| msg.pointer("/params/requestId").filter(|v| !v.is_null()))
+            .flatten()
+            .map(Value::to_string);
         let fwd = match gateway::handle_from_agent(msg, &sess.state, &sess.ctx, bearer) {
             Ok(f) => f,
             Err(e) => {
@@ -443,6 +450,9 @@ fn handle_post(
             }
             Forward::Pass(raw) => match forward_raw(&sess, &raw) {
                 Ok(()) => {
+                    if let Some(key) = cancelled {
+                        sess.waiters.lock().unwrap().remove(&key);
+                    }
                     respond(stream, 202, "Accepted", &[], None, b"")?;
                     Ok(Next::KeepAlive)
                 }
@@ -532,7 +542,7 @@ fn forward_and_wait(
     }
 
     rx.recv()
-        .map_err(|_| "session terminated before the server answered")
+        .map_err(|_| "request cancelled, or session terminated before the server answered")
 }
 
 fn forward_raw(sess: &McpSession, raw: &str) -> std::io::Result<()> {

@@ -61,6 +61,11 @@ fn main() {
                     .unwrap_or("");
                 // The server obeys without question. If it gets the call, it acts.
                 eprintln!("[server] EXECUTING {name}");
+                // A call the server never answers: what an agent ends up
+                // cancelling.
+                if msg.pointer("/params/arguments/emit").and_then(Value::as_str) == Some("never") {
+                    continue;
+                }
                 if name == "search_docs"
                     && msg.pointer("/params/arguments/emit").and_then(Value::as_str)
                         == Some("unreadable")

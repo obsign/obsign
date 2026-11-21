@@ -1074,3 +1074,42 @@ fn connections_past_the_ceiling_are_turned_away() {
     let (_, r) = initialize(&gw, &[]);
     assert_eq!(r.status, 200);
 }
+
+#[test]
+fn a_cancelled_call_releases_its_post_and_its_id() {
+    // The agent cancels a call the server never answers. Its POST stayed
+    // blocked on the waiter until the session ended, and the id stayed
+    // taken: every later request reusing it was refused.
+    let gw = start("cancelled", false, &[]);
+    let (sid, _) = initialize(&gw, &[]);
+
+    std::thread::scope(|scope| {
+        let hung = scope.spawn(|| {
+            post(
+                &gw,
+                &[("Mcp-Session-Id", &sid)],
+                json!({"jsonrpc":"2.0","id":7,"method":"tools/call",
+                       "params":{"name":"search_docs","arguments":{"emit":"never"}}}),
+            )
+        });
+        // Let the call reach the server before cancelling it.
+        std::thread::sleep(Duration::from_millis(300));
+        let r = post(
+            &gw,
+            &[("Mcp-Session-Id", &sid)],
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled",
+                   "params":{"requestId":7,"reason":"gave up"}}),
+        );
+        assert_eq!(r.status, 202);
+        let r = hung.join().expect("the cancelled POST must return");
+        assert_eq!(r.status, 502);
+    });
+
+    let r = call(&gw, &sid, &[], 7, "search_docs");
+    assert_eq!(
+        r.body.pointer("/result/isError"),
+        Some(&Value::Bool(false)),
+        "the id must be free again: {}",
+        r.body
+    );
+}

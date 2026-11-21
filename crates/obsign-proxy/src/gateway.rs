@@ -445,6 +445,34 @@ pub(crate) fn handle_from_agent(
                     ));
                 }
             }
+            // The agent gives up on a request it sent: the request leaves
+            // the in-flight sets, or its id stays taken for the session's
+            // life and the act stays open in the log. An act's effect closes
+            // as `Error`: it was forwarded, so `Blocked` (never reached the
+            // server) would be false, and it did not complete, whatever the
+            // server did with it before the cancellation landed. A response
+            // arriving after all matches nothing and closes nothing, as the
+            // protocol asks of a cancelled request.
+            if m == "notifications/cancelled" {
+                if let Some(rid) = params.get("requestId").filter(|v| !v.is_null()) {
+                    let key = rid.to_string();
+                    let mut s = state.lock().unwrap();
+                    match s.pending.remove(&key) {
+                        Some(p) => s.write_effect(
+                            p.effect_record_id,
+                            p.decision_record_id,
+                            Effect {
+                                status: EffectStatus::Error,
+                                result_hash: None,
+                                latency_ms: p.started.elapsed().as_millis() as u64,
+                            },
+                        ),
+                        None => {
+                            s.machinery_in_flight.remove(&key);
+                        }
+                    }
+                }
+            }
             return Ok(Forward::Pass(raw));
         }
         other => Act::OutOfScope {
@@ -1385,6 +1413,44 @@ mod tests {
             effects,
             vec![("eff-2", &EffectStatus::Blocked), ("eff-1", &EffectStatus::Ok)]
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cancelled_request_closes_its_effect_and_frees_its_id() {
+        // The agent cancels a call the server never answers. The call stayed
+        // pending for the session's life: no effect in the log, and its id
+        // refused forever after.
+        let (dir, state) = open_state("cancelled");
+        let ctx = ctx();
+        let call = json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                           "params": { "name": "search_docs", "arguments": {} } });
+        assert!(matches!(
+            handle_from_agent(call.clone(), &state, &ctx, None).unwrap(),
+            Forward::Pass(_)
+        ));
+
+        let cancel = json!({ "jsonrpc": "2.0", "method": "notifications/cancelled",
+                             "params": { "requestId": 7, "reason": "user gave up" } });
+        assert!(matches!(
+            handle_from_agent(cancel, &state, &ctx, None).unwrap(),
+            Forward::Pass(_)
+        ), "the cancellation itself still reaches the server");
+
+        assert!(
+            matches!(handle_from_agent(call, &state, &ctx, None).unwrap(), Forward::Pass(_)),
+            "a cancelled request's id is free again"
+        );
+
+        let recs = state.lock().unwrap().wal.read_all().unwrap();
+        let first = recs
+            .iter()
+            .find(|r| r.id == "eff-1")
+            .expect("the cancelled call must be closed");
+        assert!(matches!(
+            &first.payload,
+            Payload::Effect(e) if e.status == EffectStatus::Error && e.result_hash.is_none()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
