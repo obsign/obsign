@@ -3,7 +3,7 @@ use obsign_audit_core::checkpoint::{PublicKeyEntry, SignedCheckpoint};
 use obsign_audit_core::rfc3161::Anchor;
 use obsign_audit_core::Hash;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 /// Durable home of everything the ledger produces: checkpoints, anchors,
@@ -223,42 +223,65 @@ impl Store {
 
 /// Reads a JSONL file, tolerating exactly one torn line at the very end.
 ///
-/// A torn final line is a crash mid-append: the seal (or anchor) was never
-/// acknowledged, and the records it covered are still unsealed; sealing them
-/// again is harmless. The torn line is trimmed so it does not poison every
-/// future load. Anywhere else, an unreadable line is genuine corruption.
+/// Torn means *unterminated*: `append_line` writes a line and its newline in
+/// one call and acknowledges only after the fsync, so a crash mid-append
+/// leaves a final chunk with no newline, and nothing else does. That chunk
+/// was never acknowledged; the records it covered are still unsealed, and
+/// sealing them again is harmless. It is trimmed so it does not poison every
+/// future load, or, when it is a whole line that only lost its newline,
+/// completed, since the seal it carries is intact and verified like any
+/// other.
+///
+/// A terminated line that does not parse is never a crash: it is an edit,
+/// and it is refused wherever it sits. Trimming it would erase the sealed
+/// boundary the next pass compares the WAL against, and a rewritten WAL
+/// would then be sealed as if it were history.
 fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T>, Error> {
     if !path.exists() {
         return Ok(Vec::new());
     }
     let content = std::fs::read_to_string(path)?;
-    let chunks: Vec<&str> = content.split_inclusive('\n').collect();
 
     let mut items = Vec::new();
     let mut offset = 0usize;
-    for (i, chunk) in chunks.iter().enumerate() {
-        let line = chunk.trim_end_matches('\n');
+    for (i, chunk) in content.split_inclusive('\n').enumerate() {
+        let Some(line) = chunk.strip_suffix('\n') else {
+            // The unterminated tail, necessarily the last chunk.
+            let mut f = OpenOptions::new().write(true).open(path)?;
+            match serde_json::from_str::<T>(chunk) {
+                Ok(v) => {
+                    items.push(v);
+                    f.seek(SeekFrom::End(0))?;
+                    f.write_all(b"\n")?;
+                    eprintln!(
+                        "[ledger] {}: completed an unterminated final line",
+                        path.display()
+                    );
+                }
+                Err(_) => {
+                    f.set_len(offset as u64)?;
+                    eprintln!(
+                        "[ledger] {}: trimmed a torn final line ({} bytes)",
+                        path.display(),
+                        chunk.len()
+                    );
+                }
+            }
+            f.sync_data()?;
+            break;
+        };
+        offset += chunk.len();
         if line.is_empty() {
-            offset += chunk.len();
             continue;
         }
         match serde_json::from_str::<T>(line) {
-            Ok(v) => {
-                items.push(v);
-                offset += chunk.len();
-            }
+            Ok(v) => items.push(v),
             Err(e) => {
-                if i + 1 == chunks.len() {
-                    let f = OpenOptions::new().write(true).open(path)?;
-                    f.set_len(offset as u64)?;
-                    f.sync_data()?;
-                    break;
-                }
                 return Err(Error::StoreBroken(format!(
                     "unreadable line {} in {}: {e}",
                     i + 1,
                     path.display()
-                )));
+                )))
             }
         }
     }
@@ -268,8 +291,9 @@ fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T>, Err
 /// Append one line and make it durable before acknowledging.
 fn append_line(path: &Path, line: &str) -> Result<(), Error> {
     let mut f = OpenOptions::new().append(true).create(true).open(path)?;
-    f.write_all(line.as_bytes())?;
-    f.write_all(b"\n")?;
+    // One write, line and newline together: a crash can only leave an
+    // unterminated prefix, which `read_jsonl` recognises as torn.
+    f.write_all(format!("{line}\n").as_bytes())?;
     f.flush()?;
     f.sync_data()?;
     Ok(())

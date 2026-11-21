@@ -394,6 +394,68 @@ fn torn_final_store_line_is_survivable() {
 }
 
 #[test]
+fn a_garbled_last_checkpoint_is_refused_not_trimmed() {
+    // Regression: any unparseable last line was trimmed as if a crash had
+    // torn it. Garbling the last seal therefore erased the sealed boundary,
+    // and a WAL rewritten below it was then sealed as history. A terminated
+    // line is never torn: it is an edit.
+    let wal_dir = tmpdir("garbled-wal");
+    let store_dir = tmpdir("garbled-store");
+    grow_wal(&wal_dir, 3);
+    {
+        let mut store = Store::open(&store_dir, "c1").unwrap();
+        let records = obsign_wal::read(&wal_dir, "c1").unwrap();
+        seal_pass(&records, &mut store, &sealer(), &no_origin(), 1000, 1).unwrap().unwrap();
+    }
+
+    let path = store_dir.join("c1.checkpoints.jsonl");
+    let line = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, line.replacen('{', "{garbage", 1)).unwrap();
+
+    let err = Store::open(&store_dir, "c1").unwrap_err();
+    assert!(matches!(err, obsign_ledger::Error::StoreBroken(_)), "got {err:?}");
+    assert!(
+        std::fs::read_to_string(&path).unwrap().contains("garbage"),
+        "the evidence was trimmed away"
+    );
+
+    let _ = std::fs::remove_dir_all(&wal_dir);
+    let _ = std::fs::remove_dir_all(&store_dir);
+}
+
+#[test]
+fn a_seal_that_lost_only_its_newline_is_kept() {
+    // A crash between a checkpoint line and its newline (the old two-write
+    // append) left a whole, signed seal without a terminator. It is
+    // completed rather than trimmed, and the next append starts on a line of
+    // its own instead of gluing itself to it.
+    let wal_dir = tmpdir("nonewline-wal");
+    let store_dir = tmpdir("nonewline-store");
+    grow_wal(&wal_dir, 3);
+    let s = sealer();
+    {
+        let mut store = Store::open(&store_dir, "c1").unwrap();
+        let records = obsign_wal::read(&wal_dir, "c1").unwrap();
+        seal_pass(&records, &mut store, &s, &no_origin(), 1000, 1).unwrap().unwrap();
+    }
+    let path = store_dir.join("c1.checkpoints.jsonl");
+    let line = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, line.trim_end_matches('\n')).unwrap();
+
+    let mut store = Store::open(&store_dir, "c1").unwrap();
+    assert_eq!(store.checkpoints().len(), 1, "the seal is intact and kept");
+
+    grow_wal(&wal_dir, 1);
+    let records = obsign_wal::read(&wal_dir, "c1").unwrap();
+    assert!(seal_pass(&records, &mut store, &s, &no_origin(), 2000, 1).unwrap().is_some());
+    drop(store);
+    assert_eq!(Store::open(&store_dir, "c1").unwrap().checkpoints().len(), 2);
+
+    let _ = std::fs::remove_dir_all(&wal_dir);
+    let _ = std::fs::remove_dir_all(&store_dir);
+}
+
+#[test]
 fn min_new_batches_sealing() {
     let wal_dir = tmpdir("batch-wal");
     let store_dir = tmpdir("batch-store");

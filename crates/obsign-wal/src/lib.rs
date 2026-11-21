@@ -202,9 +202,11 @@ impl Wal {
     /// The `sync_data` is not negotiable: without it the content stays in the
     /// page cache, and a power cut erases the trace of an act that did happen.
     pub fn append(&mut self, rec: &SignedRecord) -> Result<(), Error> {
-        let line = serde_json::to_string(rec).expect("serializing a record");
+        let mut line = serde_json::to_string(rec).expect("serializing a record");
+        // One write, record and newline together: a crash can only leave an
+        // unterminated prefix, which `replay` recognises as torn.
+        line.push('\n');
         self.file.write_all(line.as_bytes())?;
-        self.file.write_all(b"\n")?;
         self.file.flush()?;
         self.file.sync_data()?;
         Ok(())
@@ -261,6 +263,15 @@ fn replay(path: &Path) -> Result<(Vec<SignedRecord>, u64), Error> {
     for (i, line) in reader.lines().enumerate() {
         let line = line?;
         let raw_len = line.len() as u64 + 1; // +1 for the \n
+
+        // No newline: the final line of a write that never completed, so a
+        // record never acknowledged, even when the bytes that made it to
+        // disk happen to parse. Counting it as whole would also put
+        // `good_len` one byte past the end of the file, and the trim in
+        // `open` would then *extend* the log with a NUL.
+        if good_len + raw_len > total {
+            break;
+        }
 
         let rec: SignedRecord = match serde_json::from_str(&line) {
             Ok(r) => r,
@@ -424,6 +435,42 @@ mod tests {
         let r = chain2.append(9, "r2", None, "s", payload(9));
         wal2.append(&SignedRecord::unsigned(r)).unwrap();
         assert_eq!(wal2.read_all().unwrap().len(), 3);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_whole_record_missing_its_newline_is_torn_too() {
+        // Regression: a crash between the record bytes and the newline left
+        // a line that parses. Replay counted it whole, newline included, one
+        // byte past the end of the file; `open` then "trimmed" to that length,
+        // padding the log with a NUL, and the next append glued itself to
+        // it: a corrupt line in the middle of the log, forever.
+        let dir = tmpdir("no-newline");
+        let (mut wal, mut chain) = Wal::open(&dir, "c1").unwrap();
+        let r = chain.append(0, "r0", None, "s", payload(0));
+        wal.append(&SignedRecord::unsigned(r)).unwrap();
+        let path = wal.path().to_path_buf();
+        drop(wal);
+
+        // The record the gateway was writing when it died, minus its newline.
+        let next = chain.append(1, "r1", None, "s", payload(1));
+        let line = serde_json::to_string(&SignedRecord::unsigned(next)).unwrap();
+        let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(line.as_bytes()).unwrap();
+        drop(f);
+
+        assert_eq!(read(&dir, "c1").unwrap().len(), 1, "never acknowledged");
+
+        let (mut wal, mut chain) = Wal::open(&dir, "c1").unwrap();
+        assert_eq!(chain.next_seq(), 1);
+        let r = chain.append(2, "r1", None, "s", payload(2));
+        wal.append(&SignedRecord::unsigned(r)).unwrap();
+        drop(wal);
+
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(!bytes.contains(&0), "the log was padded with a NUL");
+        assert_eq!(read(&dir, "c1").unwrap().len(), 2);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
