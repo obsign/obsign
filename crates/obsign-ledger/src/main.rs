@@ -270,15 +270,10 @@ fn make_sealer(args: &SealArgs) -> Result<Box<dyn Sealer>> {
                 (None, None) => TokenSelector::Only,
                 (Some(_), Some(_)) => unreachable!("clap: conflicts_with"),
             };
-            let pin = match &args.hsm_pin_file {
-                Some(path) => std::fs::read_to_string(path)
-                    .with_context(|| format!("reading the PIN file {}", path.display()))?
-                    .trim()
-                    .to_string(),
-                None => std::env::var("OBSIGN_HSM_PIN").map_err(|_| {
-                    anyhow::anyhow!("no PIN: give --hsm-pin-file or set OBSIGN_HSM_PIN")
-                })?,
-            };
+            let pin = read_pin(
+                args.hsm_pin_file.as_deref(),
+                std::env::var("OBSIGN_HSM_PIN").ok(),
+            )?;
             Ok(Box::new(Pkcs11Sealer::open(
                 module,
                 &token,
@@ -295,6 +290,45 @@ fn make_sealer(args: &SealArgs) -> Result<Box<dyn Sealer>> {
         ),
         (Some(_), Some(_)) => unreachable!("clap: conflicts_with"),
     }
+}
+
+/// The HSM user PIN, from the file if given, else from `env_pin` (the
+/// OBSIGN_HSM_PIN variable). Both are trimmed alike: a trailing newline from
+/// `echo` or a secrets manager is not part of anyone's PIN, and sent to the
+/// token it is a failed login, one step closer to CKR_PIN_LOCKED.
+///
+/// The file must be readable by its owner only: a PIN any local account can
+/// read unlocks the key that certifies history. Every copy is wiped from
+/// memory when dropped. The environment block keeps its own copy, which is
+/// one reason the file is the better source.
+#[cfg(unix)]
+fn read_pin(file: Option<&Path>, env_pin: Option<String>) -> Result<zeroize::Zeroizing<String>> {
+    use std::os::unix::fs::PermissionsExt;
+    use zeroize::Zeroizing;
+    let raw = match file {
+        Some(path) => {
+            let mode = std::fs::metadata(path)
+                .with_context(|| format!("reading the PIN file {}", path.display()))?
+                .permissions()
+                .mode();
+            if mode & 0o077 != 0 {
+                bail!(
+                    "the PIN file {} is accessible to group or others (mode {:o}): \
+                     chmod 600 it",
+                    path.display(),
+                    mode & 0o777
+                );
+            }
+            Zeroizing::new(
+                std::fs::read_to_string(path)
+                    .with_context(|| format!("reading the PIN file {}", path.display()))?,
+            )
+        }
+        None => Zeroizing::new(env_pin.ok_or_else(|| {
+            anyhow::anyhow!("no PIN: give --hsm-pin-file or set OBSIGN_HSM_PIN")
+        })?),
+    };
+    Ok(Zeroizing::new(raw.trim().to_string()))
 }
 
 /// Reads a trusted-key file (`Vec<PublicKeyEntry>` JSON).
@@ -570,4 +604,35 @@ fn anchor_attach(
             .unwrap_or_default()
     );
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::read_pin;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn pin_file(name: &str, content: &str, mode: u32) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("ledger-pin-{name}-{}", std::process::id()));
+        std::fs::write(&p, content).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+        p
+    }
+
+    #[test]
+    fn the_env_pin_is_trimmed_like_the_file_pin() {
+        assert_eq!(read_pin(None, Some("1234\n".to_string())).unwrap().as_str(), "1234");
+        let p = pin_file("trim", " 1234\n", 0o600);
+        assert_eq!(read_pin(Some(&p), None).unwrap().as_str(), "1234");
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn a_pin_file_others_can_read_is_refused() {
+        for mode in [0o644, 0o640, 0o604] {
+            let p = pin_file(&format!("mode{mode:o}"), "1234", mode);
+            let err = read_pin(Some(&p), None).unwrap_err().to_string();
+            assert!(err.contains("chmod 600"), "{mode:o}: {err}");
+            let _ = std::fs::remove_file(p);
+        }
+    }
 }

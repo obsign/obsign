@@ -202,7 +202,9 @@ The key pair (Ed25519, both halves under the same label) is provisioned with
 the vendor's tooling; the ledger only ever asks the token to sign, over a
 read-only session. When the module exposes several tokens, `--hsm-token-label`
 or `--hsm-slot` picks one; the PIN comes from a file or `OBSIGN_HSM_PIN`,
-never from an argument (arguments end up in `ps` and shell history).
+never from an argument (arguments end up in `ps` and shell history). Both
+are trimmed of surrounding whitespace, and a PIN file readable by group or
+others is refused: `chmod 600` it, owned by the ledger's user.
 Everything that can be misconfigured fails at startup with the vendor's error
 code in clear text: wrong PIN, absent key, or a key of the wrong type. A
 P-256 key under the right label is refused as such, instead of being left to

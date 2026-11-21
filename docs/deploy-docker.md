@@ -140,6 +140,10 @@ docker run --rm \
        --key-id seal-prod
 ```
 
+The bind mount keeps the host file's permissions, and the ledger refuses a
+PIN file readable by group or others: `chmod 600 hsm-pin`, owned by the uid
+the container runs as.
+
 TPM enrollment (`obsign-tpm-enroll`) needs the kernel resource manager:
 `--device /dev/tpmrm0`. It is an operator ceremony. Run it from the source
 tree on the enrolling host (`scripts/real-tpm-enroll.sh`), never from a

@@ -194,6 +194,12 @@ fn cli_seals_with_hsm_flags() {
     let store_dir = tmpdir("cli-store");
     let pin_file = tmpdir("cli-pin").with_extension("txt");
     std::fs::write(&pin_file, format!("{}\n", env.pin)).unwrap();
+    // Owner-only, or the ledger refuses it: a PIN others can read is a leak.
+    std::fs::set_permissions(
+        &pin_file,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )
+    .unwrap();
 
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_obsign-ledger"))
         .args(["seal", "--chain-id", "c1"])

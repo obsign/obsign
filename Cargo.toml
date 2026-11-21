@@ -22,6 +22,9 @@ getrandom = "0.4"
 # feature the crate stays `forbid(unsafe_code)`.
 base64 = { version = "0.23", default-features = false, features = ["std"] }
 libc = "0.2"
+# Already in the tree (through ed25519-dalek); used directly to wipe the HSM
+# PIN, which hand-rolled volatile writes would only re-implement with unsafe.
+zeroize = "1"
 
 [profile.release]
 lto = true
