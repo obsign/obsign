@@ -335,7 +335,11 @@ request), and records. No JavaScript, no template engine, no cache, so what
 the console shows is what the files say now. Read-only **by construction**.
 The only accepted method is GET, so the console can never become a second
 write path around git. It binds to localhost by default; authentication is the
-commercial layer's job, and it is no reason to weaken the core.
+commercial layer's job, and it is no reason to weaken the core. Binding it
+anywhere else prints a warning. It answers only a `Host` header that is
+`localhost` or an IP address, so a web page cannot reach it through DNS
+rebinding; pass `--allow-host <name>` for each name operators use to reach
+it.
 
 ## Verification in practice
 

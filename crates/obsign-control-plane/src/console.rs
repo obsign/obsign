@@ -18,16 +18,23 @@
 //! Authentication is deliberately absent from the core console: bind it to
 //! localhost (the default) or an admin network. SSO/RBAC belongs to the
 //! commercial layer.
+//!
+//! Localhost is not a boundary a browser respects on its own: a page on
+//! `evil.example` whose name is re-pointed at 127.0.0.1 (DNS rebinding) is
+//! same-origin with the console and can read it. Such a request still says
+//! `Host: evil.example`, so the console answers only a Host that is
+//! `localhost`, an IP literal (no rebinding goes through one), or a name
+//! the operator allowed with `--allow-host`.
 
 use obsign_audit_core::checkpoint::PublicKeyEntry;
 use obsign_audit_core::record::{Payload, Record};
 use obsign_ledger::Store;
 use std::fmt::Write as _;
-use std::io::{BufRead, BufReader, Read as _, Write as _};
+use std::io::{BufRead, BufReader, Read as _};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::export::list_chains;
 use crate::release::{Artifact, SignedManifest};
@@ -42,6 +49,11 @@ const MAX_HEAD_BYTES: u64 = 8 * 1024;
 /// releases its thread instead of holding it forever.
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Deadline on a whole request, head read to response written. The per-read
+/// timeout alone is reset by every byte, so a client trickling one header
+/// line every few seconds held its thread for as long as it liked.
+pub const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
+
 /// Records shown on a chain page. Not a silent cap: the page says when it
 /// truncates and points at `export` for the full log.
 const MAX_ROWS: usize = 500;
@@ -53,15 +65,21 @@ pub struct Console {
     pub store_dir: Option<PathBuf>,
     /// Distribution directory, for the release page.
     pub dist_dir: Option<PathBuf>,
+    /// Host names answered besides `localhost` and IP literals, the names
+    /// operators type to reach a console bound to an admin network.
+    pub allowed_hosts: Vec<String>,
+    /// Whole-request deadline, [`REQUEST_DEADLINE`] outside tests.
+    pub request_deadline: Duration,
 }
 
 impl Console {
     pub fn serve(self, addr: &str) -> Result<(), Error> {
         let listener = TcpListener::bind(addr)?;
-        eprintln!(
-            "[control] console on http://{}/ — read-only",
-            listener.local_addr()?
-        );
+        let local = listener.local_addr()?;
+        eprintln!("[control] console on http://{local}/ — read-only");
+        if let Some(w) = exposure_warning(local) {
+            eprintln!("[control] WARNING: {w}");
+        }
         self.serve_on(listener)
     }
 
@@ -79,16 +97,101 @@ impl Console {
     }
 }
 
+/// The console has no authentication: bound anywhere but loopback, anyone
+/// who can reach the port reads the log. Allowed (an admin network is a
+/// legitimate place for it), but never silently.
+pub fn exposure_warning(addr: std::net::SocketAddr) -> Option<String> {
+    if addr.ip().is_loopback() {
+        return None;
+    }
+    Some(format!(
+        "the console is bound to {addr}, not a loopback address, and has no \
+         authentication — everyone who can reach this port can read the log"
+    ))
+}
+
+/// Whether a `Host` header names this console rather than a name re-pointed
+/// at it. `localhost` and IP literals always pass (a rebinding attack needs
+/// a name it controls); anything else must be in `allowed`.
+fn host_allowed(host: Option<&str>, allowed: &[String]) -> bool {
+    let Some(host) = host.map(|h| h.trim().to_ascii_lowercase()) else {
+        return false;
+    };
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        match rest.split_once(']') {
+            Some((v6, _)) => v6.to_string(),
+            None => return false,
+        }
+    } else {
+        match host.rsplit_once(':') {
+            Some((n, port)) if port.bytes().all(|b| b.is_ascii_digit()) => n.to_string(),
+            _ => host.clone(),
+        }
+    };
+    name == "localhost"
+        || name.parse::<std::net::IpAddr>().is_ok()
+        || allowed
+            .iter()
+            .any(|a| a.eq_ignore_ascii_case(&name) || a.eq_ignore_ascii_case(&host))
+}
+
+/// The connection, with every read and write bounded by what is left of the
+/// request's deadline as well as by [`IO_TIMEOUT`].
+struct Deadlined {
+    stream: TcpStream,
+    deadline: Instant,
+}
+
+impl Deadlined {
+    fn arm(&self, write: bool) -> std::io::Result<()> {
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "request deadline exceeded",
+            ));
+        }
+        let t = Some(left.min(IO_TIMEOUT));
+        if write {
+            self.stream.set_write_timeout(t)
+        } else {
+            self.stream.set_read_timeout(t)
+        }
+    }
+}
+
+impl std::io::Read for Deadlined {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.arm(false)?;
+        self.stream.read(buf)
+    }
+}
+
+impl std::io::Write for Deadlined {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.arm(true)?;
+        self.stream.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.stream.flush()
+    }
+}
+
 /// One request per connection. Keep-alive buys nothing on an admin page and
 /// the close is what makes the hand-written test client trivial.
 fn handle(console: &Console, stream: TcpStream) -> std::io::Result<()> {
-    stream.set_read_timeout(Some(IO_TIMEOUT))?;
-    stream.set_write_timeout(Some(IO_TIMEOUT))?;
+    let deadline = Instant::now() + console.request_deadline;
     // The cap sits under the reader, so it bounds the request line too:
     // `read_line` otherwise buffers a newline-less line without limit, and an
     // unbounded allocation driven by the peer is a one-connection DoS.
-    let mut reader = BufReader::new(stream.try_clone()?.take(MAX_HEAD_BYTES));
-    let mut stream = stream;
+    let mut reader = BufReader::new(
+        Deadlined {
+            stream: stream.try_clone()?,
+            deadline,
+        }
+        .take(MAX_HEAD_BYTES),
+    );
+    let mut stream = Deadlined { stream, deadline };
 
     let mut line = String::new();
     reader.read_line(&mut line)?;
@@ -104,8 +207,9 @@ fn handle(console: &Console, stream: TcpStream) -> std::io::Result<()> {
     let method = method.to_string();
     let path = target.split('?').next().unwrap_or(target).to_string();
 
-    // Drain headers; their content is irrelevant to a GET-only server. EOF
-    // before the blank line means the head was truncated by the cap above.
+    // Drain headers; only Host matters to a GET-only server. EOF before the
+    // blank line means the head was truncated by the cap above.
+    let mut host: Option<String> = None;
     loop {
         let mut h = String::new();
         if reader.read_line(&mut h)? == 0 {
@@ -114,6 +218,24 @@ fn handle(console: &Console, stream: TcpStream) -> std::io::Result<()> {
         if h.trim_end().is_empty() {
             break;
         }
+        if let Some((name, value)) = h.split_once(':') {
+            if name.trim().eq_ignore_ascii_case("host") {
+                if host.is_some() {
+                    return respond(&mut stream, 400, "Bad Request", "text/plain", b"duplicate Host header");
+                }
+                host = Some(value.trim().to_string());
+            }
+        }
+    }
+
+    if !host_allowed(host.as_deref(), &console.allowed_hosts) {
+        return respond(
+            &mut stream,
+            403,
+            "Forbidden",
+            "text/plain",
+            b"unexpected Host header: use localhost or an IP address, or start the console with --allow-host <name>",
+        );
     }
 
     if method != "GET" {
@@ -145,8 +267,17 @@ fn is_safe_chain_id(id: &str) -> bool {
         && !id.contains("..")
 }
 
+/// Pages are inline-styled HTML with no script, image, form or frame: the
+/// policy forbids everything else, so an injection that slipped past `esc`
+/// still runs nothing. They are also never cached: a log page left in a
+/// shared browser cache is a copy of the log.
+const SECURITY_HEADERS: &str = "X-Content-Type-Options: nosniff\r\n\
+     Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; \
+     frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\n\
+     Cache-Control: no-store\r\nReferrer-Policy: no-referrer\r\n";
+
 fn respond(
-    stream: &mut TcpStream,
+    stream: &mut impl std::io::Write,
     status: u16,
     reason: &str,
     content_type: &str,
@@ -154,7 +285,7 @@ fn respond(
 ) -> std::io::Result<()> {
     let head = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\n\
-         Content-Length: {}\r\nConnection: close\r\n\r\n",
+         Content-Length: {}\r\n{SECURITY_HEADERS}Connection: close\r\n\r\n",
         body.len()
     );
     stream.write_all(head.as_bytes())?;

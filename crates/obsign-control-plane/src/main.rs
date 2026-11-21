@@ -141,6 +141,13 @@ enum Command {
         /// authentication, do not point it at a network you do not trust.
         #[arg(long, default_value = "127.0.0.1:9090")]
         listen: String,
+
+        /// A host name the console answers to, besides localhost and IP
+        /// addresses (repeatable). Any other Host header is refused, which
+        /// is what stops a web page from reading the console through DNS
+        /// rebinding.
+        #[arg(long = "allow-host")]
+        allow_host: Vec<String>,
     },
 }
 
@@ -168,11 +175,14 @@ fn main() -> Result<()> {
             store,
             dist,
             listen,
+            allow_host,
         } => {
             let console = Console {
                 wal_dir: wal,
                 store_dir: store,
                 dist_dir: dist,
+                allowed_hosts: allow_host,
+                request_deadline: obsign_control_plane::console::REQUEST_DEADLINE,
             };
             console.serve(&listen).context("serving the console")?;
             Ok(())

@@ -1286,12 +1286,14 @@ fn the_console_lists_chains_newest_first() {
         wal_dir: wal_dir.clone(),
         store_dir: None,
         dist_dir: None,
+        allowed_hosts: Vec::new(),
+        request_deadline: obsign_control_plane::console::REQUEST_DEADLINE,
     };
     std::thread::spawn(move || console.serve_on(listener));
 
     let overview = http_get(
         addr,
-        "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     );
     assert!(overview.starts_with("HTTP/1.1 200"));
 
@@ -1328,10 +1330,12 @@ fn the_console_verifies_each_artifact_not_just_the_manifest() {
         wal_dir,
         store_dir: None,
         dist_dir: Some(dist.clone()),
+        allowed_hosts: Vec::new(),
+        request_deadline: obsign_control_plane::console::REQUEST_DEADLINE,
     };
     std::thread::spawn(move || console.serve_on(listener));
     let get = |path: &str| {
-        http_get(addr, &format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
+        http_get(addr, &format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"))
     };
 
     let release = get("/release");
@@ -1362,6 +1366,97 @@ fn the_console_verifies_each_artifact_not_just_the_manifest() {
     assert!(overview.contains("not ops"), "{overview}");
 }
 
+fn spawn_console(name: &str, allowed_hosts: Vec<String>, deadline: std::time::Duration) -> SocketAddr {
+    let wal_dir = tmp(name);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let console = Console {
+        wal_dir,
+        store_dir: None,
+        dist_dir: None,
+        allowed_hosts,
+        request_deadline: deadline,
+    };
+    std::thread::spawn(move || console.serve_on(listener));
+    addr
+}
+
+#[test]
+fn the_console_answers_only_its_own_host_names() {
+    let addr = spawn_console(
+        "con-host-wal",
+        vec!["console.corp".to_string()],
+        obsign_control_plane::console::REQUEST_DEADLINE,
+    );
+    let get = |host: Option<&str>| {
+        let h = host.map(|h| format!("Host: {h}\r\n")).unwrap_or_default();
+        http_get(addr, &format!("GET / HTTP/1.1\r\n{h}Connection: close\r\n\r\n"))
+    };
+
+    // DNS rebinding: a page on a name its owner re-points at 127.0.0.1 is
+    // same-origin with the console, but its requests still name that host.
+    let rebound = get(Some(&format!("evil.example:{}", addr.port())));
+    assert!(rebound.starts_with("HTTP/1.1 403"), "{rebound}");
+    assert!(!rebound.contains("<html"), "{rebound}");
+    assert!(get(None).starts_with("HTTP/1.1 403"));
+    assert!(get(Some("localhost.evil.example")).starts_with("HTTP/1.1 403"));
+
+    for ok in [
+        format!("127.0.0.1:{}", addr.port()),
+        "localhost".to_string(),
+        "[::1]:9090".to_string(),
+        "Console.Corp:9090".to_string(),
+    ] {
+        let page = get(Some(&ok));
+        assert!(page.starts_with("HTTP/1.1 200"), "{ok}: {page}");
+        let head = &page[..page.find("\r\n\r\n").unwrap()];
+        assert!(head.contains("X-Content-Type-Options: nosniff"), "{head}");
+        assert!(head.contains("Content-Security-Policy: default-src 'none'"), "{head}");
+        assert!(head.contains("Cache-Control: no-store"), "{head}");
+    }
+}
+
+#[test]
+fn a_non_loopback_bind_is_announced() {
+    use obsign_control_plane::console::exposure_warning;
+    assert!(exposure_warning("127.0.0.1:9090".parse().unwrap()).is_none());
+    assert!(exposure_warning("[::1]:9090".parse().unwrap()).is_none());
+    assert!(exposure_warning("0.0.0.0:9090".parse().unwrap()).is_some());
+    assert!(exposure_warning("10.0.0.5:9090".parse().unwrap()).is_some());
+}
+
+#[test]
+fn a_trickled_request_is_cut_at_the_deadline() {
+    // Every header line arrives well inside the per-read timeout, so only a
+    // deadline on the request as a whole ever releases this thread.
+    let addr = spawn_console("con-deadline-wal", Vec::new(), std::time::Duration::from_secs(1));
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n").unwrap();
+    let mut writer = s.try_clone().unwrap();
+    std::thread::spawn(move || {
+        for _ in 0..40 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if writer.write_all(b"X: a\r\n").is_err() {
+                return;
+            }
+        }
+    });
+
+    let start = std::time::Instant::now();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+    let mut buf = Vec::new();
+    // The server closes (EOF, or a reset while the trickle is still
+    // writing); a read timeout here means it never did.
+    match s.read_to_end(&mut buf) {
+        Ok(_) => {}
+        Err(e) => assert!(
+            !matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut),
+            "the connection outlived its deadline: {e}"
+        ),
+    }
+    assert!(start.elapsed() < std::time::Duration::from_secs(3));
+}
+
 #[test]
 fn console_is_read_only_and_shows_the_log() {
     let wal_dir = tmp("con-wal");
@@ -1381,12 +1476,14 @@ fn console_is_read_only_and_shows_the_log() {
         wal_dir: wal_dir.clone(),
         store_dir: Some(store_dir.clone()),
         dist_dir: Some(dist.clone()),
+        allowed_hosts: Vec::new(),
+        request_deadline: obsign_control_plane::console::REQUEST_DEADLINE,
     };
     std::thread::spawn(move || console.serve_on(listener));
 
     let overview = http_get(
         addr,
-        "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     );
     assert!(overview.starts_with("HTTP/1.1 200"));
     assert!(overview.contains("alpha"), "chains must be listed");
@@ -1402,14 +1499,14 @@ fn console_is_read_only_and_shows_the_log() {
 
     let chain = http_get(
         addr,
-        "GET /chain/alpha HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        "GET /chain/alpha HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     );
     assert!(chain.starts_with("HTTP/1.1 200"));
     assert!(chain.contains("effect"), "records must be rendered");
 
     let release = http_get(
         addr,
-        "GET /release HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        "GET /release HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     );
     assert!(release.starts_with("HTTP/1.1 200"));
     assert!(
@@ -1424,7 +1521,7 @@ fn console_is_read_only_and_shows_the_log() {
     // Read-only by construction: no method but GET exists.
     let post = http_get(
         addr,
-        "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
     );
     assert!(
         post.starts_with("HTTP/1.1 405"),
@@ -1435,12 +1532,12 @@ fn console_is_read_only_and_shows_the_log() {
     // A chain id is a file name: traversal shapes are 404, not a disk read.
     let esc = http_get(
         addr,
-        "GET /chain/../../etc/passwd HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        "GET /chain/../../etc/passwd HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     );
     assert!(esc.starts_with("HTTP/1.1 404"));
     let unknown = http_get(
         addr,
-        "GET /chain/nope HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        "GET /chain/nope HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     );
     assert!(unknown.starts_with("HTTP/1.1 404"));
 }
@@ -1455,6 +1552,8 @@ fn a_request_line_without_newline_cannot_exhaust_the_console() {
         wal_dir: tmp("con-dos"),
         store_dir: None,
         dist_dir: None,
+        allowed_hosts: Vec::new(),
+        request_deadline: obsign_control_plane::console::REQUEST_DEADLINE,
     };
     std::thread::spawn(move || console.serve_on(listener));
 
@@ -1786,12 +1885,14 @@ fn a_hostile_payload_kind_cannot_inject_html() {
         wal_dir: wal_dir.clone(),
         store_dir: None,
         dist_dir: None,
+        allowed_hosts: Vec::new(),
+        request_deadline: obsign_control_plane::console::REQUEST_DEADLINE,
     };
     std::thread::spawn(move || console.serve_on(listener));
 
     let page = http_get(
         addr,
-        "GET /chain/hostile HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        "GET /chain/hostile HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     );
     assert!(page.starts_with("HTTP/1.1 200"), "the page must still render");
     assert!(
