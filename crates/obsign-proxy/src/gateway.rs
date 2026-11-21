@@ -167,6 +167,78 @@ fn self_access(ctx: &Ctx, method: String, params: &[u8]) -> Payload {
     })
 }
 
+/// Records a message refused before it could be read as an act: the
+/// call/decision/effect triple of a gateway-scope denial, against the server
+/// itself, with the raw bytes hashed.
+///
+/// Stated once because every such message is the same decision: something
+/// crossed the boundary that the gateway cannot arbitrate, so it goes no
+/// further, and the log still says it was attempted.
+fn record_refused(
+    s: &mut session::Session,
+    ctx: &Ctx,
+    label: &str,
+    raw: &[u8],
+    reason: &str,
+) -> Result<(), obsign_wal::Error> {
+    let call_id = s.next_call_id();
+    let parent = s.agent_record_id.clone();
+    let decision_id = format!("dec-{}", s.counter);
+    let effect_id = format!("eff-{}", s.counter);
+    s.write(call_id.clone(), Some(parent), self_access(ctx, label.to_string(), raw))?;
+    s.write(
+        decision_id.clone(),
+        Some(call_id),
+        Payload::Decision(DecisionRec {
+            outcome: Outcome::Deny,
+            policy_id: None,
+            bundle_version: ctx.bundle_version.clone(),
+            reason: Some(reason.to_string()),
+        }),
+    )?;
+    s.write(
+        effect_id,
+        Some(decision_id),
+        Payload::Effect(Effect {
+            status: EffectStatus::Blocked,
+            result_hash: None,
+            latency_ms: 0,
+        }),
+    )?;
+    Ok(())
+}
+
+/// A line from the agent that is not JSON.
+///
+/// Never relayed: the gateway cannot say what it asks for, and a server
+/// whose parser is more lenient than ours (trailing commas, comments, JSON5)
+/// could read a `tools/call` in it that no policy saw and no record names.
+/// Recorded, then answered with the standard parse error.
+pub(crate) fn unreadable_from_agent(
+    raw: &str,
+    state: &Arc<Mutex<session::Session>>,
+    ctx: &Ctx,
+) -> Result<Forward> {
+    let mut s = state.lock().unwrap();
+    record_refused(
+        &mut s,
+        ctx,
+        "(unparsable message)",
+        raw.as_bytes(),
+        "message is not valid JSON (default-deny)",
+    )?;
+    drop(s);
+    eprintln!("[obsign] REFUSED unparsable message from the agent");
+    Ok(Forward::Reply(
+        json!({
+            "jsonrpc": "2.0",
+            "id": Value::Null,
+            "error": { "code": -32700, "message": "Parse error: message is not valid JSON" }
+        })
+        .to_string(),
+    ))
+}
+
 pub(crate) fn spawn_server(cmd: &[String]) -> Result<Child> {
     let (prog, args) = cmd.split_first().expect("non-empty command");
     Command::new(prog)
@@ -230,36 +302,12 @@ pub(crate) fn handle_from_agent(
 
             // Unsolicited. The record is written before the refusal, and a
             // WAL failure refuses too, the `?` propagates like any act's.
-            let call_id = s.next_call_id();
-            let parent = s.agent_record_id.clone();
-            let decision_id = format!("dec-{}", s.counter);
-            let effect_id = format!("eff-{}", s.counter);
-            s.write(
-                call_id.clone(),
-                Some(parent),
-                self_access(ctx, "(unsolicited response)".to_string(), raw.as_bytes()),
-            )?;
-            s.write(
-                decision_id.clone(),
-                Some(call_id),
-                Payload::Decision(DecisionRec {
-                    outcome: Outcome::Deny,
-                    policy_id: None,
-                    bundle_version: ctx.bundle_version.clone(),
-                    reason: Some(
-                        "response matches no in-flight server request (default-deny)"
-                            .to_string(),
-                    ),
-                }),
-            )?;
-            s.write(
-                effect_id,
-                Some(decision_id),
-                Payload::Effect(Effect {
-                    status: EffectStatus::Blocked,
-                    result_hash: None,
-                    latency_ms: 0,
-                }),
+            record_refused(
+                &mut s,
+                ctx,
+                "(unsolicited response)",
+                raw.as_bytes(),
+                "response matches no in-flight server request (default-deny)",
             )?;
             drop(s);
             eprintln!("[obsign] REFUSED unsolicited response-shaped message");

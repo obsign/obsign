@@ -18,6 +18,9 @@ fn main() {
             continue;
         }
         let Ok(msg): Result<Value, _> = serde_json::from_str(&line) else {
+            // Said out loud: a lenient server would try to act on it, and
+            // the tests check the gateway never lets one through.
+            eprintln!("[server] RECEIVED UNPARSABLE {line}");
             continue;
         };
 

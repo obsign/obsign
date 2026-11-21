@@ -519,6 +519,49 @@ fn tool_outside_the_catalogue_is_refused() {
     assert!(!f.stderr.contains("[server] EXECUTING exfiltrate_secrets"));
 }
 
+/// Methods of the `mcp_access` records in the log, in order.
+fn accesses(f: &Fixture) -> Vec<String> {
+    f.evidence
+        .records
+        .iter()
+        .filter_map(|r| match &r.payload {
+            Payload::McpAccess(a) => Some(a.method.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn an_unparsable_line_is_refused_not_relayed() {
+    // Regression: a line our parser rejects was relayed to the server as-is.
+    // A server with a more lenient parser (trailing commas, comments) would
+    // execute a `tools/call` no policy saw and no record named.
+    let f = run(
+        "unparsable",
+        CEDAR,
+        declared(),
+        &[
+            TRAFFIC[0],
+            r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"delete_production_db","arguments":{}},}"#,
+        ],
+    );
+
+    assert!(
+        !f.stderr.contains("[server] RECEIVED UNPARSABLE"),
+        "the unparsable line reached the MCP server:\n{}",
+        f.stderr
+    );
+    let refusal = f
+        .stdout
+        .iter()
+        .find(|v| v.pointer("/error/code").and_then(Value::as_i64) == Some(-32700))
+        .expect("the agent is answered with a parse error");
+    assert_eq!(refusal.get("id"), Some(&Value::Null));
+
+    assert_eq!(accesses(&f), vec!["(unparsable message)"]);
+    assert_eq!(f.decisions(), vec![("deny".to_string(), None)]);
+}
+
 #[test]
 fn tools_list_is_filtered() {
     let f = run("list", CEDAR, declared(), TRAFFIC);

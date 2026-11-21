@@ -35,7 +35,10 @@ mod session;
 use anyhow::{bail, Context as _, Result};
 use auth::Auth;
 use clap::Parser;
-use gateway::{handle_from_agent, handle_from_server, spawn_server, Ctx, Downstream, Forward};
+use gateway::{
+    handle_from_agent, handle_from_server, spawn_server, unreadable_from_agent, Ctx,
+    Downstream, Forward,
+};
 use obsign_identity::BundleSource;
 use origin::OriginSigner as _;
 use obsign_policy::{Engine, SignedBundle};
@@ -628,7 +631,7 @@ fn run_stdio(
 
         let forward = match serde_json::from_str::<Value>(&line) {
             Ok(msg) => handle_from_agent(msg, &state, &ctx, None)?,
-            Err(_) => Forward::Pass(line.clone()),
+            Err(_) => unreadable_from_agent(&line, &state, &ctx)?,
         };
 
         match forward {
