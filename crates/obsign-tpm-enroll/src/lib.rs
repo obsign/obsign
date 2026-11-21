@@ -27,6 +27,7 @@
 //! `CreatePrimary` fails `TPM_RC_SCHEME`, so the exercised path is P-256;
 //! the verifier accepts both (see `obsign_audit_core::attestation`).
 
+pub mod credential;
 pub mod ctrl;
 pub mod enroll;
 pub mod tpm;
