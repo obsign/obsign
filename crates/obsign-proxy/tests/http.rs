@@ -97,6 +97,12 @@ fn mint(exp_offset: i64, scopes: &str) -> String {
 }
 
 fn mint_for(sub: &str, exp_offset: i64, scopes: &str) -> String {
+    mint_acting(sub, None, exp_offset, scopes)
+}
+
+/// A token for `sub`, optionally exchanged (RFC 8693) so that `actor` acts
+/// on its behalf: same principal, another delegation.
+fn mint_acting(sub: &str, actor: Option<&str>, exp_offset: i64, scopes: &str) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -115,6 +121,10 @@ fn mint_for(sub: &str, exp_offset: i64, scopes: &str) -> String {
         "scope": scopes,
         "realm_access": { "roles": ["support-n2"] },
     });
+    let mut claims = claims;
+    if let Some(actor) = actor {
+        claims["act"] = json!({ "sub": actor });
+    }
     jsonwebtoken::encode(&header, &claims, &EncodingKey::from_ed_der(&der)).unwrap()
 }
 
@@ -812,24 +822,31 @@ fn the_get_stream_carries_server_notifications() {
 
 #[test]
 fn concurrent_identities_keep_their_own_attribution_subtrees() {
-    // Two principals share one MCP session, per-request bearers make that
-    // legal, and their calls race on separate connections. The gateway once
-    // snapshotted the identity under the auth lock, released it, then took
-    // the session lock to write the call: in that gap the other principal
-    // could record its delegation and move `agent_record_id`, and a call
-    // whose token had not changed attached under the wrong subtree. The
-    // invariant checked here is interleaving-independent: every call in the
-    // log must climb, through its parents, to the delegation of the token
-    // that carried it. Each principal calls a distinct tool so the log
-    // itself says who was really calling.
+    // Two delegations of one principal share one MCP session: the user's
+    // own token, and the token an automation obtained to act on their
+    // behalf (RFC 8693). Per-request bearers make that legal, and their
+    // calls race on separate connections. The gateway once snapshotted the
+    // identity under the auth lock, released it, then took the session
+    // lock to write the call: in that gap the other token could record its
+    // delegation and move `agent_record_id`, and a call whose token had not
+    // changed attached under the wrong subtree. The invariant checked here
+    // is interleaving-independent: every call in the log must climb,
+    // through its parents, to the actor chain of the token that carried
+    // it. Each token calls a distinct tool so the log itself says who was
+    // really calling.
     let gw = start("concurrent-ids", true, &[]);
     let alice = format!(
         "Bearer {}",
         mint_for("u:alice.durand", 1800, "support:ticket_update")
     );
-    let bob = format!(
+    let automation = format!(
         "Bearer {}",
-        mint_for("u:bob.martin", 1800, "support:ticket_update")
+        mint_acting(
+            "u:alice.durand",
+            Some("svc:automation"),
+            1800,
+            "support:ticket_update"
+        )
     );
 
     let (sid, r) = initialize(&gw, &[("Authorization", &alice)]);
@@ -849,11 +866,11 @@ fn concurrent_identities_keep_their_own_attribution_subtrees() {
             }
         });
         for i in 0..N {
-            let r = call(&gw, &sid, &[("Authorization", &bob)], 2000 + i, "ticket_update");
+            let r = call(&gw, &sid, &[("Authorization", &automation)], 2000 + i, "ticket_update");
             assert_eq!(
                 r.body.pointer("/result/isError"),
                 Some(&Value::Bool(false)),
-                "bob call {i}: {}",
+                "automation call {i}: {}",
                 r.body
             );
         }
@@ -879,31 +896,106 @@ fn concurrent_identities_keep_their_own_attribution_subtrees() {
     let mut checked = 0;
     for rec in &ev.records {
         let Payload::ToolCall(tc) = &rec.payload else { continue };
-        // call -> agent_session -> actor -> delegation.
+        // call -> agent_session -> actor.
         let mut cursor = &rec.record;
-        let sub = loop {
+        let chain = loop {
             let parent = cursor
                 .parent_id
                 .as_deref()
-                .unwrap_or_else(|| panic!("{} never reaches a delegation", rec.id));
+                .unwrap_or_else(|| panic!("{} never reaches an actor record", rec.id));
             cursor = by_id[parent];
-            if let Payload::Delegation(d) = &cursor.payload {
-                break d.principal_sub.clone();
+            if let Payload::Actor(a) = &cursor.payload {
+                break a.chain.clone();
             }
         };
-        let expected = match tc.tool.as_str() {
-            "search_docs" => "u:alice.durand",
-            "ticket_update" => "u:bob.martin",
+        let expected: &[&str] = match tc.tool.as_str() {
+            "search_docs" => &["u:alice.durand"],
+            "ticket_update" => &["svc:automation", "u:alice.durand"],
             other => panic!("unexpected tool in the log: {other}"),
         };
         assert_eq!(
-            sub, expected,
-            "{} ({}) is attributed to {sub}",
+            chain, expected,
+            "{} ({}) is attributed to {chain:?}",
             rec.id, tc.tool
         );
         checked += 1;
     }
     assert_eq!(checked, 2 * N as usize, "every call must have been audited");
+}
+
+#[test]
+fn a_session_belongs_to_the_principal_that_opened_it() {
+    // The session id is a routing key the client echoes, visible to every
+    // proxy on the way. With it, any other valid token used to switch the
+    // delegation in force inside the session: the next acts were attributed
+    // to, and authorized for, whoever presented a token last. And DELETE
+    // checked no token at all.
+    let gw = start("session-binding", true, &[]);
+    let alice = format!(
+        "Bearer {}",
+        mint_for("u:alice.durand", 1800, "support:ticket_update")
+    );
+    let mallory = format!(
+        "Bearer {}",
+        mint_for("u:mallory", 1800, "support:ticket_update db:admin")
+    );
+
+    let (sid, r) = initialize(&gw, &[("Authorization", &alice)]);
+    assert_eq!(r.status, 200);
+
+    // An act under another principal's token: refused, and recorded.
+    let r = call(&gw, &sid, &[("Authorization", &mallory)], 2, "ticket_update");
+    assert_eq!(r.status, 403, "body: {}", r.body);
+    // Machinery too: a listing would otherwise renew the delegation that
+    // filters it.
+    let r = post(
+        &gw,
+        &[("Mcp-Session-Id", &sid), ("Authorization", &mallory)],
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}),
+    );
+    assert_eq!(r.status, 403);
+
+    // Nor can another principal, or no one, end the session.
+    let r = http(
+        &gw,
+        "DELETE",
+        &[("Mcp-Session-Id", &sid), ("Authorization", &mallory)],
+        "",
+    );
+    assert_eq!(r.status, 403);
+    let r = http(&gw, "DELETE", &[("Mcp-Session-Id", &sid)], "");
+    assert_eq!(r.status, 401);
+
+    // The owner's session is untouched, and still under the owner.
+    let r = call(&gw, &sid, &[("Authorization", &alice)], 4, "ticket_update");
+    assert_eq!(r.body.pointer("/result/isError"), Some(&Value::Bool(false)));
+
+    let r = http(
+        &gw,
+        "DELETE",
+        &[("Mcp-Session-Id", &sid), ("Authorization", &alice)],
+        "",
+    );
+    assert_eq!(r.status, 200);
+
+    let ev = evidence(&gw, &sid);
+    assert!(
+        ev.records.iter().all(|r| !matches!(
+            &r.payload,
+            Payload::Delegation(d) if d.principal_sub == "u:mallory"
+        )),
+        "no delegation of another principal may enter the session's chain"
+    );
+    let denied = ev
+        .records
+        .iter()
+        .filter(|r| matches!(
+            &r.payload,
+            Payload::Decision(d) if d.outcome == obsign_audit_core::record::Outcome::Deny
+                && d.reason.as_deref().is_some_and(|r| r.contains("u:mallory"))
+        ))
+        .count();
+    assert_eq!(denied, 1, "the refused act must leave its record");
 }
 
 #[test]

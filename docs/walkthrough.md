@@ -115,7 +115,7 @@ curl -s http://127.0.0.1:8080/mcp \
 # → isError: refused by policy, recorded, never reached the server
 
 curl -s -X DELETE http://127.0.0.1:8080/mcp \
-     -H "Mcp-Session-Id: $SID"
+     -H "Authorization: Bearer $TOKEN" -H "Mcp-Session-Id: $SID"
 # → when this returns, the WAL holds the complete session (chain demo-$SID),
 #   ready for a obsign-ledger pass to seal
 ```

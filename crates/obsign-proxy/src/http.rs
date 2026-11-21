@@ -27,7 +27,7 @@
 //! that invariant bans *outbound* dependencies (JWKS fetches, ledger RTTs),
 //! which would break air-gapped deployment. Listening is the transport.
 
-use crate::auth::Auth;
+use crate::auth::{Auth, Binding};
 use crate::gateway::{self, Ctx, Forward};
 use crate::session::{self, now_ms};
 use anyhow::{Context as _, Result};
@@ -219,7 +219,7 @@ fn route(
     match req.method.as_str() {
         "POST" => handle_post(req, stream, gw, registry),
         "GET" => handle_get(req, stream, gw, registry),
-        "DELETE" => handle_delete(req, stream, registry),
+        "DELETE" => handle_delete(req, stream, gw, registry),
         _ => {
             respond(
                 stream,
@@ -329,6 +329,37 @@ fn handle_post(
         Some(_) => true,
         None => false,
     };
+
+    // The session belongs to the principal that opened it. A valid token of
+    // anyone else presented with this session id is refused outright, on
+    // every method: accepted, it would swap the delegation in force inside
+    // someone else's session, and with it the attribution of every act that
+    // follows. An arbitrated act still goes through `handle_from_agent`
+    // first, which refuses it on the same grounds (`Auth::present`) and
+    // leaves the record of the attempt; the 403 is what the client sees.
+    if let Some(token) = bearer {
+        if let Binding::Foreign(subject) = binding_of(&sess, token) {
+            eprintln!(
+                "[obsign] session {}: token of {subject} refused, the session belongs to \
+                 another principal",
+                &sess.id[..8]
+            );
+            let id = msg.get("id").cloned().unwrap_or(Value::Null);
+            if arbitrated {
+                if let Err(e) = gateway::handle_from_agent(msg, &sess.state, &sess.ctx, bearer) {
+                    eprintln!("[obsign] audit write failed while refusing a foreign token: {e}");
+                }
+            }
+            respond_json(
+                stream,
+                403,
+                "Forbidden",
+                &[],
+                &rpc_error(&id, -32600, "token does not belong to this session's principal"),
+            )?;
+            return Ok(Next::KeepAlive);
+        }
+    }
 
     // Requests the gateway does not arbitrate never reach the auth path
     // inside `handle_from_agent`, but their *responses* consult the
@@ -462,6 +493,14 @@ fn forward_raw(sess: &McpSession, raw: &str) -> std::io::Result<()> {
     };
     writeln!(stdin, "{raw}")?;
     stdin.flush()
+}
+
+/// [`Auth::binding_of`] for this session, with the auth lock released on
+/// return: a guard left alive in a `match` or `if let` scrutinee would be
+/// held across whatever the arms lock next.
+fn binding_of(sess: &McpSession, token: &str) -> Binding {
+    let mut a = sess.ctx.auth.lock().unwrap();
+    a.binding_of(token, now_ms())
 }
 
 /// Takes the bearer of a non-`tools/call` request into account, recording the
@@ -849,6 +888,7 @@ fn dispatch_from_server(
 fn handle_delete(
     req: Request,
     stream: &mut TcpStream,
+    gw: &Arc<Gateway>,
     registry: &Registry,
 ) -> std::io::Result<Next> {
     let Some(sid) = req.header("mcp-session-id") else {
@@ -861,7 +901,7 @@ fn handle_delete(
         )?;
         return Ok(Next::KeepAlive);
     };
-    let Some(sess) = registry.lock().unwrap().remove(sid) else {
+    let Some(sess) = registry.lock().unwrap().get(sid).cloned() else {
         respond_json(
             stream,
             404,
@@ -871,6 +911,53 @@ fn handle_delete(
         )?;
         return Ok(Next::KeepAlive);
     };
+
+    // Ending a session is an act on it like any other: in OIDC mode only
+    // its own principal may, with a token that verifies. Without this, the
+    // session id alone, which travels in every request and every proxy log,
+    // was enough to cut someone else's audited session short.
+    if matches!(gw.identity, Identity::Oidc { .. }) {
+        let refusal = match req.bearer() {
+            None => Some((401, "Unauthorized", "Authorization: Bearer required")),
+            Some(token) => match binding_of(&sess, token) {
+                Binding::Owner => None,
+                Binding::Foreign(_) => Some((
+                    403,
+                    "Forbidden",
+                    "token does not belong to this session's principal",
+                )),
+                Binding::Unverified(_) => Some((401, "Unauthorized", "token rejected")),
+            },
+        };
+        if let Some((status, reason, text)) = refusal {
+            let challenge: &[(&str, &str)] = if status == 401 {
+                &[("WWW-Authenticate", "Bearer")]
+            } else {
+                &[]
+            };
+            respond_json(
+                stream,
+                status,
+                reason,
+                challenge,
+                &rpc_error(&Value::Null, -32600, text),
+            )?;
+            return Ok(Next::KeepAlive);
+        }
+    }
+    // Removed only once the request is known to be entitled to it, and
+    // only by whoever finds it still there: two concurrent DELETEs close
+    // the session once.
+    if registry.lock().unwrap().remove(sid).is_none() {
+        respond_json(
+            stream,
+            404,
+            "Not Found",
+            &[],
+            &rpc_error(&Value::Null, -32600, "unknown or terminated session"),
+        )?;
+        return Ok(Next::KeepAlive);
+    }
 
     // Closing stdin is the whole termination protocol: the server exits, its
     // stdout reaches EOF, and the dispatcher closes the log after the last
@@ -934,11 +1021,17 @@ fn handle_get(
     };
 
     if matches!(gw.identity, Identity::Oidc { .. }) {
-        if req.bearer().is_none() {
+        let Some(token) = req.bearer() else {
             respond(stream, 401, "Unauthorized", &[("WWW-Authenticate", "Bearer")], None, b"")?;
             return Ok(Next::KeepAlive);
+        };
+        // Same binding as POST: another principal's token does not get to
+        // read this session's server-initiated traffic.
+        if let Binding::Foreign(_) = binding_of(&sess, token) {
+            respond(stream, 403, "Forbidden", &[], None, b"")?;
+            return Ok(Next::KeepAlive);
         }
-        present_bearer(&sess, req.bearer());
+        present_bearer(&sess, Some(token));
     }
 
     let (tx, rx) = mpsc::channel();
