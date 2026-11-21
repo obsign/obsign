@@ -154,3 +154,23 @@ fn a_tool_defined_twice_is_refused() {
     .expect("a duplicate tool name must be refused");
     assert!(err.to_string().contains("drop_db"), "{err}");
 }
+
+#[test]
+fn the_recorded_rule_is_stable_when_several_determine_the_decision() {
+    // Four forbids fire on the same call. Cedar reports them in hash order,
+    // which varies between calls; the record must name the same one every
+    // time, or two identical calls read back as denied by different rules.
+    let cedar = r#"
+        @id("d_forbid") forbid (principal, action, resource);
+        @id("b_forbid") forbid (principal, action, resource);
+        @id("a_forbid") forbid (principal, action, resource);
+        @id("c_forbid") forbid (principal, action, resource);
+        @id("allow_all") permit (principal, action, resource);
+    "#;
+    let engine = Engine::load(&bundle_with(cedar, vec![tool_def("search", false)])).unwrap();
+    for _ in 0..64 {
+        let v = engine.evaluate(&ToolRequest::new("u:marie", "search"));
+        assert_eq!(v.outcome, Outcome::Deny);
+        assert_eq!(v.policy_id.as_deref(), Some("a_forbid"));
+    }
+}

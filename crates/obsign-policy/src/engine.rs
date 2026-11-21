@@ -590,11 +590,18 @@ impl Engine {
             return Err(Error::Cedar(errors.join(" ; ")));
         }
 
+        // The record carries one policy id, and more than one rule can
+        // determine a decision (two `forbid`s firing on the same call).
+        // Cedar hands them back as a `HashSet`, whose order changes from one
+        // call to the next, so taking the first one recorded a different
+        // rule for the same decision run after run. The smallest id is a
+        // stable choice. Recording all of them would change the decision
+        // record's frozen encoding.
         let policy_id = response
             .diagnostics()
             .reason()
-            .next()
-            .map(|p| p.to_string());
+            .map(|p| p.to_string())
+            .min();
 
         Ok(match response.decision() {
             Decision::Allow => Verdict {
