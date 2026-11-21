@@ -1,5 +1,14 @@
 # Remote attestation — v3 design
 
+> **Superseded by [attestation-v4.md](attestation-v4.md)** (2026-11-22).
+> Read this document as history. Its claims went beyond what this version's
+> code proved: no `MakeCredential`/`ActivateCredential` bound the AK to the
+> EK (§3), certify and quote carried no nonce, the identity key had neither
+> attribute checks nor a PCR policy, and the binary measurement was a value
+> the enroller extended itself. v4 implements the first three and states
+> the fourth precisely. An attestation in the v3 form still verifies, and
+> the report names what it lacks (`attestation_unbound`).
+
 Status: **verification layer AND enrollment signer implemented, exercised
 end-to-end against swtpm** (2026-07-30, branch `los-angeles`, 263 tests).
 The §8-item-3 piece the first landing deferred now exists. `obsign-tpm-enroll`
