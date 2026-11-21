@@ -842,6 +842,22 @@ fn unverifiable_checkouts_are_refused_not_trusted() {
     b.extend_from_slice(&[0u8; 20]);
     std::fs::write(dir.join(".git/index"), b).unwrap();
     assert!(matches!(worktree_divergence(&dir), Err(Error::Source(m)) if m.contains("link")));
+
+    // No cache tree at all: the entries match the working files whether the
+    // change behind them was committed or only staged, so absence of the
+    // extension cannot mean "nothing staged". Git always writes it; an index
+    // without it is refused, not read as clean.
+    let dir = tmp("wt-no-tree");
+    write_source_tree(&dir);
+    write_git_checkout(&dir, TRACKED);
+    let b = std::fs::read(dir.join(".git/index")).unwrap();
+    let tree_at = b.windows(4).rposition(|w| w == b"TREE").unwrap();
+    let mut stripped = b[..tree_at].to_vec();
+    stripped.extend_from_slice(&[0u8; 20]);
+    std::fs::write(dir.join(".git/index"), stripped).unwrap();
+    assert!(
+        matches!(worktree_divergence(&dir), Err(Error::Source(m)) if m.contains("TREE") && m.contains("--label"))
+    );
 }
 
 #[test]

@@ -20,11 +20,14 @@
 //!   the stat data says (an rsync'ed checkout, with its fresh mtimes,
 //!   hashes the same);
 //! * an invalidated cache-tree entry in the index means `git add` ran with
-//!   no commit after it; staged-but-uncommitted state is caught too.
+//!   no commit after it; staged-but-uncommitted state is caught too. An
+//!   index with no cache tree at all says nothing either way, and is
+//!   refused.
 //!
-//! Accepted blind spots, for the record: a `git reset --soft` (index and
-//! tree agree, HEAD points elsewhere) passes, because telling that apart
-//! needs the object store; a mode-only change (chmod +x) passes, because the
+//! Accepted blind spots, for the record: a `git reset --soft` or a
+//! `git read-tree <other commit>` (index, cache tree and working tree agree
+//! with each other, HEAD points elsewhere) passes, because telling that
+//! apart needs the object store; a mode-only change (chmod +x) passes, because the
 //! compiled bytes do not depend on it; and a checkout using content filters
 //! (autocrlf, clean/smudge) reads as diverged, because the blob and the
 //! working file legitimately differ. `--label` is the escape hatch there.
@@ -400,7 +403,7 @@ fn parse_index(b: &[u8], oid_len: usize) -> Result<Index, Error> {
         prev_path = path;
     }
 
-    let mut cache_tree_stale = false;
+    let mut cache_tree_stale = None;
     while off < end {
         if off + 8 > end {
             return Err(corrupt("truncated extension"));
@@ -414,7 +417,7 @@ fn parse_index(b: &[u8], oid_len: usize) -> Result<Index, Error> {
         let data = &b[off..off + size];
         off += size;
         match name {
-            b"TREE" => cache_tree_stale = cache_tree_has_invalidated_entry(data, oid_len)?,
+            b"TREE" => cache_tree_stale = Some(cache_tree_has_invalidated_entry(data, oid_len)?),
             // An extension whose name starts with a capital letter may be
             // ignored, says the format. A lowercase one changes the meaning
             // of what precedes it (split index, sparse directories): the
@@ -432,6 +435,21 @@ fn parse_index(b: &[u8], oid_len: usize) -> Result<Index, Error> {
             }
         }
     }
+
+    // Without a cache tree, the entries alone cannot tell a staged change
+    // from a committed one: the working file matches its staged blob either
+    // way. Git writes the extension on every checkout, clone and commit; an
+    // index without it was written by another tool, and "nothing says it is
+    // staged" is not "nothing is staged".
+    let Some(cache_tree_stale) = cache_tree_stale else {
+        return Err(Error::Source(
+            ".git/index: no cache-tree (TREE) extension — staged, uncommitted \
+             changes cannot be ruled out; `git read-tree HEAD` rebuilds it \
+             (anything staged then shows as a working-tree edit), or pass \
+             --label"
+                .to_string(),
+        ));
+    };
 
     Ok(Index {
         entries,
