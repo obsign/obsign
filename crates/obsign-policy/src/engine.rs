@@ -223,11 +223,19 @@ impl Engine {
             validate_arg_specs(t, &bundle.format)?;
         }
 
-        let tools = bundle
-            .tools
-            .iter()
-            .map(|t| (t.name.clone(), t.clone()))
-            .collect();
+        // One definition per name. Collecting into the map would keep the
+        // last one silently, so the catalogue the signer reviewed (where the
+        // first `ticket_update` may be destructive, or declare the argument
+        // a rule reads) is not the one the gateway enforces.
+        let mut tools = HashMap::new();
+        for t in &bundle.tools {
+            if tools.insert(t.name.clone(), t.clone()).is_some() {
+                return Err(Error::Bundle(format!(
+                    "tool \"{}\" is defined more than once in the catalogue",
+                    t.name
+                )));
+            }
+        }
 
         Ok(Engine {
             policies,

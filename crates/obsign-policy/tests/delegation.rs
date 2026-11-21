@@ -141,3 +141,16 @@ fn a_rule_can_target_a_specific_actor() {
     allowed.actor_chain = vec!["support-copilot".into(), "u:marie".into()];
     assert_eq!(e.evaluate(&allowed).outcome, Outcome::Allow);
 }
+
+#[test]
+fn a_tool_defined_twice_is_refused() {
+    // The last definition used to win in silence: a catalogue reviewed with
+    // `drop_db` destructive would enforce it as harmless.
+    let err = Engine::load(&bundle_with(
+        CEDAR,
+        vec![tool_def("drop_db", true), tool_def("drop_db", false)],
+    ))
+    .err()
+    .expect("a duplicate tool name must be refused");
+    assert!(err.to_string().contains("drop_db"), "{err}");
+}
