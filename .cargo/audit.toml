@@ -1,0 +1,17 @@
+# Advisories `cargo audit --deny warnings` is told to skip, each with the
+# reason it cannot be acted on from this repository. See the note above the
+# audit step in `.github/workflows/audit.yml`: an ignore recorded here is one
+# an auditor can read; a loosened flag is one they cannot.
+
+[advisories]
+ignore = [
+    # chrono is unmaintained; every version is affected and none is patched.
+    # It reaches us only through cedar-policy-core's `datetime` extension,
+    # which cedar-policy and cedar-policy-formatter both enable through the
+    # core crate's default features: turning off the feature on our
+    # `cedar-policy` dependency leaves chrono in the tree. Still true of
+    # cedar 4.15.0. Unmaintained, not vulnerable; no obsign policy uses
+    # `datetime()` or `duration()`. Drop this entry once cedar moves off
+    # chrono or lets a downstream crate leave the extension out.
+    "RUSTSEC-2026-0543",
+]
