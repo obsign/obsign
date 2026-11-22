@@ -166,17 +166,23 @@ impl Verifier {
         let claims = data.claims;
 
         let subject = self.claims.subject(&claims).ok_or(Error::MissingSubject)?;
-        let issuer = claims
-            .get("iss")
-            .and_then(Value::as_str)
-            .ok_or(Error::MissingSubject)?
-            .to_string();
+        let issuer = issuer(&claims)?;
         // jsonwebtoken has already validated expiry, but we need the value to
         // re-evaluate it on every act.
         let exp = claims
             .get("exp")
             .and_then(Value::as_i64)
             .ok_or(Error::MissingExpiry)?;
+        // Seconds to milliseconds, checked: a far-future `exp` (or `iat`)
+        // would otherwise overflow, which panics in a debug build and, in a
+        // release one, wraps to an arbitrary expiry the token never stated.
+        let expires_at_ms = exp
+            .checked_mul(1000)
+            .ok_or(Error::ClaimOutOfRange("exp"))?;
+        let issued_at_ms = match claims.get("iat").and_then(Value::as_i64) {
+            Some(i) => Some(i.checked_mul(1000).ok_or(Error::ClaimOutOfRange("iat"))?),
+            None => None,
+        };
 
         let scopes = self.claims.scopes(&claims);
         if scopes.is_empty() {
@@ -189,7 +195,7 @@ impl Verifier {
 
         let client_id = self.claims.client_id(&claims);
         let (actor_chain, kind) =
-            actor_chain(&claims, &subject, client_id.as_deref(), &self.claims.machine);
+            actor_chain(&claims, &subject, client_id.as_deref(), &self.claims.machine)?;
 
         let label = self.claims.label(&claims);
 
@@ -198,11 +204,36 @@ impl Verifier {
             issuer,
             scopes,
             groups: self.claims.groups(&claims),
-            expires_at_ms: exp * 1000,
-            issued_at_ms: claims.get("iat").and_then(Value::as_i64).map(|i| i * 1000),
+            expires_at_ms,
+            issued_at_ms,
             actor_chain,
             kind,
             label,
         })
+    }
+}
+
+/// The `iss` claim, as a string. jsonwebtoken has already required and
+/// matched it, so a failure here means that check moved; it must still read
+/// as what it is, not as a missing subject.
+fn issuer(claims: &Value) -> Result<String, Error> {
+    claims
+        .get("iss")
+        .and_then(Value::as_str)
+        .map(String::from)
+        .ok_or(Error::MissingIssuer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_missing_or_mistyped_issuer_is_reported_as_such() {
+        for c in [json!({ "sub": "u" }), json!({ "sub": "u", "iss": 42 })] {
+            assert!(matches!(issuer(&c), Err(Error::MissingIssuer)), "{c}");
+        }
+        assert_eq!(issuer(&json!({ "iss": "https://i" })).unwrap(), "https://i");
     }
 }

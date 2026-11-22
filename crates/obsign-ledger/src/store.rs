@@ -1,9 +1,9 @@
 use crate::Error;
-use obsign_audit_core::checkpoint::{PublicKeyEntry, SignedCheckpoint};
+use obsign_audit_core::checkpoint::{KeyRole, PublicKeyEntry, SignedCheckpoint};
 use obsign_audit_core::rfc3161::Anchor;
 use obsign_audit_core::Hash;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 /// Durable home of everything the ledger produces: checkpoints, anchors,
@@ -21,12 +21,29 @@ pub struct Store {
     checkpoints: Vec<SignedCheckpoint>,
     anchors: Vec<Anchor>,
     keys: Vec<PublicKeyEntry>,
+    /// Held by [`Store::open_exclusive`] for the life of the value.
+    _lock: Option<std::fs::File>,
 }
 
 impl Store {
     /// Opens (or creates) the store and re-verifies everything in it.
     pub fn open(dir: &Path, chain_id: &str) -> Result<Self, Error> {
         std::fs::create_dir_all(dir)?;
+        Self::load(dir, chain_id, true)
+    }
+
+    /// Opens the store without writing to it: for readers (export, anchor
+    /// request, the console), which may be pointed at a backup copy or at a
+    /// store a sealing pass is appending to right now. A torn final line is
+    /// reported on stderr and left as found: an unterminated line that
+    /// parses is read (it is a whole seal, verified like any other), one
+    /// that does not is skipped. Repairing either is the writer's job. A
+    /// missing directory is an empty store, not one to create.
+    pub fn open_read_only(dir: &Path, chain_id: &str) -> Result<Self, Error> {
+        Self::load(dir, chain_id, false)
+    }
+
+    fn load(dir: &Path, chain_id: &str, repair: bool) -> Result<Self, Error> {
 
         let keys: Vec<PublicKeyEntry> = {
             let path = dir.join("keys.json");
@@ -36,9 +53,29 @@ impl Store {
                 Vec::new()
             }
         };
+        // keys.json holds the keys that sealed, nothing else. An origin or
+        // ops key here would be admitted to certify history it has no role
+        // in, and a repeated id makes "the key this checkpoint names"
+        // depend on which entry a lookup happens to find first.
+        let mut seen = std::collections::HashSet::new();
+        for k in &keys {
+            if k.role != KeyRole::Seal {
+                return Err(Error::StoreBroken(format!(
+                    "keys.json: key \"{}\" has role \"{}\", a store records sealing keys only",
+                    k.key_id,
+                    k.role.as_str()
+                )));
+            }
+            if !seen.insert(k.key_id.as_str()) {
+                return Err(Error::StoreBroken(format!(
+                    "keys.json: key id \"{}\" is recorded twice",
+                    k.key_id
+                )));
+            }
+        }
 
         let checkpoints: Vec<SignedCheckpoint> =
-            read_jsonl(&dir.join(format!("{chain_id}.checkpoints.jsonl")))?;
+            read_jsonl(&dir.join(format!("{chain_id}.checkpoints.jsonl")), repair)?;
 
         // Full re-validation, not a format check. The threat is someone with
         // write access to this directory; the answer is that nothing loaded
@@ -79,11 +116,11 @@ impl Store {
             sc.verify(&key.to_verifying_key()?)?;
 
             prev_hash = Some(cp.hash());
-            next_from = cp.to_seq + 1;
+            next_from = next_seq(cp.to_seq)?;
         }
 
         let anchors: Vec<Anchor> =
-            read_jsonl(&dir.join(format!("{chain_id}.anchors.jsonl")))?;
+            read_jsonl(&dir.join(format!("{chain_id}.anchors.jsonl")), repair)?;
         for a in &anchors {
             if !checkpoints
                 .iter()
@@ -102,7 +139,38 @@ impl Store {
             checkpoints,
             anchors,
             keys,
+            _lock: None,
         })
+    }
+
+    /// Opens the store for writing, holding an exclusive lock on the whole
+    /// store directory until the `Store` is dropped.
+    ///
+    /// Two sealing passes over one store (a cron `seal` overlapping `run`)
+    /// each load the same head, each seal from it, and each append: two
+    /// checkpoints with the same predecessor, a fork no later open accepts.
+    /// The lock is store-wide, not per chain, because `keys.json` is shared:
+    /// two chains recording a new key at once would each rewrite it from
+    /// their own copy and lose the other's entry. The second process fails
+    /// fast with [`Error::Locked`]. The kernel drops the lock with the
+    /// process, so a crash leaves nothing to clean up.
+    pub fn open_exclusive(dir: &Path, chain_id: &str) -> Result<Self, Error> {
+        std::fs::create_dir_all(dir)?;
+        let f = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(dir.join(".ledger.lock"))?;
+        match f.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(Error::Locked(dir.display().to_string()))
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
+        }
+        let mut store = Self::load(dir, chain_id, true)?;
+        store._lock = Some(f);
+        Ok(store)
     }
 
     pub fn chain_id(&self) -> &str {
@@ -158,7 +226,10 @@ impl Store {
                 "checkpoint does not chain from the current head".to_string(),
             ));
         }
-        let next_from = self.last().map(|sc| sc.checkpoint.to_seq + 1).unwrap_or(0);
+        let next_from = match self.last() {
+            Some(sc) => next_seq(sc.checkpoint.to_seq)?,
+            None => 0,
+        };
         if cp.from_seq != next_from || cp.to_seq < cp.from_seq {
             return Err(Error::StoreBroken(format!(
                 "checkpoint covers [{}..{}], expected coverage to resume at \
@@ -166,9 +237,22 @@ impl Store {
                 cp.from_seq, cp.to_seq
             )));
         }
+        // Refused on reload, so refused here.
+        next_seq(cp.to_seq)?;
+        if cp.key_id != key.key_id || key.role != KeyRole::Seal {
+            return Err(Error::StoreBroken(format!(
+                "checkpoint names key \"{}\" but was offered key \"{}\" with role \"{}\"",
+                cp.key_id,
+                key.key_id,
+                key.role.as_str()
+            )));
+        }
 
-        self.record_key(key)?;
+        // Verified before the key is recorded: a key written to keys.json
+        // for a seal that then failed would bind its id for good, and the
+        // real key under that id would be refused as a conflict forever.
         signed.verify(&key.to_verifying_key()?)?;
+        self.record_key(key)?;
 
         append_line(
             &self.dir.join(format!("{}.checkpoints.jsonl", self.chain_id)),
@@ -217,48 +301,107 @@ impl Store {
             f.sync_data()?;
         }
         std::fs::rename(&tmp, &path)?;
-        Ok(())
+        sync_dir(&self.dir)
     }
+}
+
+/// The seq after a sealed interval's last one. A checkpoint reaching
+/// `u64::MAX` leaves no next seq: coverage that cannot continue is refused,
+/// not wrapped around to 0.
+fn next_seq(to_seq: u64) -> Result<u64, Error> {
+    to_seq.checked_add(1).ok_or_else(|| {
+        Error::StoreBroken(format!(
+            "a checkpoint seals up to seq {to_seq}, past which coverage cannot continue"
+        ))
+    })
+}
+
+/// Makes a creation or a rename in `dir` durable: the file's own fsync
+/// covers its bytes, not the directory entry that names it.
+fn sync_dir(dir: &Path) -> Result<(), Error> {
+    #[cfg(unix)]
+    std::fs::File::open(dir)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
 }
 
 /// Reads a JSONL file, tolerating exactly one torn line at the very end.
 ///
-/// A torn final line is a crash mid-append: the seal (or anchor) was never
-/// acknowledged, and the records it covered are still unsealed; sealing them
-/// again is harmless. The torn line is trimmed so it does not poison every
-/// future load. Anywhere else, an unreadable line is genuine corruption.
-fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T>, Error> {
+/// Torn means *unterminated*: `append_line` writes a line and its newline in
+/// one call and acknowledges only after the fsync, so a crash mid-append
+/// leaves a final chunk with no newline, and nothing else does. That chunk
+/// was never acknowledged; the records it covered are still unsealed, and
+/// sealing them again is harmless. It is trimmed so it does not poison every
+/// future load, or, when it is a whole line that only lost its newline,
+/// completed, since the seal it carries is intact and verified like any
+/// other.
+///
+/// A terminated line that does not parse is never a crash: it is an edit,
+/// and it is refused wherever it sits. Trimming it would erase the sealed
+/// boundary the next pass compares the WAL against, and a rewritten WAL
+/// would then be sealed as if it were history.
+///
+/// With `repair` false, nothing is written: the torn tail is reported and
+/// read as it would be after the repair, without making it.
+fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path, repair: bool) -> Result<Vec<T>, Error> {
     if !path.exists() {
         return Ok(Vec::new());
     }
     let content = std::fs::read_to_string(path)?;
-    let chunks: Vec<&str> = content.split_inclusive('\n').collect();
 
     let mut items = Vec::new();
     let mut offset = 0usize;
-    for (i, chunk) in chunks.iter().enumerate() {
-        let line = chunk.trim_end_matches('\n');
+    for (i, chunk) in content.split_inclusive('\n').enumerate() {
+        let Some(line) = chunk.strip_suffix('\n') else {
+            // The unterminated tail, necessarily the last chunk.
+            if !repair {
+                let parsed = serde_json::from_str::<T>(chunk).ok();
+                eprintln!(
+                    "[ledger] {}: unterminated final line ({} bytes, {}), left as \
+                     found: the next sealing pass repairs it",
+                    path.display(),
+                    chunk.len(),
+                    if parsed.is_some() { "a whole entry, read" } else { "torn, skipped" }
+                );
+                items.extend(parsed);
+                break;
+            }
+            let mut f = OpenOptions::new().write(true).open(path)?;
+            match serde_json::from_str::<T>(chunk) {
+                Ok(v) => {
+                    items.push(v);
+                    f.seek(SeekFrom::End(0))?;
+                    f.write_all(b"\n")?;
+                    eprintln!(
+                        "[ledger] {}: completed an unterminated final line",
+                        path.display()
+                    );
+                }
+                Err(_) => {
+                    f.set_len(offset as u64)?;
+                    eprintln!(
+                        "[ledger] {}: trimmed a torn final line ({} bytes)",
+                        path.display(),
+                        chunk.len()
+                    );
+                }
+            }
+            f.sync_data()?;
+            break;
+        };
+        offset += chunk.len();
         if line.is_empty() {
-            offset += chunk.len();
             continue;
         }
         match serde_json::from_str::<T>(line) {
-            Ok(v) => {
-                items.push(v);
-                offset += chunk.len();
-            }
+            Ok(v) => items.push(v),
             Err(e) => {
-                if i + 1 == chunks.len() {
-                    let f = OpenOptions::new().write(true).open(path)?;
-                    f.set_len(offset as u64)?;
-                    f.sync_data()?;
-                    break;
-                }
                 return Err(Error::StoreBroken(format!(
                     "unreadable line {} in {}: {e}",
                     i + 1,
                     path.display()
-                )));
+                )))
             }
         }
     }
@@ -267,10 +410,17 @@ fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T>, Err
 
 /// Append one line and make it durable before acknowledging.
 fn append_line(path: &Path, line: &str) -> Result<(), Error> {
+    let created = !path.exists();
     let mut f = OpenOptions::new().append(true).create(true).open(path)?;
-    f.write_all(line.as_bytes())?;
-    f.write_all(b"\n")?;
+    // One write, line and newline together: a crash can only leave an
+    // unterminated prefix, which `read_jsonl` recognises as torn.
+    f.write_all(format!("{line}\n").as_bytes())?;
     f.flush()?;
     f.sync_data()?;
+    if created {
+        // A chain's first seal also creates its file: without this, a crash
+        // could keep the acknowledged line and lose the name it lives under.
+        sync_dir(path.parent().unwrap_or(Path::new(".")))?;
+    }
     Ok(())
 }

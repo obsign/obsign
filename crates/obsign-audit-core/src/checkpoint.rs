@@ -3,7 +3,7 @@ use crate::error::Error;
 use crate::hash::{digest, domain, Hash};
 use crate::merkle::merkle_root;
 use crate::record::Record;
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 /// Periodic seal over an interval of the chain.
@@ -137,18 +137,15 @@ pub struct SignedCheckpoint {
 
 impl SignedCheckpoint {
     pub fn verify(&self, key: &VerifyingKey) -> Result<(), Error> {
-        let raw = hex::decode(&self.signature)
-            .map_err(|_| Error::BadHex(self.signature.clone()))?;
-        let bytes: [u8; 64] = raw
-            .try_into()
-            .map_err(|_| Error::BadSignatureLength)?;
-        let sig = Signature::from_bytes(&bytes);
-        key.verify(&self.checkpoint.signing_bytes(), &sig)
-            .map_err(|_| Error::BadSignature {
+        let sig = crate::signature_from_hex(&self.signature)?;
+        if !crate::ed25519_verify(key, &self.checkpoint.signing_bytes(), &sig) {
+            return Err(Error::BadSignature {
                 key_id: self.checkpoint.key_id.clone(),
                 from_seq: self.checkpoint.from_seq,
                 to_seq: self.checkpoint.to_seq,
-            })
+            });
+        }
+        Ok(())
     }
 }
 
@@ -199,9 +196,10 @@ impl KeyRole {
 #[serde(deny_unknown_fields)]
 pub struct PublicKeyEntry {
     pub key_id: String,
-    /// Only algorithm accepted for now: `ed25519`.
+    /// `ed25519`; an origin-role identity key may also be `ecdsa-p256`
+    /// (see `crate::origin::IdentityKey`).
     pub algo: String,
-    /// Raw public key, 32 bytes in hex.
+    /// Raw public key in hex: 32 bytes, or the 65-byte uncompressed point.
     pub public_key: String,
     /// Serialized only when it departs from the default: files and packs
     /// written before roles existed keep both their bytes and their meaning.

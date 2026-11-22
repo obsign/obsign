@@ -81,6 +81,9 @@ fn write_source_tree(root: &Path) {
     .unwrap();
 }
 
+/// Source epoch the tests compile at, a commit time in seconds.
+const EPOCH: u64 = 1_700_000_000;
+
 fn ops() -> OpsKey {
     OpsKey::from_seed([0x21u8; 32], "ops-key")
 }
@@ -95,8 +98,8 @@ fn compilation_is_deterministic_and_verifiable() {
     write_source_tree(&dir);
 
     let tree = SourceTree::load(&dir).unwrap();
-    let a = compile(&tree, "aaaa11112222", &ops()).unwrap();
-    let b = compile(&SourceTree::load(&dir).unwrap(), "aaaa11112222", &ops()).unwrap();
+    let a = compile(&tree, "aaaa11112222", EPOCH, &ops()).unwrap();
+    let b = compile(&SourceTree::load(&dir).unwrap(), "aaaa11112222", EPOCH, &ops()).unwrap();
 
     // Byte-identical artifacts: same tree, same ref, same key. This is what
     // makes publish idempotent and releases comparable by hash.
@@ -112,6 +115,10 @@ fn compilation_is_deterministic_and_verifiable() {
     let idb = a.identity.expect("identity bundle expected");
     assert_eq!(idb.bundle.version, "identity@aaaa11112222");
     idb.verify(&vk).expect("identity bundle must verify");
+    assert_eq!(
+        serde_json::to_vec(&idb).unwrap(),
+        serde_json::to_vec(&b.identity.unwrap()).unwrap()
+    );
 
     let other = ed25519_dalek::SigningKey::from_bytes(&[0x22u8; 32]).verifying_key();
     assert!(
@@ -121,11 +128,33 @@ fn compilation_is_deterministic_and_verifiable() {
 }
 
 #[test]
+fn the_identity_bundle_carries_the_signed_source_epoch() {
+    // The epoch is what lets a gateway refuse an older bundle on reload, so
+    // the emitted bundle must be /4, carry the epoch it was given, and sign
+    // it.
+    let dir = tmp("epoch");
+    write_source_tree(&dir);
+    let tree = SourceTree::load(&dir).unwrap();
+    let idb = compile(&tree, "v1", EPOCH, &ops()).unwrap().identity.unwrap();
+    assert_eq!(idb.bundle.format, obsign_identity::bundle::FORMAT);
+    assert_eq!(idb.bundle.epoch, EPOCH);
+
+    let later = compile(&tree, "v1", EPOCH + 1, &ops()).unwrap().identity.unwrap();
+    assert_eq!(later.bundle.epoch, EPOCH + 1);
+    assert_ne!(idb.bundle.hash(), later.bundle.hash());
+
+    let vk = ops().signing_key().verifying_key();
+    let mut tampered = idb.clone();
+    tampered.bundle.epoch = u64::MAX;
+    assert!(tampered.verify(&vk).is_err(), "the epoch must be signed");
+}
+
+#[test]
 fn argument_declarations_bump_the_bundle_format() {
     // No tool declares policy_args: v1, pre-upgrade gateways keep working.
     let dir = tmp("fmt-v1");
     write_source_tree(&dir);
-    let compiled = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap();
+    let compiled = compile(&SourceTree::load(&dir).unwrap(), "v1", EPOCH, &ops()).unwrap();
     assert_eq!(compiled.policy.bundle.format, obsign_policy::FORMAT);
 
     // One declaration: v2. An old gateway must refuse this bundle rather
@@ -147,7 +176,7 @@ fn argument_declarations_bump_the_bundle_format() {
         serde_json::json!({"default": "closed"}).to_string(),
     )
     .unwrap();
-    let compiled = compile(&SourceTree::load(&dir).unwrap(), "v2", &ops()).unwrap();
+    let compiled = compile(&SourceTree::load(&dir).unwrap(), "v2", EPOCH, &ops()).unwrap();
     assert_eq!(compiled.policy.bundle.format, obsign_policy::FORMAT_V2);
     assert_eq!(compiled.policy.bundle.tools[0].policy_args.len(), 1);
 }
@@ -186,7 +215,7 @@ fn a_typoed_argument_rule_is_rejected_at_compile_time() {
     )
     .unwrap();
 
-    let err = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap_err();
+    let err = compile(&SourceTree::load(&dir).unwrap(), "v1", EPOCH, &ops()).unwrap_err();
     match err {
         Error::Source(msg) => {
             assert!(msg.contains("support_channel_only"), "must name the rule: {msg}");
@@ -208,7 +237,7 @@ fn a_typoed_argument_rule_is_rejected_at_compile_time() {
         "##,
     )
     .unwrap();
-    compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap();
+    compile(&SourceTree::load(&dir).unwrap(), "v1", EPOCH, &ops()).unwrap();
 }
 
 #[test]
@@ -255,7 +284,7 @@ fn a_rule_whose_verdict_depends_on_values_still_compiles() {
     )
     .unwrap();
 
-    let compiled = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap();
+    let compiled = compile(&SourceTree::load(&dir).unwrap(), "v1", EPOCH, &ops()).unwrap();
     assert_eq!(compiled.policy.bundle.format, obsign_policy::FORMAT);
 
     // The premise, so "still compiles" is not satisfied by any rule at all:
@@ -304,7 +333,7 @@ fn a_rule_that_can_never_evaluate_is_refused_whatever_the_fail_mode() {
     )
     .unwrap();
 
-    let err = compile(&SourceTree::load(&dir).unwrap(), "v1", &ops()).unwrap_err();
+    let err = compile(&SourceTree::load(&dir).unwrap(), "v1", EPOCH, &ops()).unwrap_err();
     match err {
         Error::Source(msg) => {
             assert!(msg.contains("dept_gate"), "must name the rule: {msg}");
@@ -325,7 +354,7 @@ fn a_rule_without_id_is_rejected_at_compile_time() {
     .unwrap();
 
     let tree = SourceTree::load(&dir).unwrap();
-    let err = compile(&tree, "v1", &ops()).unwrap_err();
+    let err = compile(&tree, "v1", EPOCH, &ops()).unwrap_err();
     match err {
         Error::Source(msg) => assert!(msg.contains("@id"), "message must name @id: {msg}"),
         other => panic!("expected Source, got {other}"),
@@ -655,7 +684,7 @@ fn no_schema_is_written_for_a_catalogue_compile_would_refuse() {
 
     // And the same tree is refused by compile, which is the point: the two
     // agree about what a usable catalogue is.
-    assert!(compile(&tree, "v1", &ops()).is_err());
+    assert!(compile(&tree, "v1", EPOCH, &ops()).is_err());
 }
 
 #[test]
@@ -688,7 +717,7 @@ fn a_tool_name_carrying_a_newline_still_yields_a_parseable_schema() {
     let path = obsign_control_plane::default_schema_path(&dir);
     obsign_control_plane::sync_schema(&tree, &path, false).expect("the schema must still generate");
     // Compilation runs the schema through Cedar's parser and validator.
-    compile(&tree, "v1", &ops()).expect("the tree must still compile");
+    compile(&tree, "v1", EPOCH, &ops()).expect("the tree must still compile");
 }
 
 #[test]
@@ -813,6 +842,22 @@ fn unverifiable_checkouts_are_refused_not_trusted() {
     b.extend_from_slice(&[0u8; 20]);
     std::fs::write(dir.join(".git/index"), b).unwrap();
     assert!(matches!(worktree_divergence(&dir), Err(Error::Source(m)) if m.contains("link")));
+
+    // No cache tree at all: the entries match the working files whether the
+    // change behind them was committed or only staged, so absence of the
+    // extension cannot mean "nothing staged". Git always writes it; an index
+    // without it is refused, not read as clean.
+    let dir = tmp("wt-no-tree");
+    write_source_tree(&dir);
+    write_git_checkout(&dir, TRACKED);
+    let b = std::fs::read(dir.join(".git/index")).unwrap();
+    let tree_at = b.windows(4).rposition(|w| w == b"TREE").unwrap();
+    let mut stripped = b[..tree_at].to_vec();
+    stripped.extend_from_slice(&[0u8; 20]);
+    std::fs::write(dir.join(".git/index"), stripped).unwrap();
+    assert!(
+        matches!(worktree_divergence(&dir), Err(Error::Source(m)) if m.contains("TREE") && m.contains("--label"))
+    );
 }
 
 #[test]
@@ -857,6 +902,34 @@ fn a_source_tree_in_a_repo_subdirectory_is_scoped_by_its_prefix() {
     assert!(d[0].contains("policy-src/tools.json"), "{d:?}");
 }
 
+#[test]
+fn an_uncommitted_deployment_edit_is_divergence() {
+    // deployment/ is signed into deployment-bundle.json and stamped
+    // `deployment@<sha>`: enrolling a gateway behind the commit's back is
+    // exactly the lie the clean-tree check exists to refuse.
+    let dir = tmp("wt-deployment");
+    write_source_tree(&dir);
+    write_deployment(&dir, &[("gw-a", 40)]);
+    let mut tracked = TRACKED.to_vec();
+    tracked.push("deployment/origin-keys.json");
+    write_git_checkout(&dir, &tracked);
+    assert!(worktree_divergence(&dir).unwrap().is_empty());
+
+    write_deployment(&dir, &[("gw-a", 40), ("gw-rogue", 41)]);
+    let d = worktree_divergence(&dir).unwrap();
+    assert!(
+        d.iter().any(|m| m.contains("deployment/origin-keys.json") && m.contains("modified")),
+        "{d:?}"
+    );
+
+    // An untracked attestation file is read by compile, so it is caught too.
+    write_deployment(&dir, &[("gw-a", 40)]);
+    std::fs::write(dir.join("deployment/attestation.json"), "[]").unwrap();
+    let d = worktree_divergence(&dir).unwrap();
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert!(d[0].contains("deployment/attestation.json") && d[0].contains("not tracked"), "{d:?}");
+}
+
 // ---------------------------------------------------------------------------
 // Publication
 // ---------------------------------------------------------------------------
@@ -868,7 +941,7 @@ fn a_published_version_is_immutable() {
     write_source_tree(&src);
 
     let tree = SourceTree::load(&src).unwrap();
-    let v1 = compile(&tree, "v1", &ops()).unwrap();
+    let v1 = compile(&tree, "v1", EPOCH, &ops()).unwrap();
     let p = publish(&dist, &v1, &ops(), 1_000).unwrap();
     assert!(!p.reused);
 
@@ -904,13 +977,13 @@ fn a_published_version_is_immutable() {
         CEDAR_OK.replace("prod", "staging"),
     )
     .unwrap();
-    let modified = compile(&SourceTree::load(&src).unwrap(), "v1", &ops()).unwrap();
+    let modified = compile(&SourceTree::load(&src).unwrap(), "v1", EPOCH, &ops()).unwrap();
     assert!(matches!(
         publish(&dist, &modified, &ops(), 3_000),
         Err(Error::VersionConflict { .. })
     ));
     // And the paired legitimate path: the same change under a new version.
-    let v2 = compile(&SourceTree::load(&src).unwrap(), "v2", &ops()).unwrap();
+    let v2 = compile(&SourceTree::load(&src).unwrap(), "v2", EPOCH, &ops()).unwrap();
     publish(&dist, &v2, &ops(), 4_000).expect("a new version must publish");
 }
 
@@ -920,7 +993,7 @@ fn republishing_an_old_version_is_a_rollback() {
     let dist = tmp("rb-dist");
     write_source_tree(&src);
 
-    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", &ops()).unwrap();
+    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", EPOCH, &ops()).unwrap();
     publish(&dist, &v1, &ops(), 1_000).unwrap();
 
     std::fs::write(
@@ -928,7 +1001,7 @@ fn republishing_an_old_version_is_a_rollback() {
         CEDAR_OK.replace("prod", "staging"),
     )
     .unwrap();
-    let v2 = compile(&SourceTree::load(&src).unwrap(), "v2", &ops()).unwrap();
+    let v2 = compile(&SourceTree::load(&src).unwrap(), "v2", EPOCH, &ops()).unwrap();
     publish(&dist, &v2, &ops(), 2_000).unwrap();
 
     // Roll back: point current at v1 again. No dedicated tooling, publish is
@@ -958,13 +1031,13 @@ fn a_key_id_cannot_be_rebound() {
     write_source_tree(&src);
     let tree = SourceTree::load(&src).unwrap();
 
-    let v1 = compile(&tree, "v1", &ops()).unwrap();
+    let v1 = compile(&tree, "v1", EPOCH, &ops()).unwrap();
     publish(&dist, &v1, &ops(), 1_000).unwrap();
 
     // Same key id, different key material: whoever can do that can sign
     // rules the fleet will trust under an already-trusted name.
     let imposter = OpsKey::from_seed([0x99u8; 32], "ops-key");
-    let v2 = compile(&tree, "v2", &imposter).unwrap();
+    let v2 = compile(&tree, "v2", EPOCH, &imposter).unwrap();
     assert!(matches!(
         publish(&dist, &v2, &imposter, 2_000),
         Err(Error::KeyConflict(_))
@@ -972,12 +1045,73 @@ fn a_key_id_cannot_be_rebound() {
 
     // A new id is the legitimate path, and both keys end up trusted.
     let rotated = OpsKey::from_seed([0x99u8; 32], "ops-key-2");
-    let v2 = compile(&tree, "v2", &rotated).unwrap();
+    let v2 = compile(&tree, "v2", EPOCH, &rotated).unwrap();
     publish(&dist, &v2, &rotated, 3_000).unwrap();
     let keys: Vec<obsign_audit_core::checkpoint::PublicKeyEntry> =
         serde_json::from_str(&std::fs::read_to_string(dist.join("trusted-keys.json")).unwrap())
             .unwrap();
     assert_eq!(keys.len(), 2);
+}
+
+fn trusted_keys(dist: &Path) -> Vec<obsign_audit_core::checkpoint::PublicKeyEntry> {
+    serde_json::from_str(&std::fs::read_to_string(dist.join("trusted-keys.json")).unwrap()).unwrap()
+}
+
+#[test]
+fn a_refused_publish_trusts_no_new_key() {
+    let src = tmp("refused-key-src");
+    let dist = tmp("refused-key-dist");
+    write_source_tree(&src);
+    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", EPOCH, &ops()).unwrap();
+    publish(&dist, &v1, &ops(), 1_000).unwrap();
+
+    // Different content under the same version, signed by a key the fleet
+    // does not trust yet: refused, and the refusal must not have handed that
+    // key the fleet's trust on its way out.
+    std::fs::write(
+        src.join("policies/00-base.cedar"),
+        CEDAR_OK.replace("prod", "staging"),
+    )
+    .unwrap();
+    let other = OpsKey::from_seed([0x77u8; 32], "ops-key-2");
+    let conflicting = compile(&SourceTree::load(&src).unwrap(), "v1", EPOCH, &other).unwrap();
+    assert!(matches!(
+        publish(&dist, &conflicting, &other, 2_000),
+        Err(Error::VersionConflict { .. })
+    ));
+    let keys = trusted_keys(&dist);
+    assert_eq!(keys.len(), 1, "{keys:?}");
+    assert_eq!(keys[0].key_id, "ops-key");
+}
+
+#[test]
+fn a_key_id_keeps_its_role() {
+    use obsign_audit_core::checkpoint::KeyRole;
+    let src = tmp("role-src");
+    write_source_tree(&src);
+    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", EPOCH, &ops()).unwrap();
+
+    // The ops key's id and material, already trusted as an origin key: the
+    // same id under a second role is refused, not silently merged.
+    let dist = tmp("role-dist-origin");
+    let mut entry = ops().public_entry();
+    entry.role = KeyRole::Origin;
+    std::fs::write(dist.join("trusted-keys.json"), serde_json::to_string(&[&entry]).unwrap()).unwrap();
+    assert!(matches!(
+        publish(&dist, &v1, &ops(), 1_000),
+        Err(Error::KeyRoleConflict { .. })
+    ));
+    assert_eq!(trusted_keys(&dist)[0].role, KeyRole::Origin);
+
+    // An earlier build recorded the ops key under the default `seal` role:
+    // the documented upgrade tightens it to `ops` on the next publish.
+    let dist = tmp("role-dist-legacy");
+    entry.role = KeyRole::Seal;
+    std::fs::write(dist.join("trusted-keys.json"), serde_json::to_string(&[&entry]).unwrap()).unwrap();
+    publish(&dist, &v1, &ops(), 1_000).unwrap();
+    let keys = trusted_keys(&dist);
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0].role, KeyRole::Ops);
 }
 
 // ---------------------------------------------------------------------------
@@ -1028,7 +1162,7 @@ fn export_produces_verifiable_packs_and_a_signed_manifest() {
         seal_chain(&wal_dir, &store_dir, chain);
     }
 
-    let (exports, all_valid) = export_all(&wal_dir, &store_dir, &out, &ops(), 9_000).unwrap();
+    let (exports, all_valid) = export_all(&wal_dir, &store_dir, &out, &ops(), 9_000, None).unwrap();
     assert!(all_valid);
     assert_eq!(exports.len(), 2, "one pack per chain");
 
@@ -1072,7 +1206,7 @@ fn a_rewritten_wal_is_exported_but_flagged_invalid() {
     std::fs::remove_file(wal_dir.join("alpha.jsonl")).unwrap();
     fill_chain(&wal_dir, "alpha", 4, 999);
 
-    let (exports, all_valid) = export_all(&wal_dir, &store_dir, &out, &ops(), 9_000).unwrap();
+    let (exports, all_valid) = export_all(&wal_dir, &store_dir, &out, &ops(), 9_000, None).unwrap();
     // Written anyway (the failing pack is the one you want on disk) but
     // never passed off as fine.
     assert!(!all_valid);
@@ -1101,12 +1235,79 @@ fn a_sealed_chain_whose_wal_was_removed_refuses_the_export() {
 
     std::fs::remove_file(wal_dir.join("beta.jsonl")).unwrap();
 
-    let err = export_all(&wal_dir, &store_dir, &out, &ops(), 9_000)
+    let err = export_all(&wal_dir, &store_dir, &out, &ops(), 9_000, None)
         .expect_err("a sealed chain missing its WAL must not be silently omitted");
     assert!(
         matches!(&err, Error::Source(m) if m.contains("beta")),
         "the refusal must name the dropped chain, got: {err:?}"
     );
+}
+
+#[test]
+fn a_pinned_seal_key_refuses_a_store_sealed_under_another() {
+    let wal_dir = tmp("pin-wal");
+    let store_dir = tmp("pin-store");
+    fill_chain(&wal_dir, "alpha", 3, 0);
+    seal_chain(&wal_dir, &store_dir, "alpha"); // sealed by seal-1, seed 0x55
+
+    let entry = |seed: u8| obsign_audit_core::checkpoint::PublicKeyEntry {
+        key_id: "seal-1".to_string(),
+        algo: "ed25519".to_string(),
+        public_key: hex::encode(ed25519_dalek::SigningKey::from_bytes(&[seed; 32]).verifying_key().to_bytes()),
+        role: obsign_audit_core::checkpoint::KeyRole::Seal,
+    };
+
+    // The store's keys.json vouches for itself: pinned to the auditor's own
+    // copy of the real key, a store re-sealed under a substitute is refused.
+    let out = tmp("pin-out-bad").join("dossier");
+    let err = export_all(&wal_dir, &store_dir, &out, &ops(), 9_000, Some(&[entry(0x66)]))
+        .expect_err("a store sealed under an unpinned key must be refused");
+    assert!(matches!(&err, Error::Source(m) if m.contains("seal-1")), "{err:?}");
+    assert!(!out.exists());
+
+    let out = tmp("pin-out-good").join("dossier");
+    let (_, all_valid) =
+        export_all(&wal_dir, &store_dir, &out, &ops(), 9_000, Some(&[entry(0x55)])).unwrap();
+    assert!(all_valid);
+}
+
+#[test]
+fn a_failed_export_leaves_no_partial_dossier() {
+    let wal_dir = tmp("partial-wal");
+    let store_dir = tmp("partial-store");
+    let out = tmp("partial-out");
+    fill_chain(&wal_dir, "alpha", 3, 0);
+    seal_chain(&wal_dir, &store_dir, "alpha");
+    // beta sorts after alpha and cannot be read: alpha's pack was already
+    // on disk by the time the export failed.
+    std::fs::create_dir(wal_dir.join("beta.jsonl")).unwrap();
+
+    assert!(export_all(&wal_dir, &store_dir, &out, &ops(), 9_000, None).is_err());
+    let left: Vec<_> = std::fs::read_dir(&out).unwrap().collect();
+    assert!(left.is_empty(), "a failed export wrote {left:?}");
+    let staging: Vec<_> = std::fs::read_dir(out.parent().unwrap())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().contains("partial-out.partial"))
+        .collect();
+    assert!(staging.is_empty(), "staging left behind: {staging:?}");
+}
+
+#[test]
+fn an_export_refuses_a_directory_holding_an_earlier_dossier() {
+    let wal_dir = tmp("stale-exp-wal");
+    let store_dir = tmp("stale-exp-store");
+    let out = tmp("stale-exp-out");
+    fill_chain(&wal_dir, "alpha", 3, 0);
+    seal_chain(&wal_dir, &store_dir, "alpha");
+
+    // Last quarter's pack for a chain since pruned: beside a new manifest
+    // that does not list it, it reads as part of this dossier.
+    std::fs::write(out.join("gone.evidence.json"), b"{}").unwrap();
+    let err = export_all(&wal_dir, &store_dir, &out, &ops(), 9_000, None).unwrap_err();
+    assert!(matches!(&err, Error::Source(m) if m.contains("not empty")), "{err:?}");
+    assert_eq!(std::fs::read(out.join("gone.evidence.json")).unwrap(), b"{}");
+    assert!(!out.join("export-manifest.json").exists());
 }
 
 #[test]
@@ -1116,12 +1317,12 @@ fn an_empty_or_mistyped_export_is_refused() {
     let out = tmp("empty-out");
 
     // No chain: an empty audit dossier is a mistyped path, not a result.
-    assert!(export_all(&wal_dir, &store_dir, &out, &ops(), 0).is_err());
+    assert!(export_all(&wal_dir, &store_dir, &out, &ops(), 0, None).is_err());
 
     // Missing store directory: would export every chain as "0 sealed".
     fill_chain(&wal_dir, "alpha", 2, 0);
     let missing = store_dir.join("nope");
-    assert!(export_all(&wal_dir, &missing, &out, &ops(), 0).is_err());
+    assert!(export_all(&wal_dir, &missing, &out, &ops(), 0, None).is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -1152,12 +1353,14 @@ fn the_console_lists_chains_newest_first() {
         wal_dir: wal_dir.clone(),
         store_dir: None,
         dist_dir: None,
+        allowed_hosts: Vec::new(),
+        request_deadline: obsign_control_plane::console::REQUEST_DEADLINE,
     };
     std::thread::spawn(move || console.serve_on(listener));
 
     let overview = http_get(
         addr,
-        "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     );
     assert!(overview.starts_with("HTTP/1.1 200"));
 
@@ -1179,6 +1382,149 @@ fn the_console_lists_chains_newest_first() {
 }
 
 #[test]
+fn the_console_verifies_each_artifact_not_just_the_manifest() {
+    let wal_dir = tmp("con-verify-wal");
+    std::fs::create_dir_all(&wal_dir).unwrap();
+    let dist = tmp("con-verify-dist");
+    let src = tmp("con-verify-src");
+    write_source_tree(&src);
+    let compiled = compile(&SourceTree::load(&src).unwrap(), "v1", EPOCH, &ops()).unwrap();
+    publish(&dist, &compiled, &ops(), 1_000).unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let console = Console {
+        wal_dir,
+        store_dir: None,
+        dist_dir: Some(dist.clone()),
+        allowed_hosts: Vec::new(),
+        request_deadline: obsign_control_plane::console::REQUEST_DEADLINE,
+    };
+    std::thread::spawn(move || console.serve_on(listener));
+    let get = |path: &str| {
+        http_get(addr, &format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"))
+    };
+
+    let release = get("/release");
+    assert!(release.contains("hash matches, signature valid"), "{release}");
+    assert!(!release.contains("NOT VERIFIED"), "{release}");
+
+    // Rules swapped in dist/ after publish: the manifest is untouched and
+    // still verifies, but the page must not show these rules as released.
+    let path = dist.join("policy-bundle.json");
+    let tampered = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("forbid_destructive_prod", "forbid_nothing_at_all");
+    std::fs::write(&path, tampered).unwrap();
+    let release = get("/release");
+    assert!(release.contains("forbid_nothing_at_all"));
+    assert!(release.contains("NOT VERIFIED"), "{release}");
+    assert!(release.contains("sha256 MISMATCH"), "{release}");
+    assert!(get("/").contains("sha256 MISMATCH"));
+
+    // A manifest signed by a key trusted under another role is a finding,
+    // not a green verdict.
+    std::fs::write(&path, serde_json::to_vec_pretty(&compiled.policy).unwrap()).unwrap();
+    let mut entry = ops().public_entry();
+    entry.role = obsign_audit_core::checkpoint::KeyRole::Origin;
+    std::fs::write(dist.join("trusted-keys.json"), serde_json::to_string(&[&entry]).unwrap()).unwrap();
+    let overview = get("/");
+    assert!(!overview.contains("manifest signature valid"), "{overview}");
+    assert!(overview.contains("not ops"), "{overview}");
+}
+
+fn spawn_console(name: &str, allowed_hosts: Vec<String>, deadline: std::time::Duration) -> SocketAddr {
+    let wal_dir = tmp(name);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let console = Console {
+        wal_dir,
+        store_dir: None,
+        dist_dir: None,
+        allowed_hosts,
+        request_deadline: deadline,
+    };
+    std::thread::spawn(move || console.serve_on(listener));
+    addr
+}
+
+#[test]
+fn the_console_answers_only_its_own_host_names() {
+    let addr = spawn_console(
+        "con-host-wal",
+        vec!["console.corp".to_string()],
+        obsign_control_plane::console::REQUEST_DEADLINE,
+    );
+    let get = |host: Option<&str>| {
+        let h = host.map(|h| format!("Host: {h}\r\n")).unwrap_or_default();
+        http_get(addr, &format!("GET / HTTP/1.1\r\n{h}Connection: close\r\n\r\n"))
+    };
+
+    // DNS rebinding: a page on a name its owner re-points at 127.0.0.1 is
+    // same-origin with the console, but its requests still name that host.
+    let rebound = get(Some(&format!("evil.example:{}", addr.port())));
+    assert!(rebound.starts_with("HTTP/1.1 403"), "{rebound}");
+    assert!(!rebound.contains("<html"), "{rebound}");
+    assert!(get(None).starts_with("HTTP/1.1 403"));
+    assert!(get(Some("localhost.evil.example")).starts_with("HTTP/1.1 403"));
+
+    for ok in [
+        format!("127.0.0.1:{}", addr.port()),
+        "localhost".to_string(),
+        "[::1]:9090".to_string(),
+        "Console.Corp:9090".to_string(),
+    ] {
+        let page = get(Some(&ok));
+        assert!(page.starts_with("HTTP/1.1 200"), "{ok}: {page}");
+        let head = &page[..page.find("\r\n\r\n").unwrap()];
+        assert!(head.contains("X-Content-Type-Options: nosniff"), "{head}");
+        assert!(head.contains("Content-Security-Policy: default-src 'none'"), "{head}");
+        assert!(head.contains("Cache-Control: no-store"), "{head}");
+    }
+}
+
+#[test]
+fn a_non_loopback_bind_is_announced() {
+    use obsign_control_plane::console::exposure_warning;
+    assert!(exposure_warning("127.0.0.1:9090".parse().unwrap()).is_none());
+    assert!(exposure_warning("[::1]:9090".parse().unwrap()).is_none());
+    assert!(exposure_warning("0.0.0.0:9090".parse().unwrap()).is_some());
+    assert!(exposure_warning("10.0.0.5:9090".parse().unwrap()).is_some());
+}
+
+#[test]
+fn a_trickled_request_is_cut_at_the_deadline() {
+    // Every header line arrives well inside the per-read timeout, so only a
+    // deadline on the request as a whole ever releases this thread.
+    let addr = spawn_console("con-deadline-wal", Vec::new(), std::time::Duration::from_secs(1));
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n").unwrap();
+    let mut writer = s.try_clone().unwrap();
+    std::thread::spawn(move || {
+        for _ in 0..40 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if writer.write_all(b"X: a\r\n").is_err() {
+                return;
+            }
+        }
+    });
+
+    let start = std::time::Instant::now();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+    let mut buf = Vec::new();
+    // The server closes (EOF, or a reset while the trickle is still
+    // writing); a read timeout here means it never did.
+    match s.read_to_end(&mut buf) {
+        Ok(_) => {}
+        Err(e) => assert!(
+            !matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut),
+            "the connection outlived its deadline: {e}"
+        ),
+    }
+    assert!(start.elapsed() < std::time::Duration::from_secs(3));
+}
+
+#[test]
 fn console_is_read_only_and_shows_the_log() {
     let wal_dir = tmp("con-wal");
     let store_dir = tmp("con-store");
@@ -1186,7 +1532,7 @@ fn console_is_read_only_and_shows_the_log() {
     let src = tmp("con-src");
 
     write_source_tree(&src);
-    let compiled = compile(&SourceTree::load(&src).unwrap(), "v1", &ops()).unwrap();
+    let compiled = compile(&SourceTree::load(&src).unwrap(), "v1", EPOCH, &ops()).unwrap();
     publish(&dist, &compiled, &ops(), 1_000).unwrap();
     fill_chain(&wal_dir, "alpha", 3, 0);
     seal_chain(&wal_dir, &store_dir, "alpha");
@@ -1197,12 +1543,14 @@ fn console_is_read_only_and_shows_the_log() {
         wal_dir: wal_dir.clone(),
         store_dir: Some(store_dir.clone()),
         dist_dir: Some(dist.clone()),
+        allowed_hosts: Vec::new(),
+        request_deadline: obsign_control_plane::console::REQUEST_DEADLINE,
     };
     std::thread::spawn(move || console.serve_on(listener));
 
     let overview = http_get(
         addr,
-        "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     );
     assert!(overview.starts_with("HTTP/1.1 200"));
     assert!(overview.contains("alpha"), "chains must be listed");
@@ -1218,14 +1566,14 @@ fn console_is_read_only_and_shows_the_log() {
 
     let chain = http_get(
         addr,
-        "GET /chain/alpha HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        "GET /chain/alpha HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     );
     assert!(chain.starts_with("HTTP/1.1 200"));
     assert!(chain.contains("effect"), "records must be rendered");
 
     let release = http_get(
         addr,
-        "GET /release HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        "GET /release HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     );
     assert!(release.starts_with("HTTP/1.1 200"));
     assert!(
@@ -1240,7 +1588,7 @@ fn console_is_read_only_and_shows_the_log() {
     // Read-only by construction: no method but GET exists.
     let post = http_get(
         addr,
-        "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
     );
     assert!(
         post.starts_with("HTTP/1.1 405"),
@@ -1251,12 +1599,12 @@ fn console_is_read_only_and_shows_the_log() {
     // A chain id is a file name: traversal shapes are 404, not a disk read.
     let esc = http_get(
         addr,
-        "GET /chain/../../etc/passwd HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        "GET /chain/../../etc/passwd HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     );
     assert!(esc.starts_with("HTTP/1.1 404"));
     let unknown = http_get(
         addr,
-        "GET /chain/nope HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        "GET /chain/nope HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     );
     assert!(unknown.starts_with("HTTP/1.1 404"));
 }
@@ -1271,6 +1619,8 @@ fn a_request_line_without_newline_cannot_exhaust_the_console() {
         wal_dir: tmp("con-dos"),
         store_dir: None,
         dist_dir: None,
+        allowed_hosts: Vec::new(),
+        request_deadline: obsign_control_plane::console::REQUEST_DEADLINE,
     };
     std::thread::spawn(move || console.serve_on(listener));
 
@@ -1307,7 +1657,7 @@ fn a_tampered_release_manifest_is_resigned_not_republished() {
     let dist = tmp("tampered-manifest-dist");
     let src = tmp("tampered-manifest-src");
     write_source_tree(&src);
-    let compiled = compile(&SourceTree::load(&src).unwrap(), "v1", &ops()).unwrap();
+    let compiled = compile(&SourceTree::load(&src).unwrap(), "v1", EPOCH, &ops()).unwrap();
     publish(&dist, &compiled, &ops(), 1_000).unwrap();
 
     let archived = dist.join("releases").join("v1").join("manifest.json");
@@ -1361,7 +1711,7 @@ fn a_deployment_bundle_compiles_signs_and_verifies() {
     write_source_tree(&dir);
     write_deployment(&dir, &[("gw-a", 40), ("gw-b", 41)]);
 
-    let compiled = compile(&SourceTree::load(&dir).unwrap(), "abcd12345678", &ops()).unwrap();
+    let compiled = compile(&SourceTree::load(&dir).unwrap(), "abcd12345678", EPOCH, &ops()).unwrap();
     let db = compiled.deployment.expect("a deployment bundle was expected");
     assert_eq!(db.bundle.version, "deployment@abcd12345678");
 
@@ -1405,7 +1755,7 @@ fn the_deployment_bundle_is_published_as_an_immutable_artifact() {
     write_source_tree(&dir);
     write_deployment(&dir, &[("gw-a", 40)]);
 
-    let compiled = compile(&SourceTree::load(&dir).unwrap(), "abcd12345678", &ops()).unwrap();
+    let compiled = compile(&SourceTree::load(&dir).unwrap(), "abcd12345678", EPOCH, &ops()).unwrap();
     let published = publish(&dist, &compiled, &ops(), 1_000).unwrap();
 
     // Current file and immutable release copy both present and identical.
@@ -1430,6 +1780,157 @@ fn the_deployment_bundle_is_published_as_an_immutable_artifact() {
 }
 
 #[test]
+fn a_release_without_a_bundle_removes_the_stale_current_copy() {
+    let dir = tmp("stale-current-src");
+    let dist = tmp("stale-current-dist");
+    write_source_tree(&dir);
+    write_deployment(&dir, &[("gw-a", 40)]);
+    let v1 = compile(&SourceTree::load(&dir).unwrap(), "v1", EPOCH, &ops()).unwrap();
+    publish(&dist, &v1, &ops(), 1_000).unwrap();
+    assert!(dist.join("identity-bundle.json").is_file());
+    assert!(dist.join("deployment-bundle.json").is_file());
+
+    // v2 drops identity/ and deployment/. The gateways watch dist/: the
+    // previous release's identity bundle must not stay current under a
+    // manifest that says this release has none.
+    std::fs::remove_dir_all(dir.join("identity")).unwrap();
+    std::fs::remove_dir_all(dir.join("deployment")).unwrap();
+    let v2 = compile(&SourceTree::load(&dir).unwrap(), "v2", EPOCH, &ops()).unwrap();
+    publish(&dist, &v2, &ops(), 2_000).unwrap();
+    assert!(!dist.join("identity-bundle.json").exists());
+    assert!(!dist.join("deployment-bundle.json").exists());
+
+    // Rolling back to v1 brings them back, from its immutable copy.
+    publish(&dist, &v1, &ops(), 3_000).unwrap();
+    assert!(dist.join("identity-bundle.json").is_file());
+    assert!(dist.join("deployment-bundle.json").is_file());
+}
+
+#[test]
+fn the_same_version_with_another_artifact_set_is_a_conflict() {
+    let dir = tmp("artifact-set-src");
+    let dist = tmp("artifact-set-dist");
+    write_source_tree(&dir);
+    let v1 = compile(&SourceTree::load(&dir).unwrap(), "v1", EPOCH, &ops()).unwrap();
+    let published = publish(&dist, &v1, &ops(), 1_000).unwrap();
+    let manifest = std::fs::read(published.release_dir.join("manifest.json")).unwrap();
+
+    // Same version, identity bundle gone: the policy bytes still match, but
+    // the release is not the one v1 names.
+    std::fs::remove_dir_all(dir.join("identity")).unwrap();
+    let shrunk = compile(&SourceTree::load(&dir).unwrap(), "v1", EPOCH, &ops()).unwrap();
+    assert!(matches!(
+        publish(&dist, &shrunk, &ops(), 2_000),
+        Err(Error::VersionConflict { .. })
+    ));
+    // And with an artifact v1 never had.
+    write_source_tree(&dir);
+    write_deployment(&dir, &[("gw-a", 40)]);
+    let grown = compile(&SourceTree::load(&dir).unwrap(), "v1", EPOCH, &ops()).unwrap();
+    assert!(matches!(
+        publish(&dist, &grown, &ops(), 3_000),
+        Err(Error::VersionConflict { .. })
+    ));
+    assert_eq!(
+        std::fs::read(published.release_dir.join("manifest.json")).unwrap(),
+        manifest,
+        "releases/v1/manifest.json is written once"
+    );
+    assert!(!published.release_dir.join("deployment-bundle.json").exists());
+}
+
+#[test]
+fn a_second_publish_fails_fast_while_one_holds_the_lock() {
+    let src = tmp("lock-src");
+    let dist = tmp("lock-dist");
+    write_source_tree(&src);
+    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", EPOCH, &ops()).unwrap();
+
+    // Another publish in flight holds dist/'s lock: interleaving with it
+    // could leave a manifest naming the other's artifacts.
+    let held = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dist.join(".publish.lock"))
+        .unwrap();
+    held.lock().unwrap();
+    assert!(matches!(publish(&dist, &v1, &ops(), 1_000), Err(Error::Busy(_))));
+    assert!(!dist.join("manifest.json").exists());
+
+    drop(held);
+    publish(&dist, &v1, &ops(), 1_000).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_release_file_is_an_error_not_a_crash_to_repair() {
+    use std::os::unix::fs::PermissionsExt;
+    let src = tmp("unreadable-src");
+    let dist = tmp("unreadable-dist");
+    write_source_tree(&src);
+    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", EPOCH, &ops()).unwrap();
+    let published = publish(&dist, &v1, &ops(), 1_000).unwrap();
+
+    let file = published.release_dir.join("policy-bundle.json");
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&file).is_ok() {
+        return; // running as root: permissions do not bite, nothing to prove
+    }
+    let result = publish(&dist, &v1, &ops(), 2_000);
+    // Still the unreadable file: replacing what cannot be read is replacing
+    // an immutable release without knowing what it held.
+    let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(matches!(result, Err(Error::Io(_))), "{result:?}");
+    assert_eq!(mode, 0o000, "the release file was replaced");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_planted_temp_file_cannot_steer_an_atomic_write() {
+    let src = tmp("tmpname-src");
+    let dist = tmp("tmpname-dist");
+    write_source_tree(&src);
+    let v1 = compile(&SourceTree::load(&src).unwrap(), "v1", EPOCH, &ops()).unwrap();
+
+    // A symlink where a fixed `<name>.tmp` would be written: followed, it
+    // overwrites its target, and the rename then makes the current bundle a
+    // symlink to wherever it points.
+    let victim = tmp("tmpname-victim").join("victim");
+    std::fs::write(&victim, b"untouched").unwrap();
+    std::os::unix::fs::symlink(&victim, dist.join("policy-bundle.tmp")).unwrap();
+
+    publish(&dist, &v1, &ops(), 1_000).unwrap();
+    assert_eq!(std::fs::read(&victim).unwrap(), b"untouched");
+    assert!(std::fs::symlink_metadata(dist.join("policy-bundle.json"))
+        .unwrap()
+        .file_type()
+        .is_file());
+}
+
+#[test]
+fn a_label_cannot_escape_the_releases_directory() {
+    let src = tmp("label-src");
+    let dist = tmp("label-dist").join("dist");
+    write_source_tree(&src);
+    let tree = SourceTree::load(&src).unwrap();
+
+    for label in ["../../escaped", "..", ".", "a/b", "", ".hidden", "v1\\x"] {
+        let compiled = compile(&tree, label, EPOCH, &ops()).unwrap();
+        let result = publish(&dist, &compiled, &ops(), 1_000);
+        assert!(matches!(result, Err(Error::InvalidVersion(_))), "{label:?}: {result:?}");
+    }
+    assert!(!dist.parent().unwrap().join("escaped").exists());
+    assert!(!dist.join("manifest.json").exists());
+
+    // What a short sha or an ordinary label looks like still publishes.
+    for label in ["abcd12345678", "v1.2.3-rc_1+build"] {
+        publish(&dist, &compile(&tree, label, EPOCH, &ops()).unwrap(), &ops(), 1_000).unwrap();
+    }
+}
+
+#[test]
 fn a_hostile_payload_kind_cannot_inject_html() {
     // The `kind` column used to be one of ten compile-time literals, which is
     // why it was interpolated raw. An unknown payload's kind is whatever the
@@ -1451,12 +1952,14 @@ fn a_hostile_payload_kind_cannot_inject_html() {
         wal_dir: wal_dir.clone(),
         store_dir: None,
         dist_dir: None,
+        allowed_hosts: Vec::new(),
+        request_deadline: obsign_control_plane::console::REQUEST_DEADLINE,
     };
     std::thread::spawn(move || console.serve_on(listener));
 
     let page = http_get(
         addr,
-        "GET /chain/hostile HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        "GET /chain/hostile HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
     );
     assert!(page.starts_with("HTTP/1.1 200"), "the page must still render");
     assert!(

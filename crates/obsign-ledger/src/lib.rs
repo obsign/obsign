@@ -120,6 +120,14 @@ pub enum Error {
     )]
     KeyConflict(String),
 
+    /// Another process holds the store's lock: a sealing pass or an anchor
+    /// attach is in progress. Transient by nature, and retried by `run`.
+    #[error(
+        "store {0} is locked by another ledger process (a sealing pass or an \
+         anchor attach in progress) — two writers would fork the checkpoint chain"
+    )]
+    Locked(String),
+
     #[error("checkpoint {0} is not in the store")]
     UnknownCheckpoint(Hash),
 

@@ -92,9 +92,26 @@ for f in backup/wal/*.jsonl; do
 done
 ```
 
-Exit code 0 or the backup is not a backup. (Opening the store copy may trim
-a torn final line captured mid-append. The copy is undamaged; that is the
-normal crash-recovery path.)
+Exit code 0 or the backup is not a backup. (A store copy taken mid-append
+may end in an unterminated line. `export` reports it on stderr and leaves
+the copy as found; the copy is undamaged, and the next sealing pass on a
+live store repairs such a line under its lock.)
+
+For the fleet dossier, pin the sealing keys too. `obsign-control export`
+otherwise verifies each pack against the store's own `keys.json`, which
+proves only that the store agrees with itself: a store re-sealed under a
+substitute key would export as valid. Give it your out-of-band copy of the
+store's `keys.json`, and a store sealed under any other key is refused:
+
+```bash
+obsign-control export --wal backup/wal --store backup/store \
+    --out /tmp/dossier-check --key ops.hex --key-id ops-2026 \
+    --seal-keys /secure/seal-keys.json
+```
+
+`--out` must be absent or empty, and the directory appears only once the
+dossier is complete. A failed export leaves nothing behind to mistake for
+one.
 
 Then encrypt and follow 3-2-1: two media, one off-site. The copies carry no
 key material, but they do carry who did what, so treat them as confidential.

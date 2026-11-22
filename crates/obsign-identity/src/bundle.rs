@@ -7,8 +7,8 @@ use crate::claims::ClaimMap;
 use crate::jwks::{Jwk, JwkSet};
 use crate::Error;
 
-/// Current format: the display-label paths join the signed bytes.
-pub const FORMAT: &str = "obsign-identity/3";
+/// Current format: a monotonic epoch joins the signed bytes.
+pub const FORMAT: &str = "obsign-identity/4";
 /// First format. Still verifiable (a bundle published before the revision
 /// keeps its hash and its signature), but its signature does not cover
 /// machine markers, so only the default markers are accepted with it.
@@ -16,6 +16,9 @@ pub const FORMAT_V1: &str = "obsign-identity/1";
 /// Machine markers signed, label paths not yet. Same rule as v1 for what its
 /// signature does not cover.
 pub const FORMAT_V2: &str = "obsign-identity/2";
+/// Label paths signed, epoch not yet. Bundles of this format and older carry
+/// no ordering: between two of them, nothing tells the older from the newer.
+pub const FORMAT_V3: &str = "obsign-identity/3";
 
 /// Identity configuration, signed and distributed by the control plane.
 ///
@@ -44,6 +47,18 @@ pub struct IdentityBundle {
     pub jwks: JwkSet,
     #[serde(default)]
     pub claims: ClaimMap,
+    /// Monotonic release epoch (`obsign-identity/4`), the source commit time
+    /// in seconds. A gateway refuses to reload a bundle whose epoch is lower
+    /// than the one in force: without it, an older bundle, validly signed
+    /// and still listing an IdP key since revoked, is accepted on reload and
+    /// brings that key back.
+    ///
+    /// Defaulted so an older bundle deserializes unchanged, and an older
+    /// bundle counts as epoch 0. No older signature covers it, so
+    /// [`SignedIdentityBundle::verify`] refuses an older format carrying
+    /// anything else.
+    #[serde(default)]
+    pub epoch: u64,
 }
 
 impl IdentityBundle {
@@ -103,6 +118,22 @@ impl IdentityBundle {
             e.str_seq(&self.claims.labels);
         }
 
+        // v4 extends again, with the epoch. Signed, or rewriting it would
+        // be all a rollback needs. And with each key's `use` and `key_ops`,
+        // which decide whether the key verifies at all.
+        if self.format != FORMAT_V1 && self.format != FORMAT_V2 && self.format != FORMAT_V3 {
+            e.u64(self.epoch);
+            let mut keys: Vec<&Jwk> = self.jwks.keys.iter().collect();
+            keys.sort_by(|a, b| a.kid.cmp(&b.kid));
+            for k in keys {
+                e.opt_str(k.key_use.as_deref());
+                match &k.key_ops {
+                    None => e.u8(0),
+                    Some(ops) => e.u8(1).str_seq(ops),
+                };
+            }
+        }
+
         digest(domain::IDENTITY_BUNDLE, e.finish())
             .as_bytes()
             .to_vec()
@@ -142,7 +173,25 @@ impl SignedIdentityBundle {
         // signature does not cover. Re-signing at the current format is one
         // `obsign-control compile` away, and is the only way to use a field
         // an older signature never saw.
-        match self.bundle.format.as_str() {
+        let format = self.bundle.format.as_str();
+        if format != FORMAT && self.bundle.epoch != 0 {
+            // No older signature covers the epoch: an unsigned one would let
+            // whoever writes the file order an old bundle above a new one.
+            return Err(Error::UnsignedEpoch);
+        }
+        if format != FORMAT
+            && self
+                .bundle
+                .jwks
+                .keys
+                .iter()
+                .any(|k| k.key_use.is_some() || k.key_ops.is_some())
+        {
+            // Same rule: no older signature covers them, and they decide
+            // which keys verify.
+            return Err(Error::UnsignedKeyUse);
+        }
+        match format {
             FORMAT => {}
             FORMAT_V1 => {
                 // A v1 signature does not cover the markers. Accepting a v1
@@ -163,6 +212,7 @@ impl SignedIdentityBundle {
                     return Err(Error::UnsignedLabelPaths);
                 }
             }
+            FORMAT_V3 => {}
             other => return Err(Error::UnknownBundleFormat(other.to_string())),
         }
         Ok(&self.bundle)
@@ -186,6 +236,7 @@ mod tests {
             audience: "obsign".into(),
             jwks: JwkSet { keys: vec![] },
             claims: ClaimMap::default(),
+            epoch: 0,
         }
     }
 
@@ -248,6 +299,89 @@ mod tests {
             signed.verify(&k.verifying_key()),
             Err(Error::BadBundleSignature)
         ));
+    }
+
+    #[test]
+    fn v3_without_an_epoch_still_verifies() {
+        let k = key();
+        let signed = bundle(FORMAT_V3).sign("k1", &k);
+        assert!(signed.verify(&k.verifying_key()).is_ok());
+    }
+
+    #[test]
+    fn v4_epoch_is_covered_by_the_signature() {
+        let k = key();
+        let mut b = bundle(FORMAT);
+        b.epoch = 1_700_000_000;
+        let mut signed = b.sign("k1", &k);
+        assert!(signed.verify(&k.verifying_key()).is_ok());
+        signed.bundle.epoch += 1;
+        assert!(matches!(
+            signed.verify(&k.verifying_key()),
+            Err(Error::BadBundleSignature)
+        ));
+    }
+
+    fn jwk(kid: &str) -> Jwk {
+        Jwk {
+            kty: "OKP".into(),
+            kid: kid.into(),
+            alg: None,
+            crv: Some("Ed25519".into()),
+            n: None,
+            e: None,
+            x: Some("x".into()),
+            y: None,
+            key_use: None,
+            key_ops: None,
+        }
+    }
+
+    #[test]
+    fn v4_key_use_is_covered_by_the_signature() {
+        let k = key();
+        let mut b = bundle(FORMAT);
+        b.jwks.keys = vec![jwk("k1"), jwk("k2")];
+        let signed = b.sign("k1", &k);
+        assert!(signed.verify(&k.verifying_key()).is_ok());
+
+        let mut t = signed.clone();
+        t.bundle.jwks.keys[1].key_use = Some("enc".into());
+        assert!(matches!(t.verify(&k.verifying_key()), Err(Error::BadBundleSignature)));
+
+        let mut t = signed.clone();
+        t.bundle.jwks.keys[0].key_ops = Some(vec!["verify".into()]);
+        assert!(matches!(t.verify(&k.verifying_key()), Err(Error::BadBundleSignature)));
+    }
+
+    #[test]
+    fn an_older_format_carrying_key_use_is_refused() {
+        let k = key();
+        for fmt in [FORMAT_V1, FORMAT_V2, FORMAT_V3] {
+            let mut b = bundle(fmt);
+            b.jwks.keys = vec![jwk("k1")];
+            let mut signed = b.sign("k1", &k);
+            signed.bundle.jwks.keys[0].key_use = Some("enc".into());
+            assert!(
+                matches!(signed.verify(&k.verifying_key()), Err(Error::UnsignedKeyUse)),
+                "{fmt} must refuse a key use its signature does not cover"
+            );
+        }
+    }
+
+    #[test]
+    fn an_older_format_carrying_an_epoch_is_refused() {
+        // No older signature covers the epoch: an injected one would order a
+        // bundle the signer never ordered.
+        let k = key();
+        for fmt in [FORMAT_V1, FORMAT_V2, FORMAT_V3] {
+            let mut signed = bundle(fmt).sign("k1", &k);
+            signed.bundle.epoch = u64::MAX;
+            assert!(
+                matches!(signed.verify(&k.verifying_key()), Err(Error::UnsignedEpoch)),
+                "{fmt} must refuse an epoch its signature does not cover"
+            );
+        }
     }
 
     #[test]

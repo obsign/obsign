@@ -235,6 +235,11 @@ nothing, letting a deletion through is indefensible.
 A degradation is never silent: a call allowed under a fail-open rule is
 recorded as `AllowFailOpen`, never as a clean `Allow`.
 
+The fail mode only covers failures the request cannot steer. When the
+input can steer the error, it denies whatever the fail mode says: a tool
+that declares arguments, and `resource_read` / `prompt_get`, whose
+`context.target` is the URI or prompt name the agent chose.
+
 ## Your editor
 
 Cedar is a language with an editor already. AWS publishes the [Cedar
@@ -308,8 +313,10 @@ which is the only way a stale schema can quietly mislead an editor.
 
 The version label defaults to the short sha of `HEAD`, and **compile refuses
 to stamp that sha onto a dirty working tree**. A `policies@<sha>` citation
-in an audit record must mean the bytes that commit contains. Use `--label`
-for a tree that is not in git.
+in an audit record must mean the bytes that commit contains. The check
+covers every file `compile` reads: the rules, `tools.json`,
+`fail-mode.json`, `identity/` and `deployment/`. Use `--label` for a tree
+that is not in git.
 
 `policies/obsign.cedarschema` is exempt from that refusal, and only it: the
 schema is derived, its bytes never enter the signed bundle, and `compile`
@@ -322,8 +329,8 @@ The distribution directory:
 ```
 dist/
 ├── policy-bundle.json        ← current, atomically replaced
-├── identity-bundle.json      ← current
-├── deployment-bundle.json    ← current (when the tree has deployment/)
+├── identity-bundle.json      ← current (removed when the release has none)
+├── deployment-bundle.json    ← current (removed when the release has none)
 ├── manifest.json             ← current, signed
 ├── trusted-keys.json         ← accumulated ops public keys
 └── releases/<version>/       ← immutable history, one directory per version

@@ -52,6 +52,7 @@ const CKU_USER: CkUlong = 1;
 
 const CKA_CLASS: CkUlong = 0x0000;
 const CKA_LABEL: CkUlong = 0x0003;
+const CKA_ID: CkUlong = 0x0102;
 const CKA_KEY_TYPE: CkUlong = 0x0100;
 const CKA_EC_POINT: CkUlong = 0x0181;
 
@@ -351,8 +352,20 @@ impl Pkcs11Signer {
         // private object usually hides its attributes, so read the point off
         // the public object of the same label, falling back to the private
         // one for tokens that do expose it.
-        let public_object = find_key(funcs, session, CKO_PUBLIC_KEY, key_label)?
-            .unwrap_or(private_key);
+        let public_object = match find_key(funcs, session, CKO_PUBLIC_KEY, key_label)? {
+            Some(public) => {
+                // A label is a name anyone with token write access can give
+                // any object. CKA_ID is what binds the two halves of a pair:
+                // a public object that shares the label but not the id is
+                // not this private key's, and every seal would then "verify"
+                // against a key that did not make it, or never verify at all.
+                let private_id = read_attribute(funcs, session, private_key, CKA_ID)?;
+                let public_id = read_attribute(funcs, session, public, CKA_ID)?;
+                check_same_pair(&private_id, &public_id, key_label)?;
+                public
+            }
+            None => private_key,
+        };
         let point = read_attribute(funcs, session, public_object, CKA_EC_POINT)
             .map_err(|_| {
                 Error::Pkcs11(format!(
@@ -563,9 +576,24 @@ fn select_slot(funcs: &CkFunctionList, token: &TokenSelector) -> Result<CkSlotId
         labelled.push((slot, token_label(&info.label)));
     }
 
+    pick_slot(token, &labelled)
+}
+
+/// Chooses among the initialized tokens. A label names a token only when
+/// exactly one carries it: labels are operator-chosen and nothing makes
+/// them unique, and "the first one the module happened to list" would make
+/// the sealing key depend on slot enumeration order.
+fn pick_slot(token: &TokenSelector, labelled: &[(CkSlotId, String)]) -> Result<CkSlotId, Error> {
+    let present = || {
+        labelled
+            .iter()
+            .map(|(s, l)| format!("slot {s} \"{l}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     match token {
         TokenSelector::Slot(_) => unreachable!("handled above"),
-        TokenSelector::Only => match labelled.as_slice() {
+        TokenSelector::Only => match labelled {
             [] => Err(Error::Pkcs11("no token present".to_string())),
             [(slot, _)] => Ok(*slot),
             many => Err(Error::Pkcs11(format!(
@@ -577,21 +605,46 @@ fn select_slot(funcs: &CkFunctionList, token: &TokenSelector) -> Result<CkSlotId
                     .join(", ")
             ))),
         },
-        TokenSelector::Label(wanted) => labelled
-            .iter()
-            .find(|(_, l)| l == wanted)
-            .map(|(s, _)| *s)
-            .ok_or_else(|| {
-                Error::Pkcs11(format!(
+        TokenSelector::Label(wanted) => {
+            let matching: Vec<CkSlotId> = labelled
+                .iter()
+                .filter(|(_, l)| l == wanted)
+                .map(|(s, _)| *s)
+                .collect();
+            match matching.as_slice() {
+                [slot] => Ok(*slot),
+                [] => Err(Error::Pkcs11(format!(
                     "no token labelled \"{wanted}\" (present: {})",
-                    labelled
-                        .iter()
-                        .map(|(s, l)| format!("slot {s} \"{l}\""))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ))
-            }),
+                    present()
+                ))),
+                _ => Err(Error::Pkcs11(format!(
+                    "several tokens labelled \"{wanted}\" (present: {}): pick \
+                     one with --hsm-slot",
+                    present()
+                ))),
+            }
+        }
     }
+}
+
+fn check_same_pair(private_id: &[u8], public_id: &[u8], label: &str) -> Result<(), Error> {
+    if private_id == public_id {
+        return Ok(());
+    }
+    Err(Error::Pkcs11(format!(
+        "the public and private objects labelled \"{label}\" have different \
+         CKA_ID ({} vs {}): they are not one key pair. Remove the stray \
+         object or regenerate the pair",
+        hex_bytes(private_id),
+        hex_bytes(public_id)
+    )))
+}
+
+fn hex_bytes(b: &[u8]) -> String {
+    if b.is_empty() {
+        return "empty".to_string();
+    }
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 /// Token labels are 32 bytes, space-padded, never NUL-terminated.
@@ -767,6 +820,27 @@ mod tests {
         assert!(parse_ec_point(&[1u8; 33]).is_err());
         assert!(parse_ec_point(&[0x04, 0x21, 0x00]).is_err());
         assert!(parse_ec_point(&[]).is_err());
+    }
+
+    #[test]
+    fn an_ambiguous_token_label_is_refused_not_resolved_by_order() {
+        let tokens = vec![
+            (3, "sealing".to_string()),
+            (7, "sealing".to_string()),
+            (9, "other".to_string()),
+        ];
+        let e = pick_slot(&TokenSelector::Label("sealing".to_string()), &tokens).unwrap_err();
+        assert!(e.to_string().contains("several tokens labelled"), "{e}");
+        assert_eq!(pick_slot(&TokenSelector::Label("other".to_string()), &tokens).unwrap(), 9);
+        assert!(pick_slot(&TokenSelector::Label("none".to_string()), &tokens).is_err());
+    }
+
+    #[test]
+    fn halves_of_a_pair_must_share_their_id() {
+        check_same_pair(&[1], &[1], "k").unwrap();
+        check_same_pair(&[], &[], "k").unwrap();
+        let e = check_same_pair(&[1], &[2], "k").unwrap_err();
+        assert!(e.to_string().contains("CKA_ID (01 vs 02)"), "{e}");
     }
 
     #[test]

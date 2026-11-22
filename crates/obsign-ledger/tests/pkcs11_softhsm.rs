@@ -118,6 +118,20 @@ fn seals_through_a_real_token() {
         );
     }
 
+    // A public object that shares the label but not the CKA_ID is not this
+    // private key's other half. Provisioned by the env script.
+    if let Ok(mismatch) = std::env::var("OBSIGN_TEST_PKCS11_MISMATCH_LABEL") {
+        let e = Pkcs11Sealer::open(
+            &env.module,
+            &TokenSelector::Only,
+            &env.pin,
+            &mismatch,
+            "seal-hsm",
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("CKA_ID"), "mismatched pair not refused: {e}");
+    }
+
     // Selecting a token that does not exist lists what does.
     let e = Pkcs11Sealer::open(
         &env.module,
@@ -194,6 +208,12 @@ fn cli_seals_with_hsm_flags() {
     let store_dir = tmpdir("cli-store");
     let pin_file = tmpdir("cli-pin").with_extension("txt");
     std::fs::write(&pin_file, format!("{}\n", env.pin)).unwrap();
+    // Owner-only, or the ledger refuses it: a PIN others can read is a leak.
+    std::fs::set_permissions(
+        &pin_file,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )
+    .unwrap();
 
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_obsign-ledger"))
         .args(["seal", "--chain-id", "c1"])

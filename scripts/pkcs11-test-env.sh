@@ -31,6 +31,7 @@ export OBSIGN_TEST_PKCS11_MODULE="$_obsign_module"
 export OBSIGN_TEST_PKCS11_PIN="123456"
 export OBSIGN_TEST_PKCS11_KEY_LABEL="seal-test"
 export OBSIGN_TEST_PKCS11_P256_LABEL="seal-test-p256"
+export OBSIGN_TEST_PKCS11_MISMATCH_LABEL="seal-test-mismatch"
 
 softhsm2-util --init-token --free --label obsign-test \
     --so-pin 12345678 --pin "$OBSIGN_TEST_PKCS11_PIN" >/dev/null \
@@ -46,6 +47,15 @@ pkcs11-tool --module "$OBSIGN_TEST_PKCS11_MODULE" --login \
     --pin "$OBSIGN_TEST_PKCS11_PIN" --keypairgen \
     --key-type EC:prime256v1 --label "$OBSIGN_TEST_PKCS11_P256_LABEL" >/dev/null 2>&1 \
     || _obsign_die "P-256 keygen failed" || return 1
+# A pair whose public half is re-id'd: same label, different CKA_ID, which
+# the tests use to prove a label alone does not bind a public key.
+pkcs11-tool --module "$OBSIGN_TEST_PKCS11_MODULE" --login \
+    --pin "$OBSIGN_TEST_PKCS11_PIN" --keypairgen --id 01 \
+    --key-type EC:edwards25519 --label "$OBSIGN_TEST_PKCS11_MISMATCH_LABEL" >/dev/null 2>&1 \
+    || _obsign_die "mismatch keygen failed" || return 1
+pkcs11-tool --module "$OBSIGN_TEST_PKCS11_MODULE" --login \
+    --pin "$OBSIGN_TEST_PKCS11_PIN" --set-id 02 --id 01 --type pubkey >/dev/null 2>&1 \
+    || _obsign_die "re-id of the mismatch public key failed" || return 1
 
 echo "pkcs11-test-env: token ready — SOFTHSM2_CONF=$SOFTHSM2_CONF" >&2
 echo "pkcs11-test-env: module $OBSIGN_TEST_PKCS11_MODULE" >&2

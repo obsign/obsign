@@ -2,6 +2,8 @@ use obsign_audit_core::record::PrincipalKind;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::Error;
+
 /// Where to find each piece of information inside the token.
 ///
 /// No two providers put the same things in the same place:
@@ -111,23 +113,37 @@ fn resolve<'a>(root: &'a Value, path: &str) -> Vec<&'a Value> {
 ///
 /// Accepts both shapes seen in practice: a space-separated string (`scope` in
 /// Keycloak) or an array (`scp` in Entra ID).
+///
+/// Only a top-level string is split. An array element is one exact name:
+/// splitting it turns a directory group `"Domain Admins"` into the two groups
+/// `Domain` and `Admins`, and a policy granting either one to whoever holds it.
 fn flatten(v: &Value, out: &mut Vec<String>) {
     match v {
         Value::String(s) => out.extend(s.split_whitespace().map(String::from)),
-        Value::Array(a) => {
-            for item in a {
-                flatten(item, out);
-            }
-        }
+        Value::Array(a) => flatten_items(a, out),
         _ => {}
     }
 }
 
+fn flatten_items(a: &[Value], out: &mut Vec<String>) {
+    for item in a {
+        match item {
+            Value::String(s) => out.push(s.clone()),
+            Value::Array(inner) => flatten_items(inner, out),
+            _ => {}
+        }
+    }
+}
+
 impl ClaimMap {
+    /// The principal's identifier. An empty or blank one is no answer: it
+    /// would record a delegation granted by nobody, and every token with an
+    /// empty `sub` would share one principal.
     pub fn subject(&self, claims: &Value) -> Option<String> {
         resolve(claims, &self.subject)
             .first()
             .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
             .map(String::from)
     }
 
@@ -293,25 +309,34 @@ impl MachineMarkers {
 /// names the actor actually acting, and nesting `act` describes multi-hop
 /// delegation. The returned chain runs from outermost (the agent acting now)
 /// to innermost (the original principal).
+///
+/// A malformed `act` is refused, never read around: an actor without a
+/// string `sub` (`{}`, `{"client_id": ..}`, `{"sub": 123}`) would otherwise
+/// drop out of the chain and leave a delegated token classified `Human` at
+/// depth 0, and a chain deeper than [`MAX_ACT_DEPTH`] would be recorded
+/// truncated, the actors past the bound silently gone from the record.
 pub fn actor_chain(
     claims: &Value,
     subject: &str,
     client_id: Option<&str>,
     markers: &MachineMarkers,
-) -> (Vec<String>, PrincipalKind) {
+) -> Result<(Vec<String>, PrincipalKind), Error> {
     let mut chain = Vec::new();
     let mut node = claims.get("act");
-    let mut depth = 0;
 
     while let Some(act) = node {
-        if depth >= MAX_ACT_DEPTH {
-            break;
+        if chain.len() >= MAX_ACT_DEPTH {
+            return Err(Error::MalformedDelegation(format!(
+                "act nested deeper than {MAX_ACT_DEPTH}"
+            )));
         }
-        if let Some(s) = act.get("sub").and_then(Value::as_str) {
-            chain.push(s.to_string());
-        }
+        let Some(s) = act.get("sub").and_then(Value::as_str).filter(|s| !s.is_empty()) else {
+            return Err(Error::MalformedDelegation(
+                "an act claim carries no string sub".into(),
+            ));
+        };
+        chain.push(s.to_string());
         node = act.get("act");
-        depth += 1;
     }
 
     chain.push(subject.to_string());
@@ -330,7 +355,7 @@ pub fn actor_chain(
         (false, false) => PrincipalKind::Human,
     };
 
-    (chain, kind)
+    Ok((chain, kind))
 }
 
 #[cfg(test)]
@@ -340,7 +365,7 @@ mod tests {
 
     /// Default markers (what every deployment gets without configuration).
     fn chain(c: &Value, sub: &str, cid: Option<&str>) -> (Vec<String>, PrincipalKind) {
-        actor_chain(c, sub, cid, &MachineMarkers::default())
+        actor_chain(c, sub, cid, &MachineMarkers::default()).unwrap()
     }
 
     #[test]
@@ -367,6 +392,20 @@ mod tests {
         let m = ClaimMap::default();
         assert_eq!(m.scopes(&json!({ "scope": "a b c" })), vec!["a", "b", "c"]);
         assert_eq!(m.scopes(&json!({ "scp": ["b", "a"] })), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn group_names_in_an_array_are_not_split() {
+        let m = ClaimMap::default();
+        let g = m.groups(&json!({ "groups": ["Domain Admins", "dba"] }));
+        assert_eq!(g, vec!["Domain Admins", "dba"]);
+        // A space-delimited `scope` string is still a list.
+        assert_eq!(
+            m.scopes(&json!({ "scope": "read write" })),
+            vec!["read", "write"]
+        );
+        // An `scp` array element is one exact scope.
+        assert_eq!(m.scopes(&json!({ "scp": ["a b"] })), vec!["a b"]);
     }
 
     #[test]
@@ -472,7 +511,7 @@ mod tests {
             path: "/token_use".into(),
             value: "m2m".into(),
         });
-        let (_, kind) = actor_chain(&c, "svc-42", Some("some-client"), &m);
+        let (_, kind) = actor_chain(&c, "svc-42", Some("some-client"), &m).unwrap();
         assert_eq!(kind, PrincipalKind::Machine);
     }
 
@@ -487,7 +526,7 @@ mod tests {
             path: "/ext/*/login".into(),
             value: "robot-".into(),
         });
-        let (_, kind) = actor_chain(&c, "x1", None, &m);
+        let (_, kind) = actor_chain(&c, "x1", None, &m).unwrap();
         assert_eq!(kind, PrincipalKind::Machine);
     }
 
@@ -501,18 +540,53 @@ mod tests {
             subject_is_client: false,
             ..MachineMarkers::default()
         };
-        let (_, kind) = actor_chain(&c, "portal", Some("portal"), &m);
+        let (_, kind) = actor_chain(&c, "portal", Some("portal"), &m).unwrap();
         assert_eq!(kind, PrincipalKind::Human);
+    }
+
+    fn nested(depth: usize) -> Value {
+        let mut act = json!({ "sub": "a0" });
+        for i in 1..depth {
+            act = json!({ "sub": format!("a{i}"), "act": act });
+        }
+        json!({ "sub": "u:marie", "act": act })
     }
 
     #[test]
     fn act_nesting_is_bounded() {
-        let mut act = json!({ "sub": "a0" });
-        for i in 1..50 {
-            act = json!({ "sub": format!("a{i}"), "act": act });
+        let ok = actor_chain(&nested(MAX_ACT_DEPTH), "u:marie", None, &MachineMarkers::default())
+            .unwrap();
+        assert_eq!(ok.0.len(), MAX_ACT_DEPTH + 1);
+        assert_eq!(ok.1, PrincipalKind::DelegatedHuman);
+    }
+
+    #[test]
+    fn act_nesting_past_the_bound_is_refused_not_truncated() {
+        for depth in [MAX_ACT_DEPTH + 1, 50] {
+            let r = actor_chain(&nested(depth), "u:marie", None, &MachineMarkers::default());
+            assert!(
+                matches!(r, Err(Error::MalformedDelegation(_))),
+                "depth {depth} accepted: {r:?}"
+            );
         }
-        let c = json!({ "sub": "u:marie", "act": act });
-        let (chain, _) = chain(&c, "u:marie", None);
-        assert!(chain.len() <= MAX_ACT_DEPTH + 1, "nesting is not bounded");
+    }
+
+    #[test]
+    fn act_without_a_string_sub_is_refused_not_downgraded() {
+        for act in [
+            json!({}),
+            json!({ "client_id": "support-copilot" }),
+            json!({ "sub": 123 }),
+            json!({ "sub": "" }),
+            json!("support-copilot"),
+            json!({ "sub": "agent-b", "act": { "client_id": "agent-a" } }),
+        ] {
+            let c = json!({ "sub": "u:marie", "act": act });
+            let r = actor_chain(&c, "u:marie", None, &MachineMarkers::default());
+            assert!(
+                matches!(r, Err(Error::MalformedDelegation(_))),
+                "{act} accepted: {r:?}"
+            );
+        }
     }
 }

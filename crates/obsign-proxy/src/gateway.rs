@@ -167,6 +167,105 @@ fn self_access(ctx: &Ctx, method: String, params: &[u8]) -> Payload {
     })
 }
 
+/// Records a message refused before it could be read as an act: the
+/// call/decision/effect triple of a gateway-scope denial, against the server
+/// itself, with the raw bytes hashed.
+///
+/// Stated once because every such message is the same decision: something
+/// crossed the boundary that the gateway cannot arbitrate, so it goes no
+/// further, and the log still says it was attempted.
+fn record_refused(
+    s: &mut session::Session,
+    ctx: &Ctx,
+    label: &str,
+    raw: &[u8],
+    reason: &str,
+) -> Result<(), obsign_wal::Error> {
+    let call_id = s.next_call_id();
+    let parent = s.agent_record_id.clone();
+    let decision_id = format!("dec-{}", s.counter);
+    let effect_id = format!("eff-{}", s.counter);
+    s.write(call_id.clone(), Some(parent), self_access(ctx, label.to_string(), raw))?;
+    s.write(
+        decision_id.clone(),
+        Some(call_id),
+        Payload::Decision(DecisionRec {
+            outcome: Outcome::Deny,
+            policy_id: None,
+            bundle_version: ctx.bundle_version.clone(),
+            reason: Some(reason.to_string()),
+        }),
+    )?;
+    s.write(
+        effect_id,
+        Some(decision_id),
+        Payload::Effect(Effect {
+            status: EffectStatus::Blocked,
+            result_hash: None,
+            latency_ms: 0,
+        }),
+    )?;
+    Ok(())
+}
+
+/// A line from the agent that is not JSON.
+///
+/// Never relayed: the gateway cannot say what it asks for, and a server
+/// whose parser is more lenient than ours (trailing commas, comments, JSON5)
+/// could read a `tools/call` in it that no policy saw and no record names.
+/// Recorded, then answered with the standard parse error.
+pub(crate) fn unreadable_from_agent(
+    raw: &str,
+    state: &Arc<Mutex<session::Session>>,
+    ctx: &Ctx,
+) -> Result<Forward> {
+    let mut s = state.lock().unwrap();
+    record_refused(
+        &mut s,
+        ctx,
+        "(unparsable message)",
+        raw.as_bytes(),
+        "message is not valid JSON (default-deny)",
+    )?;
+    drop(s);
+    eprintln!("[obsign] REFUSED unparsable message from the agent");
+    Ok(Forward::Reply(
+        json!({
+            "jsonrpc": "2.0",
+            "id": Value::Null,
+            "error": { "code": -32700, "message": "Parse error: message is not valid JSON" }
+        })
+        .to_string(),
+    ))
+}
+
+/// A message from the server that is not a single JSON object: a line that
+/// does not parse, or a batch.
+///
+/// Never delivered, for the same parser-differential reason as
+/// [`unreadable_from_agent`]; a batch in particular would carry listings and
+/// server-initiated requests past the filters, which read one object at a
+/// time. Nothing can be answered, so the record is the only trace.
+pub(crate) fn unreadable_from_server(
+    raw: &str,
+    state: &Arc<Mutex<session::Session>>,
+    ctx: &Ctx,
+) -> Downstream {
+    let mut s = state.lock().unwrap();
+    if let Err(e) = record_refused(
+        &mut s,
+        ctx,
+        "(unreadable server message)",
+        raw.as_bytes(),
+        "server message is not a single JSON object (default-deny)",
+    ) {
+        eprintln!("[obsign] audit write failed while refusing a server message: {e}");
+    }
+    drop(s);
+    eprintln!("[obsign] DROPPED server message that is not a single JSON object");
+    Downstream::Drop
+}
+
 pub(crate) fn spawn_server(cmd: &[String]) -> Result<Child> {
     let (prog, args) = cmd.split_first().expect("non-empty command");
     Command::new(prog)
@@ -207,10 +306,10 @@ pub(crate) fn handle_from_agent(
                 if let Some(p) = s.pending_to_agent.remove(&key) {
                     let result = msg.get("result");
                     let is_error = msg.get("error").is_some();
-                    let _ = s.write(
+                    s.write_effect(
                         p.effect_record_id,
-                        Some(p.decision_record_id),
-                        Payload::Effect(Effect {
+                        p.decision_record_id,
+                        Effect {
                             status: if is_error {
                                 EffectStatus::Error
                             } else {
@@ -219,7 +318,7 @@ pub(crate) fn handle_from_agent(
                             result_hash: result
                                 .map(|r| content_hash(r.to_string().as_bytes())),
                             latency_ms: p.started.elapsed().as_millis() as u64,
-                        }),
+                        },
                     );
                     return Ok(Forward::Pass(raw));
                 }
@@ -230,36 +329,12 @@ pub(crate) fn handle_from_agent(
 
             // Unsolicited. The record is written before the refusal, and a
             // WAL failure refuses too, the `?` propagates like any act's.
-            let call_id = s.next_call_id();
-            let parent = s.agent_record_id.clone();
-            let decision_id = format!("dec-{}", s.counter);
-            let effect_id = format!("eff-{}", s.counter);
-            s.write(
-                call_id.clone(),
-                Some(parent),
-                self_access(ctx, "(unsolicited response)".to_string(), raw.as_bytes()),
-            )?;
-            s.write(
-                decision_id.clone(),
-                Some(call_id),
-                Payload::Decision(DecisionRec {
-                    outcome: Outcome::Deny,
-                    policy_id: None,
-                    bundle_version: ctx.bundle_version.clone(),
-                    reason: Some(
-                        "response matches no in-flight server request (default-deny)"
-                            .to_string(),
-                    ),
-                }),
-            )?;
-            s.write(
-                effect_id,
-                Some(decision_id),
-                Payload::Effect(Effect {
-                    status: EffectStatus::Blocked,
-                    result_hash: None,
-                    latency_ms: 0,
-                }),
+            record_refused(
+                &mut s,
+                ctx,
+                "(unsolicited response)",
+                raw.as_bytes(),
+                "response matches no in-flight server request (default-deny)",
             )?;
             drop(s);
             eprintln!("[obsign] REFUSED unsolicited response-shaped message");
@@ -344,7 +419,62 @@ pub(crate) fn handle_from_agent(
                 },
             }
         }
-        m if machinery(m) => return Ok(Forward::Pass(raw)),
+        m if machinery(m) => {
+            // Unarbitrated, but not outside the id discipline: forwarded
+            // under an id an act is waiting on, its response would close
+            // that act's effect with a listing for a result.
+            if let Some(id) = msg.get("id").filter(|v| !v.is_null()) {
+                let key = id.to_string();
+                let mut s = state.lock().unwrap();
+                if s.pending.contains_key(&key) || !s.machinery_in_flight.insert(key) {
+                    drop(s);
+                    eprintln!("[obsign] REFUSED {m}: JSON-RPC id {id} is already in flight");
+                    return Ok(Forward::Reply(
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {
+                                "code": -32600,
+                                "message": format!(
+                                    "Invalid Request: JSON-RPC id {id} is already \
+                                     awaiting a response on this session"
+                                )
+                            }
+                        })
+                        .to_string(),
+                    ));
+                }
+            }
+            // The agent gives up on a request it sent: the request leaves
+            // the in-flight sets, or its id stays taken for the session's
+            // life and the act stays open in the log. An act's effect closes
+            // as `Error`: it was forwarded, so `Blocked` (never reached the
+            // server) would be false, and it did not complete, whatever the
+            // server did with it before the cancellation landed. A response
+            // arriving after all matches nothing and closes nothing, as the
+            // protocol asks of a cancelled request.
+            if m == "notifications/cancelled" {
+                if let Some(rid) = params.get("requestId").filter(|v| !v.is_null()) {
+                    let key = rid.to_string();
+                    let mut s = state.lock().unwrap();
+                    match s.pending.remove(&key) {
+                        Some(p) => s.write_effect(
+                            p.effect_record_id,
+                            p.decision_record_id,
+                            Effect {
+                                status: EffectStatus::Error,
+                                result_hash: None,
+                                latency_ms: p.started.elapsed().as_millis() as u64,
+                            },
+                        ),
+                        None => {
+                            s.machinery_in_flight.remove(&key);
+                        }
+                    }
+                }
+            }
+            return Ok(Forward::Pass(raw));
+        }
         other => Act::OutOfScope {
             method: other.to_string(),
         },
@@ -509,48 +639,48 @@ pub(crate) fn handle_from_agent(
             );
         }
         if !id.is_null() {
-            match s.pending.entry(id.to_string()) {
-                // The agent reused a JSON-RPC id while its first call is
-                // still in flight. Overwriting the slot would leave two
-                // forwarded calls waiting on one id: whichever response
-                // arrives first would close the wrong Effect record and the
-                // displaced one would never be written. The in-flight call
-                // keeps its slot; this one is refused, with its own Effect,
-                // so every recorded call still ends in exactly one effect.
-                std::collections::hash_map::Entry::Occupied(_) => {
-                    s.write(
-                        effect_id,
-                        Some(decision_id),
-                        Payload::Effect(Effect {
-                            status: EffectStatus::Blocked,
-                            result_hash: None,
-                            latency_ms: 0,
-                        }),
-                    )?;
-                    drop(s);
-                    eprintln!(
-                        "[obsign] REFUSED {}: JSON-RPC id {id} is already in flight",
-                        act.label()
-                    );
-                    return Ok(Forward::Reply(refusal_reply(
-                        &act,
-                        &id,
-                        &format!(
-                            "Call refused: JSON-RPC id {id} is already \
-                             awaiting a response on this session"
-                        ),
-                    )));
-                }
-                std::collections::hash_map::Entry::Vacant(slot) => {
-                    slot.insert(Pending {
-                        decision_record_id: decision_id,
-                        effect_record_id: effect_id,
-                        started: Instant::now(),
-                    });
-                }
+            let key = id.to_string();
+            if s.pending.contains_key(&key) || s.machinery_in_flight.contains(&key) {
+                // The agent reused a JSON-RPC id while its first call, or a
+                // machinery request, is still in flight. Overwriting the
+                // slot would leave two forwarded requests waiting on one id:
+                // whichever response arrives first would close the wrong
+                // Effect record and the displaced one would never be
+                // written. The in-flight request keeps its slot; this one is
+                // refused, with its own Effect, so every recorded call still
+                // ends in exactly one effect.
+                s.write(
+                    effect_id,
+                    Some(decision_id),
+                    Payload::Effect(Effect {
+                        status: EffectStatus::Blocked,
+                        result_hash: None,
+                        latency_ms: 0,
+                    }),
+                )?;
+                drop(s);
+                eprintln!(
+                    "[obsign] REFUSED {}: JSON-RPC id {id} is already in flight",
+                    act.label()
+                );
+                return Ok(Forward::Reply(refusal_reply(
+                    &act,
+                    &id,
+                    &format!(
+                        "Call refused: JSON-RPC id {id} is already \
+                         awaiting a response on this session"
+                    ),
+                )));
             }
-        }
-        return Ok(Forward::Pass(raw));
+            s.pending.insert(
+                key,
+                Pending {
+                    decision_record_id: decision_id,
+                    effect_record_id: effect_id,
+                    started: Instant::now(),
+                },
+            );
+        }        return Ok(Forward::Pass(raw));
     }
 
     // Refusal: the effect is immediate and final.
@@ -656,6 +786,12 @@ pub(crate) fn handle_from_server(
     ctx: &Ctx,
     session_id: &str,
 ) -> Downstream {
+    // Everything below reads one object at a time; anything else would pass
+    // the filters untouched, because `get` on an array finds nothing.
+    if !msg.is_object() {
+        return unreadable_from_server(&msg.to_string(), state, ctx);
+    }
+
     // A method means this is not a response: the server is speaking first.
     // Routed before the response-matching below, a server-initiated request
     // carries an id from the *server's* id space, and matching it against
@@ -667,7 +803,17 @@ pub(crate) fn handle_from_server(
     // Response to an allowed call: we record what actually happened, not
     // what was requested.
     if let Some(key) = msg.get("id").map(|v| v.to_string()) {
-        let pending = state.lock().unwrap().pending.remove(&key);
+        let pending = {
+            let mut s = state.lock().unwrap();
+            let p = s.pending.remove(&key);
+            // Not an act's response: maybe a machinery one, whose id is free
+            // again. Never both, the agent side refuses the second of two
+            // requests sharing an id.
+            if p.is_none() {
+                s.machinery_in_flight.remove(&key);
+            }
+            p
+        };
         if let Some(p) = pending {
             let result = msg.get("result");
             let is_error = msg.get("error").is_some()
@@ -677,10 +823,10 @@ pub(crate) fn handle_from_server(
                     .unwrap_or(false);
 
             let mut s = state.lock().unwrap();
-            let _ = s.write(
+            s.write_effect(
                 p.effect_record_id,
-                Some(p.decision_record_id),
-                Payload::Effect(Effect {
+                p.decision_record_id,
+                Effect {
                     status: if is_error {
                         EffectStatus::Error
                     } else {
@@ -688,7 +834,7 @@ pub(crate) fn handle_from_server(
                     },
                     result_hash: result.map(|r| content_hash(r.to_string().as_bytes())),
                     latency_ms: p.started.elapsed().as_millis() as u64,
-                }),
+                },
             );
         }
     }
@@ -739,6 +885,11 @@ pub(crate) fn handle_from_server(
         }),
     ];
 
+    // Every listing the result carries is filtered, not just the first one
+    // found: nothing obliges a server to answer `tools/list` with tools
+    // alone, and a `resources` array riding along a tools listing would
+    // otherwise reach the agent whole.
+    let mut filtered = msg.clone();
     for (pointer, id_field, label, allows) in listings {
         let Some(items) = msg.pointer(pointer).and_then(Value::as_array) else {
             continue;
@@ -768,14 +919,12 @@ pub(crate) fn handle_from_server(
             );
         }
 
-        let mut filtered = msg.clone();
         if let Some(slot) = filtered.pointer_mut(pointer) {
             *slot = Value::Array(kept);
         }
-        return Downstream::Forward(filtered);
     }
 
-    Downstream::Forward(msg)
+    Downstream::Forward(filtered)
 }
 
 /// Arbitrates the channels the *server* opens: `sampling/createMessage`
@@ -814,9 +963,7 @@ fn handle_server_initiated(
             // check: relayed machinery earns a relayed answer, nothing more.
             if let Some(id) = msg.get("id").filter(|v| !v.is_null()) {
                 let mut s = state.lock().unwrap();
-                if s.relayed_to_agent.len() < 1024 {
-                    s.relayed_to_agent.insert(id.to_string());
-                }
+                s.relayed_to_agent.insert(id.to_string());
             }
             return Downstream::Forward(msg);
         }
@@ -918,14 +1065,14 @@ fn handle_server_initiated(
                 // request keeps its slot, the newcomer is refused with its
                 // own effect, and no recorded call is left without one.
                 std::collections::hash_map::Entry::Occupied(_) => {
-                    let _ = s.write(
+                    s.write_effect(
                         effect_id,
-                        Some(decision_id),
-                        Payload::Effect(Effect {
+                        decision_id,
+                        Effect {
                             status: EffectStatus::Blocked,
                             result_hash: None,
                             latency_ms: 0,
-                        }),
+                        },
                     );
                     drop(s);
                     eprintln!(
@@ -950,14 +1097,14 @@ fn handle_server_initiated(
         return Downstream::Forward(msg);
     }
 
-    let _ = s.write(
+    s.write_effect(
         effect_id,
-        Some(decision_id),
-        Payload::Effect(Effect {
+        decision_id,
+        Effect {
             status: EffectStatus::Blocked,
             result_hash: None,
             latency_ms: 0,
-        }),
+        },
     );
     drop(s);
 
@@ -1047,10 +1194,10 @@ fn arbitrate_notification(
     }
 
     let allowed = verdict.is_allowed();
-    let _ = s.write(
+    s.write_effect(
         effect_id,
-        Some(decision_id),
-        Payload::Effect(Effect {
+        decision_id,
+        Effect {
             status: if allowed {
                 EffectStatus::Ok
             } else {
@@ -1058,7 +1205,7 @@ fn arbitrate_notification(
             },
             result_hash: None,
             latency_ms: 0,
-        }),
+        },
     );
     drop(s);
 
@@ -1179,6 +1326,192 @@ mod tests {
             recs.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids.len(), recs.len(), "record identifiers must stay unique");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_effect_that_cannot_be_written_is_reported() {
+        // The response came back, the act happened; when its effect could
+        // not be written, `let _ = s.write(…)` dropped the error on the
+        // floor and the log read as if the response never came.
+        let (dir, state) = open_state("lost-effect");
+        let ctx = ctx();
+
+        let call = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                           "params": { "name": "search_docs", "arguments": {} } });
+        assert!(matches!(
+            handle_from_agent(call, &state, &ctx, None).unwrap(),
+            Forward::Pass(_)
+        ));
+
+        // The disk fails between the call and its response.
+        state.lock().unwrap().poisoned = true;
+        let resp = json!({ "jsonrpc": "2.0", "id": 1, "result": { "content": [] } });
+        let _ = handle_from_server(resp, &state, &ctx, "sess");
+
+        let report = state.lock().unwrap().closing_report();
+        assert!(
+            report.contains("AUDIT GAP: 1 effect record"),
+            "the lost effect must be reported, got: {report}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn machinery_cannot_share_an_id_with_an_act_in_flight() {
+        // `tools/call` id 5, then `tools/list` id 5: the listing passed
+        // untracked, and whichever response came back first closed the
+        // call's effect, a listing recorded as the call's outcome.
+        let (dir, state) = open_state("machinery-id");
+        let ctx = ctx();
+        let call = |id: u64| {
+            json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                    "params": { "name": "search_docs", "arguments": {} } })
+        };
+        let list = |id: u64| json!({ "jsonrpc": "2.0", "id": id, "method": "tools/list" });
+
+        // Act first, then machinery under its id.
+        assert!(matches!(
+            handle_from_agent(call(5), &state, &ctx, None).unwrap(),
+            Forward::Pass(_)
+        ));
+        match handle_from_agent(list(5), &state, &ctx, None).unwrap() {
+            Forward::Reply(r) => assert!(r.contains("already"), "got: {r}"),
+            Forward::Pass(_) => panic!("machinery must not reuse an act's id in flight"),
+        }
+
+        // Machinery first, then an act under its id: the act is refused,
+        // with its own effect.
+        assert!(matches!(
+            handle_from_agent(list(6), &state, &ctx, None).unwrap(),
+            Forward::Pass(_)
+        ));
+        match handle_from_agent(call(6), &state, &ctx, None).unwrap() {
+            Forward::Reply(r) => assert!(r.contains("already"), "got: {r}"),
+            Forward::Pass(_) => panic!("an act must not reuse a listing's id in flight"),
+        }
+
+        // The listing's response frees its id without touching any effect;
+        // the call's response closes the call.
+        let listing = json!({ "jsonrpc": "2.0", "id": 6, "result": { "tools": [] } });
+        let _ = handle_from_server(listing, &state, &ctx, "sess");
+        let resp = json!({ "jsonrpc": "2.0", "id": 5, "result": { "content": [] } });
+        let _ = handle_from_server(resp, &state, &ctx, "sess");
+        assert!(matches!(
+            handle_from_agent(list(6), &state, &ctx, None).unwrap(),
+            Forward::Pass(_)
+        ), "an answered id is free again");
+
+        let recs = state.lock().unwrap().wal.read_all().unwrap();
+        let effects: Vec<(&str, &EffectStatus)> = recs
+            .iter()
+            .filter_map(|r| match &r.payload {
+                Payload::Effect(e) => Some((r.id.as_str(), &e.status)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            effects,
+            vec![("eff-2", &EffectStatus::Blocked), ("eff-1", &EffectStatus::Ok)]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cancelled_request_closes_its_effect_and_frees_its_id() {
+        // The agent cancels a call the server never answers. The call stayed
+        // pending for the session's life: no effect in the log, and its id
+        // refused forever after.
+        let (dir, state) = open_state("cancelled");
+        let ctx = ctx();
+        let call = json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                           "params": { "name": "search_docs", "arguments": {} } });
+        assert!(matches!(
+            handle_from_agent(call.clone(), &state, &ctx, None).unwrap(),
+            Forward::Pass(_)
+        ));
+
+        let cancel = json!({ "jsonrpc": "2.0", "method": "notifications/cancelled",
+                             "params": { "requestId": 7, "reason": "user gave up" } });
+        assert!(matches!(
+            handle_from_agent(cancel, &state, &ctx, None).unwrap(),
+            Forward::Pass(_)
+        ), "the cancellation itself still reaches the server");
+
+        assert!(
+            matches!(handle_from_agent(call, &state, &ctx, None).unwrap(), Forward::Pass(_)),
+            "a cancelled request's id is free again"
+        );
+
+        let recs = state.lock().unwrap().wal.read_all().unwrap();
+        let first = recs
+            .iter()
+            .find(|r| r.id == "eff-1")
+            .expect("the cancelled call must be closed");
+        assert!(matches!(
+            &first.payload,
+            Payload::Effect(e) if e.status == EffectStatus::Error && e.result_hash.is_none()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn relayed_pings_past_the_cap_still_get_their_pongs_through() {
+        // The set of relayed ids stopped growing at 1024 and was only freed
+        // by a reply: an agent that ignored a thousand pings had every
+        // later, legitimate pong refused for the rest of the session.
+        let (dir, state) = open_state("relayed-cap");
+        let ctx = ctx();
+        let total = session::RelayedIds::CAP as u64 + 10;
+        for i in 0..total {
+            let ping = json!({ "jsonrpc": "2.0", "id": format!("srv-{i}"), "method": "ping" });
+            assert!(matches!(
+                handle_from_server(ping, &state, &ctx, "sess"),
+                Downstream::Forward(_)
+            ));
+        }
+
+        let pong = |i: u64| json!({ "jsonrpc": "2.0", "id": format!("srv-{i}"), "result": {} });
+        assert!(
+            matches!(
+                handle_from_agent(pong(total - 1), &state, &ctx, None).unwrap(),
+                Forward::Pass(_)
+            ),
+            "the latest ping's pong must pass"
+        );
+        // The oldest was forgotten to make room: its late pong is refused.
+        assert!(matches!(
+            handle_from_agent(pong(0), &state, &ctx, None).unwrap(),
+            Forward::Reply(_)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_listing_in_a_result_is_filtered() {
+        // The filter returned after the first listing it found: a server
+        // answering with `tools` *and* `resources` had the resources reach
+        // the agent unfiltered, names the policy hides included.
+        let (dir, state) = open_state("listings");
+        let ctx = ctx_with(
+            "@id(\"allow_tools\")\n\
+             permit (principal, action == Action::\"tool_call\", resource);\n",
+        );
+        let resp = json!({ "jsonrpc": "2.0", "id": 3, "result": {
+            "tools": [ { "name": "search_docs" } ],
+            "resources": [ { "uri": "db://prod/customers", "name": "Customer table dump" } ],
+            "prompts": [ { "name": "summarize" } ]
+        }});
+        let Downstream::Forward(out) = handle_from_server(resp, &state, &ctx, "sess") else {
+            panic!("a listing is delivered, filtered");
+        };
+        assert_eq!(out.pointer("/result/tools").and_then(Value::as_array).map(Vec::len), Some(1));
+        assert_eq!(
+            out.pointer("/result/resources"),
+            Some(&json!([])),
+            "no resource is readable under this policy: {out}"
+        );
+        assert_eq!(out.pointer("/result/prompts"), Some(&json!([])), "{out}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

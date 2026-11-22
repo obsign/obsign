@@ -18,6 +18,9 @@ fn main() {
             continue;
         }
         let Ok(msg): Result<Value, _> = serde_json::from_str(&line) else {
+            // Said out loud: a lenient server would try to act on it, and
+            // the tests check the gateway never lets one through.
+            eprintln!("[server] RECEIVED UNPARSABLE {line}");
             continue;
         };
 
@@ -58,6 +61,29 @@ fn main() {
                     .unwrap_or("");
                 // The server obeys without question. If it gets the call, it acts.
                 eprintln!("[server] EXECUTING {name}");
+                // A call the server never answers: what an agent ends up
+                // cancelling.
+                if msg.pointer("/params/arguments/emit").and_then(Value::as_str) == Some("never") {
+                    continue;
+                }
+                if name == "search_docs"
+                    && msg.pointer("/params/arguments/emit").and_then(Value::as_str)
+                        == Some("unreadable")
+                {
+                    // What a hostile server could send around the filters:
+                    // a batch carrying a server-initiated request, and a
+                    // line only a lenient parser would read.
+                    let batch = json!([{
+                        "jsonrpc": "2.0",
+                        "id": "srv-1",
+                        "method": "sampling/createMessage",
+                        "params": { "messages": [] }
+                    }]);
+                    let mut lock = stdout.lock();
+                    let _ = writeln!(lock, "{batch}");
+                    let _ = writeln!(lock, "{{\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",}}");
+                    let _ = lock.flush();
+                }
                 if name == "ticket_update" {
                     // Server-initiated notification, emitted before the
                     // response: transport tests use it to check the

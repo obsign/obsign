@@ -55,6 +55,13 @@ pub enum Error {
     #[error("unsupported or forbidden algorithm: {0}")]
     UnsupportedAlgorithm(String),
 
+    #[error("rsa key \"{0}\" has a modulus under 2048 bits")]
+    WeakRsaKey(String),
+
+    #[error("this bundle carries key use restrictions its signature does not \
+             cover: recompile it as obsign-identity/4")]
+    UnsignedKeyUse,
+
     #[error("kid \"{0}\" appears more than once in the jwks")]
     DuplicateKid(String),
 
@@ -74,8 +81,17 @@ pub enum Error {
     #[error("the token carries no subject at the configured path")]
     MissingSubject,
 
+    #[error("the token carries no string iss claim")]
+    MissingIssuer,
+
+    #[error("malformed delegation: {0}")]
+    MalformedDelegation(String),
+
     #[error("the token carries no exp claim")]
     MissingExpiry,
+
+    #[error("the token's {0} claim is out of range")]
+    ClaimOutOfRange(&'static str),
 
     #[error("invalid identity bundle signature")]
     BadBundleSignature,
@@ -84,13 +100,31 @@ pub enum Error {
     UnknownBundleFormat(String),
 
     #[error("a obsign-identity/1 bundle carries machine markers its signature \
-             does not cover: recompile it as obsign-identity/3")]
+             does not cover: recompile it as obsign-identity/4")]
     UnsignedMachineMarkers,
 
     #[error("this bundle carries display-label paths its signature does not \
-             cover: recompile it as obsign-identity/3")]
+             cover: recompile it as obsign-identity/4")]
     UnsignedLabelPaths,
+
+    #[error("this bundle carries an epoch its signature does not cover: \
+             recompile it as obsign-identity/4")]
+    UnsignedEpoch,
+
+    #[error("identity bundle epoch {offered} is older than the one in force \
+             ({in_force}): refusing a rollback")]
+    BundleRollback { in_force: u64, offered: u64 },
 
     #[error("identity bundle signed with key \"{0}\", absent from the trusted keys")]
     UnknownBundleKey(String),
+
+    #[error("trusted key \"{0}\" is unusable: {1}")]
+    UnusableBundleKey(String, String),
+
+    #[error("trusted key id \"{0}\" is bound to more than one key")]
+    DuplicateTrustedKey(String),
+
+    #[error("identity bundle signed with key \"{0}\", whose role is {1}: \
+             only the ops key signs identity bundles")]
+    BundleKeyRole(String, String),
 }

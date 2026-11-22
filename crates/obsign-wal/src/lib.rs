@@ -57,6 +57,17 @@ pub enum Error {
          refusing to resume on top of a record no trusted gateway wrote"
     )]
     ForeignRecord { seq: u64, reason: String },
+
+    /// An earlier append failed, so this log takes no more records.
+    ///
+    /// A failed write or fsync leaves the file in a state nobody can name:
+    /// a partial line, or a whole one whose durability is unknown. The next
+    /// record would either glue itself onto the torn prefix (a corrupt line
+    /// in the middle of the log for good) or chain onto a `prev_hash` the
+    /// disk may never hold. Only a reopen, which replays and trims, restores
+    /// a head that is known to be on disk.
+    #[error("an earlier write to this log failed: no further record is accepted")]
+    Poisoned,
 }
 
 /// Append-only log, one JSON record per line.
@@ -69,6 +80,8 @@ pub enum Error {
 pub struct Wal {
     file: File,
     path: PathBuf,
+    /// Set by the first failed append, never cleared: see [`Error::Poisoned`].
+    poisoned: bool,
 }
 
 impl Wal {
@@ -194,20 +207,48 @@ impl Wal {
             }
         };
 
-        Ok((Wal { file, path }, writer))
+        Ok((
+            Wal {
+                file,
+                path,
+                poisoned: false,
+            },
+            writer,
+        ))
     }
 
     /// Writes a record and makes it durable.
     ///
     /// The `sync_data` is not negotiable: without it the content stays in the
     /// page cache, and a power cut erases the trace of an act that did happen.
+    ///
+    /// The first failure poisons the log: every later append fails with
+    /// [`Error::Poisoned`], whatever the disk does next. A transient error
+    /// that clears on its own is the dangerous case, not the safe one: the
+    /// records written after it would chain onto one that may not exist.
     pub fn append(&mut self, rec: &SignedRecord) -> Result<(), Error> {
-        let line = serde_json::to_string(rec).expect("serializing a record");
-        self.file.write_all(line.as_bytes())?;
-        self.file.write_all(b"\n")?;
-        self.file.flush()?;
-        self.file.sync_data()?;
+        if self.poisoned {
+            return Err(Error::Poisoned);
+        }
+        let mut line = serde_json::to_string(rec).expect("serializing a record");
+        // One write, record and newline together: a crash can only leave an
+        // unterminated prefix, which `replay` recognises as torn.
+        line.push('\n');
+        let written = self
+            .file
+            .write_all(line.as_bytes())
+            .and_then(|_| self.file.flush())
+            .and_then(|_| self.file.sync_data());
+        if let Err(e) = written {
+            self.poisoned = true;
+            return Err(e.into());
+        }
         Ok(())
+    }
+
+    /// True once an append has failed; see [`Error::Poisoned`].
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
     }
 
     pub fn path(&self) -> &Path {
@@ -261,6 +302,15 @@ fn replay(path: &Path) -> Result<(Vec<SignedRecord>, u64), Error> {
     for (i, line) in reader.lines().enumerate() {
         let line = line?;
         let raw_len = line.len() as u64 + 1; // +1 for the \n
+
+        // No newline: the final line of a write that never completed, so a
+        // record never acknowledged, even when the bytes that made it to
+        // disk happen to parse. Counting it as whole would also put
+        // `good_len` one byte past the end of the file, and the trim in
+        // `open` would then *extend* the log with a NUL.
+        if good_len + raw_len > total {
+            break;
+        }
 
         let rec: SignedRecord = match serde_json::from_str(&line) {
             Ok(r) => r,
@@ -356,6 +406,41 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_append_poisons_the_log() {
+        // A write that fails leaves the file in an unknown state. Accepting
+        // the next record, even once the disk recovers, chains it onto a
+        // record that may never have become durable, or glues it onto a
+        // partial line. Swapping the handle for a read-only one makes the
+        // write fail; swapping a writable one back stands for the disk
+        // recovering.
+        let dir = tmpdir("poisoned");
+        let (mut wal, mut chain) = Wal::open(&dir, "c1").unwrap();
+        let r = chain.append(0, "r0", None, "s", payload(0));
+        wal.append(&SignedRecord::unsigned(r)).unwrap();
+
+        let path = wal.path().to_path_buf();
+        wal.file = File::open(&path).unwrap();
+        let r = chain.append(1, "r1", None, "s", payload(1));
+        assert!(wal.append(&SignedRecord::unsigned(r)).is_err());
+        assert!(wal.is_poisoned());
+
+        wal.file = OpenOptions::new().append(true).open(&path).unwrap();
+        let r = chain.append(2, "r2", None, "s", payload(2));
+        assert!(
+            matches!(wal.append(&SignedRecord::unsigned(r)), Err(Error::Poisoned)),
+            "no record may follow a failed one"
+        );
+
+        // The log on disk stays a valid chain: the head is the last record
+        // actually written, and a reopen resumes on it.
+        drop(wal);
+        let (_wal, chain) = Wal::open(&dir, "c1").unwrap();
+        assert_eq!(chain.next_seq(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn replay_resumes_the_chain_at_the_right_place() {
         let dir = tmpdir("resume");
         let (mut wal, mut chain) = Wal::open(&dir, "c1").unwrap();
@@ -424,6 +509,42 @@ mod tests {
         let r = chain2.append(9, "r2", None, "s", payload(9));
         wal2.append(&SignedRecord::unsigned(r)).unwrap();
         assert_eq!(wal2.read_all().unwrap().len(), 3);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_whole_record_missing_its_newline_is_torn_too() {
+        // Regression: a crash between the record bytes and the newline left
+        // a line that parses. Replay counted it whole, newline included, one
+        // byte past the end of the file; `open` then "trimmed" to that length,
+        // padding the log with a NUL, and the next append glued itself to
+        // it: a corrupt line in the middle of the log, forever.
+        let dir = tmpdir("no-newline");
+        let (mut wal, mut chain) = Wal::open(&dir, "c1").unwrap();
+        let r = chain.append(0, "r0", None, "s", payload(0));
+        wal.append(&SignedRecord::unsigned(r)).unwrap();
+        let path = wal.path().to_path_buf();
+        drop(wal);
+
+        // The record the gateway was writing when it died, minus its newline.
+        let next = chain.append(1, "r1", None, "s", payload(1));
+        let line = serde_json::to_string(&SignedRecord::unsigned(next)).unwrap();
+        let mut f = OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(line.as_bytes()).unwrap();
+        drop(f);
+
+        assert_eq!(read(&dir, "c1").unwrap().len(), 1, "never acknowledged");
+
+        let (mut wal, mut chain) = Wal::open(&dir, "c1").unwrap();
+        assert_eq!(chain.next_seq(), 1);
+        let r = chain.append(2, "r1", None, "s", payload(2));
+        wal.append(&SignedRecord::unsigned(r)).unwrap();
+        drop(wal);
+
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(!bytes.contains(&0), "the log was padded with a NUL");
+        assert_eq!(read(&dir, "c1").unwrap().len(), 2);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

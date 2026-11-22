@@ -270,15 +270,10 @@ fn make_sealer(args: &SealArgs) -> Result<Box<dyn Sealer>> {
                 (None, None) => TokenSelector::Only,
                 (Some(_), Some(_)) => unreachable!("clap: conflicts_with"),
             };
-            let pin = match &args.hsm_pin_file {
-                Some(path) => std::fs::read_to_string(path)
-                    .with_context(|| format!("reading the PIN file {}", path.display()))?
-                    .trim()
-                    .to_string(),
-                None => std::env::var("OBSIGN_HSM_PIN").map_err(|_| {
-                    anyhow::anyhow!("no PIN: give --hsm-pin-file or set OBSIGN_HSM_PIN")
-                })?,
-            };
+            let pin = read_pin(
+                args.hsm_pin_file.as_deref(),
+                std::env::var("OBSIGN_HSM_PIN").ok(),
+            )?;
             Ok(Box::new(Pkcs11Sealer::open(
                 module,
                 &token,
@@ -295,6 +290,45 @@ fn make_sealer(args: &SealArgs) -> Result<Box<dyn Sealer>> {
         ),
         (Some(_), Some(_)) => unreachable!("clap: conflicts_with"),
     }
+}
+
+/// The HSM user PIN, from the file if given, else from `env_pin` (the
+/// OBSIGN_HSM_PIN variable). Both are trimmed alike: a trailing newline from
+/// `echo` or a secrets manager is not part of anyone's PIN, and sent to the
+/// token it is a failed login, one step closer to CKR_PIN_LOCKED.
+///
+/// The file must be readable by its owner only: a PIN any local account can
+/// read unlocks the key that certifies history. Every copy is wiped from
+/// memory when dropped. The environment block keeps its own copy, which is
+/// one reason the file is the better source.
+#[cfg(unix)]
+fn read_pin(file: Option<&Path>, env_pin: Option<String>) -> Result<zeroize::Zeroizing<String>> {
+    use std::os::unix::fs::PermissionsExt;
+    use zeroize::Zeroizing;
+    let raw = match file {
+        Some(path) => {
+            let mode = std::fs::metadata(path)
+                .with_context(|| format!("reading the PIN file {}", path.display()))?
+                .permissions()
+                .mode();
+            if mode & 0o077 != 0 {
+                bail!(
+                    "the PIN file {} is accessible to group or others (mode {:o}): \
+                     chmod 600 it",
+                    path.display(),
+                    mode & 0o777
+                );
+            }
+            Zeroizing::new(
+                std::fs::read_to_string(path)
+                    .with_context(|| format!("reading the PIN file {}", path.display()))?,
+            )
+        }
+        None => Zeroizing::new(env_pin.ok_or_else(|| {
+            anyhow::anyhow!("no PIN: give --hsm-pin-file or set OBSIGN_HSM_PIN")
+        })?),
+    };
+    Ok(Zeroizing::new(raw.trim().to_string()))
 }
 
 /// Reads a trusted-key file (`Vec<PublicKeyEntry>` JSON).
@@ -372,8 +406,10 @@ fn one_pass(
     sealer: &dyn Sealer,
     origin: &obsign_ledger::OriginPolicy,
 ) -> Result<bool, obsign_ledger::Error> {
+    // Locked before the WAL is read: the pass seals what it read against
+    // the head it loaded, and both must be this process's alone.
+    let mut store = Store::open_exclusive(&args.store.store, &args.store.chain_id)?;
     let records = obsign_wal::read(&args.wal, &args.store.chain_id)?;
-    let mut store = Store::open(&args.store.store, &args.store.chain_id)?;
 
     match seal_pass(&records, &mut store, sealer, origin, now_ms(), args.min_new)? {
         Some(sc) => {
@@ -407,23 +443,31 @@ fn run_loop(
     loop {
         match one_pass(args, sealer, origin) {
             Ok(_) => {}
-            // Divergence, truncation, store corruption and an
-            // unauthenticated record never self-heal: looping over them
-            // would turn an incident into a heartbeat. Exit non-zero so the
-            // orchestrator alerts.
-            Err(
-                e @ (obsign_ledger::Error::DivergedLog { .. }
-                | obsign_ledger::Error::TruncatedLog { .. }
-                | obsign_ledger::Error::StoreBroken(_)
-                | obsign_ledger::Error::KeyConflict(_)
-                | obsign_ledger::Error::UnauthenticatedRecord { .. }),
-            ) => return Err(e.into()),
-            // Anything else (I/O blip, WAL mid-write) is worth retrying,
-            // but never silently.
-            Err(e) => eprintln!("[ledger] pass failed, will retry: {e}"),
+            Err(e) if retryable(&e) => eprintln!("[ledger] pass failed, will retry: {e}"),
+            // Divergence, truncation, a forged checkpoint, a broken chain, an
+            // unauthenticated record: none of it self-heals, and looping over
+            // it would turn an incident into a heartbeat. Exit non-zero so
+            // the orchestrator alerts.
+            Err(e) => return Err(e.into()),
         }
         std::thread::sleep(Duration::from_secs(interval_secs.max(1)));
     }
+}
+
+/// The only failures `run` mode retries: the I/O and HSM hiccups that can
+/// clear on their own, and a store locked by another pass, which clears
+/// when that pass ends. An allowlist, not a denylist, because the cost of the
+/// two mistakes is not symmetric: an incident misfiled as transient is
+/// retried silently forever and `OnFailure=` never fires, while a hiccup
+/// misfiled as fatal costs one restart.
+fn retryable(e: &obsign_ledger::Error) -> bool {
+    matches!(
+        e,
+        obsign_ledger::Error::Io(_)
+            | obsign_ledger::Error::Wal(obsign_wal::Error::Io(_))
+            | obsign_ledger::Error::Pkcs11(_)
+            | obsign_ledger::Error::Locked(_)
+    )
 }
 
 fn do_export(
@@ -434,8 +478,8 @@ fn do_export(
     deployment_bundle: Option<&Path>,
 ) -> Result<()> {
     let records = obsign_wal::read(wal_dir, &store_args.chain_id).context("reading the log")?;
-    let store =
-        Store::open(&store_args.store, &store_args.chain_id).context("opening the store")?;
+    let store = Store::open_read_only(&store_args.store, &store_args.chain_id)
+        .context("opening the store")?;
 
     let origin_keys = match origin_keys {
         None => Vec::new(),
@@ -499,8 +543,8 @@ fn anchor_request(
     checkpoint: Option<&str>,
     out: &Path,
 ) -> Result<()> {
-    let store =
-        Store::open(&store_args.store, &store_args.chain_id).context("opening the store")?;
+    let store = Store::open_read_only(&store_args.store, &store_args.chain_id)
+        .context("opening the store")?;
 
     let hash = match checkpoint {
         Some(hex) => Hash::from_hex(hex).context("--checkpoint is not a valid hash")?,
@@ -529,8 +573,8 @@ fn anchor_attach(
     response: &Path,
     tsa: Option<String>,
 ) -> Result<()> {
-    let mut store =
-        Store::open(&store_args.store, &store_args.chain_id).context("opening the store")?;
+    let mut store = Store::open_exclusive(&store_args.store, &store_args.chain_id)
+        .context("opening the store")?;
     let der = std::fs::read(response)
         .with_context(|| format!("reading {}", response.display()))?;
 
@@ -560,4 +604,35 @@ fn anchor_attach(
             .unwrap_or_default()
     );
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::read_pin;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn pin_file(name: &str, content: &str, mode: u32) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("ledger-pin-{name}-{}", std::process::id()));
+        std::fs::write(&p, content).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+        p
+    }
+
+    #[test]
+    fn the_env_pin_is_trimmed_like_the_file_pin() {
+        assert_eq!(read_pin(None, Some("1234\n".to_string())).unwrap().as_str(), "1234");
+        let p = pin_file("trim", " 1234\n", 0o600);
+        assert_eq!(read_pin(Some(&p), None).unwrap().as_str(), "1234");
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn a_pin_file_others_can_read_is_refused() {
+        for mode in [0o644, 0o640, 0o604] {
+            let p = pin_file(&format!("mode{mode:o}"), "1234", mode);
+            let err = read_pin(Some(&p), None).unwrap_err().to_string();
+            assert!(err.contains("chmod 600"), "{mode:o}: {err}");
+            let _ = std::fs::remove_file(p);
+        }
+    }
 }

@@ -42,7 +42,7 @@ pub use schema::{default_schema_path, sync_schema, SchemaSync};
 pub use source::SourceTree;
 pub use worktree::worktree_divergence;
 
-use obsign_audit_core::checkpoint::PublicKeyEntry;
+use obsign_audit_core::checkpoint::{KeyRole, PublicKeyEntry};
 use ed25519_dalek::SigningKey;
 use std::io::Write as _;
 use std::path::Path;
@@ -79,6 +79,13 @@ pub enum Error {
     #[error("no version for this compilation: {0}")]
     NoVersion(String),
 
+    #[error(
+        "invalid version \"{0}\": a version names one directory under \
+         releases/, so it is 1 to 128 characters of [A-Za-z0-9._+-] and does \
+         not start with a dot"
+    )]
+    InvalidVersion(String),
+
     /// The version stamps a commit sha onto bytes read from disk. When the
     /// working tree has drifted from that commit, every decision in the log
     /// citing `policies@<sha>` would point auditors at rules that were never
@@ -109,6 +116,24 @@ pub enum Error {
          rotated key must take a new id, or old signatures become unverifiable"
     )]
     KeyConflict(String),
+
+    /// A key id binds one role too: the same key admitted under a second
+    /// role would let it sign what the first role was kept away from.
+    #[error(
+        "key id \"{key_id}\" already recorded with role \"{recorded}\", not \
+         \"{requested}\": a key keeps the role it was trusted under"
+    )]
+    KeyRoleConflict {
+        key_id: String,
+        recorded: &'static str,
+        requested: &'static str,
+    },
+
+    #[error(
+        "{0} is locked by another publish — wait for it to finish; releases \
+         are published one at a time"
+    )]
+    Busy(String),
 
     #[error("invalid manifest signature")]
     BadManifestSignature,
@@ -177,15 +202,64 @@ impl OpsKey {
 
 /// Write-then-rename. This is what makes `publish` safe to run against live
 /// gateways: a reader sees the old file or the new one, never a torn one.
+///
+/// The temporary file has a name of its own (pid and a counter), created
+/// exclusively: a fixed `<name>.tmp` was shared by every writer of that path
+/// and followed whatever sat there. The directory is synced after the
+/// rename, or a crash could forget the rename the caller was told happened.
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), Error> {
-    let tmp = path.with_extension("tmp");
-    {
-        let mut f = std::fs::File::create(&tmp)?;
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let tmp = path.with_file_name(format!(".{name}.{}.{n}.tmp", std::process::id()));
+    let written = (|| {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
         f.write_all(bytes)?;
         f.sync_data()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
     }
-    std::fs::rename(&tmp, path)?;
+    sync_parent_dir(path)
+}
+
+/// Makes a rename or a creation in `path`'s directory durable.
+pub(crate) fn sync_parent_dir(path: &Path) -> Result<(), Error> {
+    #[cfg(unix)]
+    {
+        let parent = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => Path::new("."),
+        };
+        std::fs::File::open(parent)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
+}
+
+/// An exclusive advisory lock on `dir`, held until the returned file is
+/// dropped. Two publishes interleaving their writes into one dist/ could
+/// each pass the other's checks and leave a manifest naming the other's
+/// artifacts; the second one fails fast instead. The kernel drops the lock
+/// with the process, so a crash leaves nothing to clean up.
+pub(crate) fn lock_dir(dir: &Path) -> Result<std::fs::File, Error> {
+    let path = dir.join(".publish.lock");
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)?;
+    match f.try_lock() {
+        Ok(()) => Ok(f),
+        Err(std::fs::TryLockError::WouldBlock) => Err(Error::Busy(dir.display().to_string())),
+        Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
+    }
 }
 
 /// Records the ops key's public half in a trusted-keys file, the file a
@@ -200,19 +274,48 @@ pub(crate) fn record_trusted_key(
     path: &Path,
     entry: &PublicKeyEntry,
 ) -> Result<Vec<PublicKeyEntry>, Error> {
+    let (keys, changed) = merge_trusted_key(path, entry)?;
+    if changed {
+        write_atomic(path, serde_json::to_string_pretty(&keys)?.as_bytes())?;
+    }
+    Ok(keys)
+}
+
+/// The trusted-keys set with `entry` merged in, and whether that changed it,
+/// without writing anything: `publish` runs every refusal before its first
+/// write, and a key recorded by a publish that was then refused would be
+/// trust nobody decided to grant.
+///
+/// A key id binds one key in one role. The one role change accepted is the
+/// documented upgrade of an ops key recorded by an earlier build under the
+/// default `seal` role: same key material, tightened to `ops`.
+pub(crate) fn merge_trusted_key(
+    path: &Path,
+    entry: &PublicKeyEntry,
+) -> Result<(Vec<PublicKeyEntry>, bool), Error> {
     let mut keys: Vec<PublicKeyEntry> = if path.exists() {
         serde_json::from_str(&std::fs::read_to_string(path)?)?
     } else {
         Vec::new()
     };
 
-    if let Some(existing) = keys.iter().find(|k| k.key_id == entry.key_id) {
+    if let Some(existing) = keys.iter_mut().find(|k| k.key_id == entry.key_id) {
         if existing.public_key != entry.public_key || existing.algo != entry.algo {
             return Err(Error::KeyConflict(entry.key_id.clone()));
         }
-    } else {
-        keys.push(entry.clone());
-        write_atomic(path, serde_json::to_string_pretty(&keys)?.as_bytes())?;
+        if existing.role == entry.role {
+            return Ok((keys, false));
+        }
+        if existing.role == KeyRole::Seal && entry.role == KeyRole::Ops {
+            existing.role = KeyRole::Ops;
+            return Ok((keys, true));
+        }
+        return Err(Error::KeyRoleConflict {
+            key_id: entry.key_id.clone(),
+            recorded: existing.role.as_str(),
+            requested: entry.role.as_str(),
+        });
     }
-    Ok(keys)
+    keys.push(entry.clone());
+    Ok((keys, true))
 }

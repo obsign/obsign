@@ -1202,6 +1202,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "zeroize",
 ]
 
 [[package]]
@@ -1253,10 +1254,12 @@ version = "0.1.4"
 dependencies = [
  "anyhow",
  "clap",
+ "getrandom 0.4.3",
  "hex",
  "obsign-audit-core",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
 ]
 

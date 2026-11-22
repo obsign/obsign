@@ -48,11 +48,34 @@
 //!   `identity_pub` keep verifying under the earlier synthetic binding,
 //!   `alg || H(raw ed25519 key)`. The two forms are documented on
 //!   [`KeyAttestation::identity_pub`].
+//!
+//! **Activation form** (attestation v4, `docs/design/attestation-v4.md`). An
+//! attestation carrying an [`Activation`] proves three things the earlier
+//! forms did not, and the verifier checks each offline:
+//!
+//! * the AK sits in the same TPM as the EK the bundle records: the ops side
+//!   encrypted a credential to that EK for the AK's Name
+//!   (`TPM2_MakeCredential`), and the quote and the certify are qualified by
+//!   a value only a holder of that credential could compute
+//!   ([`activation_qualifier`]). `TPM2_ActivateCredential` releases the
+//!   credential only to a TPM that holds both keys;
+//! * the quote and the certify answer *this* enrollment's challenge, not an
+//!   earlier one: the qualifier also covers the ops nonce;
+//! * the identity key can sign only while the PCRs hold the enrolled values:
+//!   its `authPolicy` is the `TPM2_PolicyPCR` digest over them and
+//!   `userWithAuth` is clear, so its empty password does not open it. Its
+//!   `fixedTPM`, `fixedParent` and `sensitiveDataOrigin` bits are checked,
+//!   and the AK's `restricted` and `sign`.
+//!
+//! What it still does not prove: that the EK is genuine silicon (the vendor
+//! chain stays out of band), and that the ops side kept the credential secret
+//! until the exchange closed, which the ops signature over the bundle vouches
+//! for and nothing here can.
 
 use crate::checkpoint::PublicKeyEntry;
 use crate::error::Error;
 use crate::hash::sha256;
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::VerifyingKey;
 use serde::{Deserialize, Serialize};
 
 /// `TPM_GENERATED_VALUE`, the magic prefixing every genuine `TPMS_ATTEST`,
@@ -72,6 +95,29 @@ const ALG_NULL: u16 = 0x0010;
 /// `TPM_ECC_NIST_P256` / `TPM_ECC_25519` curve identifiers.
 const ECC_NIST_P256: u16 = 0x0003;
 const ECC_CURVE_25519: u16 = 0x0040;
+/// `TPM_ALG_RSA`, `TPM_ALG_AES`, `TPM_ALG_CFB`: the EK shape of the TCG
+/// default template L-1 (RSA 2048, AES-128-CFB storage parameters).
+const ALG_RSA: u16 = 0x0001;
+const ALG_AES: u16 = 0x0006;
+const ALG_CFB: u16 = 0x0043;
+
+/// `TPMA_OBJECT` bits the activation form judges (TPM 2.0 Part 2, §8.3).
+pub const ATTR_FIXED_TPM: u32 = 1 << 1;
+pub const ATTR_FIXED_PARENT: u32 = 1 << 4;
+pub const ATTR_SENSITIVE_DATA_ORIGIN: u32 = 1 << 5;
+pub const ATTR_USER_WITH_AUTH: u32 = 1 << 6;
+pub const ATTR_ADMIN_WITH_POLICY: u32 = 1 << 7;
+pub const ATTR_RESTRICTED: u32 = 1 << 16;
+pub const ATTR_DECRYPT: u32 = 1 << 17;
+pub const ATTR_SIGN: u32 = 1 << 18;
+
+const CC_POLICY_SECRET: u32 = 0x0000_0151;
+const CC_POLICY_PCR: u32 = 0x0000_017F;
+const TPM_RH_ENDORSEMENT: u32 = 0x4000_000B;
+
+/// Domain prefix of [`activation_qualifier`], so the qualifying data of an
+/// obsign enrollment cannot be confused with any other use of the nonce.
+const ACTIVATION_DOMAIN: &[u8] = b"obsign-tpm-activation/1\0";
 
 /// `algo` string of a P-256 identity key entry (see
 /// [`KeyAttestation::identity_pub`] for when one exists at all).
@@ -129,6 +175,235 @@ pub struct KeyAttestation {
     /// legacy form.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity_pub: Option<String>,
+    /// The credential-activation binding (attestation v4). Present, it makes
+    /// the verifier require everything listed under "Activation form" in the
+    /// module docs; absent, the attestation verifies in its earlier form and
+    /// the report says what that form leaves unproven. Signed only by an
+    /// `obsign-deployment/2` bundle: a `/1` bundle carrying it is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation: Option<Activation>,
+}
+
+/// What the enrollment exchange recorded about credential activation, from
+/// which the verifier recomputes the binding between EK, AK and the signed
+/// statements. Every field is hex.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Activation {
+    /// The EK's marshalled `TPMT_PUBLIC`: the key the credential was
+    /// encrypted to. Must have the TCG default RSA-2048 EK shape (template
+    /// L-1: restricted decryption key, `PolicySecret(TPM_RH_ENDORSEMENT)`),
+    /// and when `ek_cert` is present, the certificate must certify its
+    /// modulus.
+    pub ek_pub: String,
+    /// The AK's marshalled `TPMT_PUBLIC`, whose Name the credential was made
+    /// for. Must hold the `ak_pub` key and be a restricted signing key that
+    /// was generated in, and cannot leave, its TPM.
+    pub ak_public: String,
+    /// The ops challenge nonce, 32 bytes.
+    pub nonce: String,
+    /// The credential the TPM recovered with `TPM2_ActivateCredential`,
+    /// 32 bytes. Released by the ops side once the exchange closed: it has
+    /// done its job, and recording it lets anyone recompute the qualifier.
+    pub secret: String,
+}
+
+/// The `qualifyingData` an enrollment's certify and quote carry:
+/// `SHA-256(domain || nonce || secret)`. Computing it needs the credential,
+/// which only the TPM holding both the EK and the AK can recover.
+pub fn activation_qualifier(nonce: &[u8], secret: &[u8]) -> [u8; 32] {
+    let mut m = ACTIVATION_DOMAIN.to_vec();
+    m.extend_from_slice(nonce);
+    m.extend_from_slice(secret);
+    *sha256(&m).as_bytes()
+}
+
+/// The TPM Name of a marshalled public area: `TPM_ALG_SHA256 || H(area)`.
+pub fn tpm_name(tpmt_public: &[u8]) -> Vec<u8> {
+    let mut name = ALG_SHA256.to_be_bytes().to_vec();
+    name.extend_from_slice(sha256(tpmt_public).as_bytes());
+    name
+}
+
+/// A `TPML_PCR_SELECTION` naming `indices` in the SHA-256 bank, three-byte
+/// bitmap (PCRs 0..23). The enroller sends exactly these bytes to
+/// `TPM2_Quote` and `TPM2_PolicyPCR`, and [`pcr_policy_digest`] hashes them,
+/// so the two agree by construction.
+pub fn sha256_pcr_selection(indices: &[u32]) -> Result<Vec<u8>, Error> {
+    let mut bitmap = [0u8; 3];
+    for &i in indices {
+        if i >= 24 {
+            return Err(Error::BadAttestation(format!(
+                "PCR {i} out of range: a TPM 2.0 bank holds PCRs 0..23"
+            )));
+        }
+        bitmap[(i / 8) as usize] |= 1 << (i % 8);
+    }
+    let mut v = 1u32.to_be_bytes().to_vec();
+    v.extend_from_slice(&ALG_SHA256.to_be_bytes());
+    v.push(3);
+    v.extend_from_slice(&bitmap);
+    Ok(v)
+}
+
+/// The policy digest `TPM2_PolicyPCR` leaves in a fresh SHA-256 policy
+/// session when the selected PCRs hold `pcrs`: `H(0^32 || TPM_CC_PolicyPCR ||
+/// selection || H(values in index order))` (TPM 2.0 Part 3, §23.7). An
+/// identity key whose `authPolicy` is this digest signs only in that state.
+pub fn pcr_policy_digest(pcrs: &[PcrExpectation]) -> Result<Vec<u8>, Error> {
+    if pcrs.is_empty() {
+        return Err(Error::AttestationMismatch(
+            "no expected PCRs: a PCR policy over nothing gates nothing".into(),
+        ));
+    }
+    let indices: Vec<u32> = pcrs.iter().map(|p| p.index).collect();
+    let mut m = vec![0u8; 32];
+    m.extend_from_slice(&CC_POLICY_PCR.to_be_bytes());
+    m.extend_from_slice(&sha256_pcr_selection(&indices)?);
+    m.extend_from_slice(&expected_pcr_digest(pcrs)?);
+    Ok(sha256(&m).as_bytes().to_vec())
+}
+
+/// The `authPolicy` of the TCG default EK templates:
+/// `PolicySecret(TPM_RH_ENDORSEMENT)` from a zero digest, empty policyRef
+/// (TCG EK Credential Profile, §B.3.3; the published value is pinned by a
+/// test). Using the EK therefore needs the endorsement hierarchy's auth.
+pub fn ek_policy() -> Vec<u8> {
+    let mut m = vec![0u8; 32];
+    m.extend_from_slice(&CC_POLICY_SECRET.to_be_bytes());
+    m.extend_from_slice(&TPM_RH_ENDORSEMENT.to_be_bytes()); // the hierarchy's Name
+    let d = sha256(&m);
+    // PolicyUpdate's second hash, over the (empty) policyRef.
+    sha256(d.as_bytes()).as_bytes().to_vec()
+}
+
+/// Checks that `ek_pub` is an EK of the shape the credential exchange relies
+/// on, and, when `ek_cert` is not empty, that the certificate certifies it.
+/// Returns the RSA modulus.
+///
+/// Why each requirement: `restricted` + `decrypt` is what makes the TPM
+/// refuse to decrypt the credential seed outside `ActivateCredential` (an
+/// unrestricted decryption key would hand it to `TPM2_RSA_Decrypt` and to
+/// anyone); `fixedTPM` + `sensitiveDataOrigin` mean the private part was
+/// generated inside and cannot leave; the EK policy means the hierarchy
+/// owner, not any process, decides when it is used.
+pub fn check_ek_public(ek_pub: &[u8], ek_cert: &[u8]) -> Result<Vec<u8>, Error> {
+    let ek = parse_rsa_ek(ek_pub)?;
+    check_attributes(
+        "EK",
+        ek.attributes,
+        ATTR_FIXED_TPM
+            | ATTR_FIXED_PARENT
+            | ATTR_SENSITIVE_DATA_ORIGIN
+            | ATTR_ADMIN_WITH_POLICY
+            | ATTR_RESTRICTED
+            | ATTR_DECRYPT,
+        ATTR_SIGN | ATTR_USER_WITH_AUTH,
+    )?;
+    if ek.auth_policy != ek_policy() {
+        return Err(Error::AttestationMismatch(
+            "the EK's authPolicy is not the TCG EK policy".into(),
+        ));
+    }
+    if !ek_cert.is_empty() {
+        let (modulus, exponent) = certificate_rsa_key(ek_cert)?;
+        if modulus != ek.modulus || exponent != 65537 {
+            return Err(Error::AttestationMismatch(
+                "the EK certificate certifies a different key than the recorded EK".into(),
+            ));
+        }
+    }
+    Ok(ek.modulus)
+}
+
+/// Checks that `ak_public` is an attestation key: a restricted signing key
+/// generated in its TPM and unable to leave it. Returns the raw key in the
+/// `ak_pub` wire form.
+///
+/// Restricted is the property the whole quote rests on: a restricted
+/// signing key refuses to sign anything that begins with `TPM_GENERATED`
+/// unless the TPM produced it. `fixedTPM` is what lets the credential
+/// exchange prove where the AK lives: a key the TPM did not generate could
+/// be loaded alongside a genuine EK.
+pub fn check_ak_public(ak_public: &[u8]) -> Result<Vec<u8>, Error> {
+    let ak = parse_tpmt_public(ak_public)?;
+    if ak.name_alg != ALG_SHA256 {
+        return Err(Error::BadAttestation(format!(
+            "unsupported AK name algorithm 0x{:04X}",
+            ak.name_alg
+        )));
+    }
+    check_attributes(
+        "AK",
+        ak.attributes,
+        ATTR_FIXED_TPM | ATTR_FIXED_PARENT | ATTR_SENSITIVE_DATA_ORIGIN | ATTR_RESTRICTED | ATTR_SIGN,
+        ATTR_DECRYPT,
+    )?;
+    Ok(match ak.key {
+        TpmPublicKey::Ed25519(raw) => raw.to_vec(),
+        TpmPublicKey::EcdsaP256(point) => point,
+    })
+}
+
+fn check_attributes(what: &str, attrs: u32, required: u32, forbidden: u32) -> Result<(), Error> {
+    if attrs & required != required {
+        return Err(Error::AttestationMismatch(format!(
+            "the {what} lacks required attributes 0x{:08X} (has 0x{attrs:08X})",
+            required & !attrs
+        )));
+    }
+    if attrs & forbidden != 0 {
+        return Err(Error::AttestationMismatch(format!(
+            "the {what} carries forbidden attributes 0x{:08X}",
+            attrs & forbidden
+        )));
+    }
+    Ok(())
+}
+
+/// The activation-form checks that do not need the signed statements, and
+/// the qualifier those statements must then carry.
+fn verify_activation(att: &KeyAttestation, act: &Activation) -> Result<[u8; 32], Error> {
+    let unhex = |s: &String| hex::decode(s).map_err(|_| Error::BadHex(s.clone()));
+
+    let ak_raw = check_ak_public(&unhex(&act.ak_public)?)?;
+    if ak_raw != unhex(&att.ak_pub)? {
+        return Err(Error::AttestationMismatch(
+            "the AK public area holds a different key than ak_pub".into(),
+        ));
+    }
+    check_ek_public(&unhex(&act.ek_pub)?, &unhex(&att.ek_cert)?)?;
+
+    // The identity key: TPM-generated, TPM-bound, and openable only by the
+    // PCR policy. userWithAuth set would let its empty password sign
+    // whatever the PCRs hold, which is exactly what the policy is for.
+    let Some(tp_hex) = &att.identity_pub else {
+        return Err(Error::AttestationMismatch(
+            "the activation form requires the identity key's TPMT_PUBLIC".into(),
+        ));
+    };
+    let identity = parse_tpmt_public(&unhex(tp_hex)?)?;
+    check_attributes(
+        "identity key",
+        identity.attributes,
+        ATTR_FIXED_TPM | ATTR_FIXED_PARENT | ATTR_SENSITIVE_DATA_ORIGIN | ATTR_SIGN,
+        ATTR_USER_WITH_AUTH | ATTR_RESTRICTED | ATTR_DECRYPT,
+    )?;
+    if identity.auth_policy != pcr_policy_digest(&att.expected_pcrs)? {
+        return Err(Error::AttestationMismatch(
+            "the identity key's authPolicy is not the PCR policy over the enrolled \
+             measurements: it could sign whatever the platform runs"
+                .into(),
+        ));
+    }
+
+    let nonce = unhex(&act.nonce)?;
+    let secret = unhex(&act.secret)?;
+    if nonce.len() != 32 || secret.len() != 32 {
+        return Err(Error::BadAttestation(
+            "activation nonce and secret must be 32 bytes each".into(),
+        ));
+    }
+    Ok(activation_qualifier(&nonce, &secret))
 }
 
 /// The legacy TPM Name of an identity key: `alg || H(raw ed25519 key)`.
@@ -171,7 +446,7 @@ fn parse_ak(hexed: &str) -> Result<AkPublic, Error> {
 impl AkPublic {
     fn verify(&self, attest: &[u8], sig: &[u8; 64]) -> Result<(), Error> {
         let ok = match self {
-            AkPublic::Ed25519(vk) => vk.verify(attest, &Signature::from_bytes(sig)).is_ok(),
+            AkPublic::Ed25519(vk) => crate::ed25519_verify(vk, attest, sig),
             AkPublic::EcdsaP256(point) => {
                 crate::p256::verify_ecdsa_p256(point, sha256(attest).as_bytes(), sig)
             }
@@ -182,6 +457,13 @@ impl AkPublic {
             Err(Error::BadAttestation("AK signature does not verify".into()))
         }
     }
+}
+
+/// A parsed, AK-verified `TPMS_ATTEST`: the caller's `extraData`
+/// (`qualifyingData` at signing time), then the type-specific body.
+struct SignedStatement {
+    extra_data: Vec<u8>,
+    body: Attested,
 }
 
 /// What a parsed `TPMS_ATTEST` yields, for the two statement types used.
@@ -206,10 +488,15 @@ enum Attested {
 pub fn verify_attestation(entry: &PublicKeyEntry, att: &KeyAttestation) -> Result<(), Error> {
     let ak = parse_ak(&att.ak_pub)?;
     let expected_name = expected_identity_name(entry, att)?;
+    let qualifier = match &att.activation {
+        None => None,
+        Some(act) => Some(verify_activation(att, act)?),
+    };
 
     // The certify must bind THIS identity key.
     let certify = verify_signed_attest(&att.certify, &ak)?;
-    match certify {
+    check_qualified("certify", &certify, qualifier.as_ref())?;
+    match certify.body {
         Attested::Certify { name } => {
             if name != expected_name {
                 return Err(Error::AttestationMismatch(
@@ -229,7 +516,8 @@ pub fn verify_attestation(entry: &PublicKeyEntry, att: &KeyAttestation) -> Resul
     // would let a quote over a *different* PCR holding the same value pass,
     // and with resettable PCRs that value is reproducible at will.
     let quote = verify_signed_attest(&att.quote, &ak)?;
-    match quote {
+    check_qualified("quote", &quote, qualifier.as_ref())?;
+    match quote.body {
         Attested::Quote {
             pcr_digest,
             selected,
@@ -279,6 +567,20 @@ pub fn verify_attestation(entry: &PublicKeyEntry, att: &KeyAttestation) -> Resul
     Ok(())
 }
 
+/// In the activation form, a signed statement must carry the enrollment's
+/// qualifier as its `extraData`: one that does not was either produced for
+/// another challenge (a replay) or by an AK that never recovered the
+/// credential.
+fn check_qualified(what: &str, st: &SignedStatement, qualifier: Option<&[u8; 32]>) -> Result<(), Error> {
+    match qualifier {
+        Some(q) if st.extra_data != q => Err(Error::AttestationMismatch(format!(
+            "the {what} is not qualified by this enrollment's activation: replayed, \
+             or signed by an AK that never recovered the credential"
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// The Name the certify must report for this enrollment and, when the
 /// attestation carries the identity key's `TPMT_PUBLIC`, the proof that the
 /// public area is the enrolled key's and not a substitute.
@@ -318,14 +620,14 @@ fn expected_identity_name(entry: &PublicKeyEntry, att: &KeyAttestation) -> Resul
             "the identity TPMT_PUBLIC holds a different key than the enrolled entry".into(),
         ));
     }
-    let mut name = parsed.name_alg.to_be_bytes().to_vec();
-    name.extend_from_slice(sha256(&tp).as_bytes());
-    Ok(name)
+    Ok(tpm_name(&tp))
 }
 
 /// What a `TPMT_PUBLIC` yields: its name algorithm and the raw key inside.
 struct TpmtPublic {
     name_alg: u16,
+    attributes: u32,
+    auth_policy: Vec<u8>,
     key: TpmPublicKey,
 }
 
@@ -348,8 +650,10 @@ fn parse_tpmt_public(b: &[u8]) -> Result<TpmtPublic, Error> {
         )));
     }
     let name_alg = r.u16()?;
-    r.u32()?; // objectAttributes: named by the certify, not re-judged here
-    r.skip_tpm2b()?; // authPolicy
+    // Judged by the activation form's checks (check_ak_public and the
+    // identity checks); the earlier forms only name them via the certify.
+    let attributes = r.u32()?;
+    let auth_policy = r.tpm2b()?.to_vec();
     let symmetric = r.u16()?;
     if symmetric != ALG_NULL {
         // A signing key carries no symmetric parameters; anything else is a
@@ -404,7 +708,117 @@ fn parse_tpmt_public(b: &[u8]) -> Result<TpmtPublic, Error> {
             )))
         }
     };
-    Ok(TpmtPublic { name_alg, key })
+    Ok(TpmtPublic {
+        name_alg,
+        attributes,
+        auth_policy,
+        key,
+    })
+}
+
+/// What an RSA EK's `TPMT_PUBLIC` yields.
+struct RsaEk {
+    attributes: u32,
+    auth_policy: Vec<u8>,
+    modulus: Vec<u8>,
+}
+
+/// Parses an EK public area of the TCG default RSA-2048 shape (template L-1):
+/// SHA-256 names, AES-128-CFB storage parameters, null scheme, 2048-bit key,
+/// default exponent, 256-byte modulus. Anything else is refused, not adapted
+/// to: the credential exchange is only implemented for this shape.
+fn parse_rsa_ek(b: &[u8]) -> Result<RsaEk, Error> {
+    let mut r = Reader::new(b);
+    let refuse = |what: &str| {
+        Err(Error::BadAttestation(format!(
+            "EK public area: {what} (only the TCG RSA-2048 EK template L-1 is supported)"
+        )))
+    };
+    if r.u16()? != ALG_RSA {
+        return refuse("not an RSA key");
+    }
+    if r.u16()? != ALG_SHA256 {
+        return refuse("name algorithm is not SHA-256");
+    }
+    let attributes = r.u32()?;
+    let auth_policy = r.tpm2b()?.to_vec();
+    if (r.u16()?, r.u16()?, r.u16()?) != (ALG_AES, 128, ALG_CFB) {
+        return refuse("storage parameters are not AES-128-CFB");
+    }
+    if r.u16()? != ALG_NULL {
+        return refuse("a restricted decryption key carries a null scheme");
+    }
+    if r.u16()? != 2048 {
+        return refuse("key size is not 2048 bits");
+    }
+    let exponent = r.u32()?;
+    if exponent != 0 && exponent != 65537 {
+        return refuse("exponent is not the default 65537");
+    }
+    let modulus = r.tpm2b()?.to_vec();
+    if modulus.len() != 256 {
+        return refuse("modulus is not 256 bytes");
+    }
+    if r.remaining() != 0 {
+        return refuse("trailing bytes");
+    }
+    Ok(RsaEk {
+        attributes,
+        auth_policy,
+        modulus,
+    })
+}
+
+/// The RSA public key an X.509 certificate certifies, as (modulus without
+/// leading zeros, exponent). Walks `Certificate -> tbsCertificate ->
+/// subjectPublicKeyInfo` and nothing more: the certificate's own signature
+/// and chain are the out-of-band vendor-root check, never performed here.
+fn certificate_rsa_key(der: &[u8]) -> Result<(Vec<u8>, u64), Error> {
+    use crate::rfc3161::Der;
+    const SEQ: u8 = 0x30;
+    const OID_RSA_ENCRYPTION: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01];
+
+    let mut outer = Der::new(der);
+    let cert = outer.expect(SEQ, "Certificate")?;
+    outer.finish("Certificate")?;
+    let mut cert = Der::new(cert);
+    let mut tbs = Der::new(cert.expect(SEQ, "tbsCertificate")?);
+    let (mut tag, _) = tbs.tlv()?;
+    if tag == 0xA0 {
+        tag = tbs.tlv()?.0; // [0] version, then the serial number
+    }
+    if tag != 0x02 {
+        return Err(Error::BadDer("tbsCertificate: no serial number".into()));
+    }
+    for what in ["signature", "issuer", "validity", "subject"] {
+        tbs.expect(SEQ, what)?;
+    }
+    let mut spki = Der::new(tbs.expect(SEQ, "subjectPublicKeyInfo")?);
+    let mut alg = Der::new(spki.expect(SEQ, "algorithm")?);
+    if alg.expect(0x06, "algorithm OID")? != OID_RSA_ENCRYPTION {
+        return Err(Error::AttestationMismatch(
+            "the EK certificate does not certify an RSA key".into(),
+        ));
+    }
+    let bits = spki.expect(0x03, "subjectPublicKey")?;
+    spki.finish("subjectPublicKeyInfo")?;
+    let Some((&0, key)) = bits.split_first() else {
+        return Err(Error::BadDer("subjectPublicKey: unused bits".into()));
+    };
+    let mut outer = Der::new(key);
+    let mut rsa = Der::new(outer.expect(SEQ, "RSAPublicKey")?);
+    outer.finish("RSAPublicKey")?;
+    let mut modulus = rsa.expect(0x02, "modulus")?;
+    while let Some((&0, rest)) = modulus.split_first() {
+        modulus = rest;
+    }
+    let e = rsa.expect(0x02, "publicExponent")?;
+    rsa.finish("RSAPublicKey")?;
+    if e.is_empty() || e.len() > 8 {
+        return Err(Error::BadDer("publicExponent out of range".into()));
+    }
+    let exponent = e.iter().fold(0u64, |acc, b| (acc << 8) | *b as u64);
+    Ok((modulus.to_vec(), exponent))
 }
 
 /// The aggregate the TPM quote reports: the hash of the selected PCR values
@@ -424,7 +838,7 @@ fn expected_pcr_digest(pcrs: &[PcrExpectation]) -> Result<Vec<u8>, Error> {
 /// Splits `attest || sig`, verifies the AK signature over the attest bytes,
 /// and parses the attest. The signature is always the trailing 64 bytes:
 /// an ed25519 signature, or ECDSA-P256 `r || s` each 32 bytes.
-fn verify_signed_attest(hexed: &str, ak: &AkPublic) -> Result<Attested, Error> {
+fn verify_signed_attest(hexed: &str, ak: &AkPublic) -> Result<SignedStatement, Error> {
     let raw = hex::decode(hexed).map_err(|_| Error::BadHex(hexed.to_string()))?;
     if raw.len() < 64 {
         return Err(Error::BadAttestation(
@@ -483,7 +897,7 @@ fn over() -> Error {
 
 /// Parses the TCG-standard `TPMS_ATTEST` subset: the fixed header, then the
 /// quote- or certify-specific tail.
-fn parse_attest(b: &[u8]) -> Result<Attested, Error> {
+fn parse_attest(b: &[u8]) -> Result<SignedStatement, Error> {
     let mut r = Reader::new(b);
     if r.u32()? != TPM_GENERATED {
         return Err(Error::BadAttestation(
@@ -492,15 +906,15 @@ fn parse_attest(b: &[u8]) -> Result<Attested, Error> {
     }
     let st = r.u16()?;
     r.skip_tpm2b()?; // qualifiedSigner (TPM2B_NAME)
-    r.skip_tpm2b()?; // extraData (TPM2B_DATA)
+    let extra_data = r.tpm2b()?.to_vec(); // extraData (TPM2B_DATA)
     r.take(17)?; // TPMS_CLOCK_INFO: clock(8) + resetCount(4) + restartCount(4) + safe(1)
     r.take(8)?; // firmwareVersion (u64)
 
-    match st {
+    let body = match st {
         ST_ATTEST_CERTIFY => {
             let name = r.tpm2b()?.to_vec();
             r.skip_tpm2b()?; // qualifiedName
-            Ok(Attested::Certify { name })
+            Attested::Certify { name }
         }
         ST_ATTEST_QUOTE => {
             // TPML_PCR_SELECTION: count, then that many TPMS_PCR_SELECTION.
@@ -523,15 +937,18 @@ fn parse_attest(b: &[u8]) -> Result<Attested, Error> {
                 }
             }
             let pcr_digest = r.tpm2b()?.to_vec();
-            Ok(Attested::Quote {
+            Attested::Quote {
                 pcr_digest,
                 selected,
-            })
+            }
         }
-        other => Err(Error::BadAttestation(format!(
-            "unsupported TPMS_ATTEST type 0x{other:04X}"
-        ))),
-    }
+        other => {
+            return Err(Error::BadAttestation(format!(
+                "unsupported TPMS_ATTEST type 0x{other:04X}"
+            )))
+        }
+    };
+    Ok(SignedStatement { extra_data, body })
 }
 
 #[cfg(test)]
@@ -543,11 +960,11 @@ pub mod testutil {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
 
-    fn header(st: u16) -> Vec<u8> {
+    fn header(st: u16, extra_data: &[u8]) -> Vec<u8> {
         let mut v = TPM_GENERATED.to_be_bytes().to_vec();
         v.extend_from_slice(&st.to_be_bytes());
         v.extend_from_slice(&0u16.to_be_bytes()); // qualifiedSigner: empty
-        v.extend_from_slice(&0u16.to_be_bytes()); // extraData: empty
+        v.extend_from_slice(&tpm2b(extra_data)); // extraData
         v.extend_from_slice(&[0u8; 17]); // clockInfo
         v.extend_from_slice(&[0u8; 8]); // firmwareVersion
         v
@@ -573,7 +990,12 @@ pub mod testutil {
 
     /// A certify carrying an arbitrary Name, signed by `ak`.
     pub fn certify_naming(ak: &SigningKey, name: &[u8]) -> String {
-        let mut a = header(ST_ATTEST_CERTIFY);
+        certify_qualified(ak, name, &[])
+    }
+
+    /// A certify carrying `name` and `extra_data`, signed by `ak`.
+    pub fn certify_qualified(ak: &SigningKey, name: &[u8], extra_data: &[u8]) -> String {
+        let mut a = header(ST_ATTEST_CERTIFY, extra_data);
         a.extend_from_slice(&tpm2b(name)); // name
         a.extend_from_slice(&tpm2b(&[])); // qualifiedName
         sign(ak, a)
@@ -583,30 +1005,70 @@ pub mod testutil {
     /// EdDSA-capable TPM emits: ECC object, EdDSA scheme, curve 25519, the
     /// raw key as the point's x coordinate.
     pub fn tpmt_public_ed25519(identity: &VerifyingKey) -> Vec<u8> {
+        tpmt_public_ed25519_with(identity, 0x0004_0072, &[])
+    }
+
+    /// An ed25519 `TPMT_PUBLIC` with chosen attributes and authPolicy.
+    pub fn tpmt_public_ed25519_with(key: &VerifyingKey, attributes: u32, policy: &[u8]) -> Vec<u8> {
         let mut v = ALG_ECC.to_be_bytes().to_vec();
         v.extend_from_slice(&ALG_SHA256.to_be_bytes()); // nameAlg
-        v.extend_from_slice(&0x0004_0072u32.to_be_bytes()); // attributes: signing key
-        v.extend_from_slice(&tpm2b(&[])); // authPolicy
+        v.extend_from_slice(&attributes.to_be_bytes());
+        v.extend_from_slice(&tpm2b(policy)); // authPolicy
         v.extend_from_slice(&ALG_NULL.to_be_bytes()); // symmetric
         v.extend_from_slice(&ALG_EDDSA.to_be_bytes()); // scheme
         v.extend_from_slice(&ALG_SHA256.to_be_bytes()); // scheme hash
         v.extend_from_slice(&ECC_CURVE_25519.to_be_bytes()); // curve
         v.extend_from_slice(&ALG_NULL.to_be_bytes()); // kdf
-        v.extend_from_slice(&tpm2b(identity.as_bytes())); // unique.x
+        v.extend_from_slice(&tpm2b(key.as_bytes())); // unique.x
         v.extend_from_slice(&tpm2b(&[])); // unique.y
+        v
+    }
+
+    /// The attributes a v4 enrollment gives each key.
+    pub const AK_ATTRS: u32 = ATTR_FIXED_TPM
+        | ATTR_FIXED_PARENT
+        | ATTR_SENSITIVE_DATA_ORIGIN
+        | ATTR_USER_WITH_AUTH
+        | ATTR_RESTRICTED
+        | ATTR_SIGN;
+    pub const IDENTITY_ATTRS: u32 =
+        ATTR_FIXED_TPM | ATTR_FIXED_PARENT | ATTR_SENSITIVE_DATA_ORIGIN | ATTR_SIGN;
+    pub const EK_ATTRS: u32 = ATTR_FIXED_TPM
+        | ATTR_FIXED_PARENT
+        | ATTR_SENSITIVE_DATA_ORIGIN
+        | ATTR_ADMIN_WITH_POLICY
+        | ATTR_RESTRICTED
+        | ATTR_DECRYPT;
+
+    /// An RSA EK public area of template L-1's shape around `modulus`.
+    pub fn tpmt_public_rsa_ek(modulus: &[u8; 256], attributes: u32, policy: &[u8]) -> Vec<u8> {
+        let mut v = ALG_RSA.to_be_bytes().to_vec();
+        v.extend_from_slice(&ALG_SHA256.to_be_bytes());
+        v.extend_from_slice(&attributes.to_be_bytes());
+        v.extend_from_slice(&tpm2b(policy));
+        v.extend_from_slice(&ALG_AES.to_be_bytes());
+        v.extend_from_slice(&128u16.to_be_bytes());
+        v.extend_from_slice(&ALG_CFB.to_be_bytes());
+        v.extend_from_slice(&ALG_NULL.to_be_bytes()); // scheme
+        v.extend_from_slice(&2048u16.to_be_bytes());
+        v.extend_from_slice(&0u32.to_be_bytes()); // exponent: default
+        v.extend_from_slice(&tpm2b(modulus));
         v
     }
 
     /// The Name a real TPM computes for a public area.
     pub fn name_of(tpmt_public: &[u8]) -> Vec<u8> {
-        let mut name = ALG_SHA256.to_be_bytes().to_vec();
-        name.extend_from_slice(sha256(tpmt_public).as_bytes());
-        name
+        tpm_name(tpmt_public)
     }
 
     /// A quote reporting `pcrs`, signed by `ak`.
     pub fn quote(ak: &SigningKey, pcrs: &[PcrExpectation]) -> String {
-        let mut a = header(ST_ATTEST_QUOTE);
+        quote_qualified(ak, pcrs, &[])
+    }
+
+    /// A quote reporting `pcrs` and carrying `extra_data`, signed by `ak`.
+    pub fn quote_qualified(ak: &SigningKey, pcrs: &[PcrExpectation], extra_data: &[u8]) -> String {
+        let mut a = header(ST_ATTEST_QUOTE, extra_data);
         // One TPML_PCR_SELECTION entry, SHA-256 bank, 3-byte bitmap (24
         // PCRs) selecting exactly the quoted indices, the way a real TPM
         // echoes the selection it was asked to quote.
@@ -639,6 +1101,7 @@ pub mod testutil {
             quote: quote(ak, &pcrs),
             expected_pcrs: pcrs,
             identity_pub: None,
+            activation: None,
         }
     }
 
@@ -656,6 +1119,46 @@ pub mod testutil {
         att.identity_pub = Some(hex::encode(tpmt));
         att
     }
+
+    /// The activation form (v4) as a correct enrollment produces it: an AK
+    /// and an EK of the required shapes, an identity key under the PCR
+    /// policy, both statements qualified by the activation. The EK modulus
+    /// is filler: the verifier never computes with it, it hashes and
+    /// compares it.
+    pub fn attestation_activated(
+        key_id: &str,
+        identity: &VerifyingKey,
+        ak: &SigningKey,
+        pcrs: Vec<PcrExpectation>,
+    ) -> KeyAttestation {
+        let policy = pcr_policy_digest(&pcrs).unwrap();
+        let tpmt = tpmt_public_ed25519_with(identity, IDENTITY_ATTRS, &policy);
+        let ak_public = tpmt_public_ed25519_with(&ak.verifying_key(), AK_ATTRS, &[]);
+        let ek_pub = tpmt_public_rsa_ek(&[0xC5; 256], EK_ATTRS, &ek_policy());
+        let (nonce, secret) = ([0x11u8; 32], [0x22u8; 32]);
+        let q = activation_qualifier(&nonce, &secret);
+        let mut att = attestation(key_id, identity, ak, pcrs.clone());
+        att.ek_cert = String::new();
+        att.certify = certify_qualified(ak, &name_of(&tpmt), &q);
+        att.quote = quote_qualified(ak, &pcrs, &q);
+        att.identity_pub = Some(hex::encode(tpmt));
+        att.activation = Some(Activation {
+            ek_pub: hex::encode(ek_pub),
+            ak_public: hex::encode(ak_public),
+            nonce: hex::encode(nonce),
+            secret: hex::encode(secret),
+        });
+        att
+    }
+
+    /// Re-signs both statements of an activation-form attestation after a
+    /// test changed its public areas or qualifier, so the AK signature is
+    /// never the reason a mutation is refused.
+    pub fn resign_activated(att: &mut KeyAttestation, ak: &SigningKey, extra_data: &[u8]) {
+        let tpmt = hex::decode(att.identity_pub.as_ref().unwrap()).unwrap();
+        att.certify = certify_qualified(ak, &name_of(&tpmt), extra_data);
+        att.quote = quote_qualified(ak, &att.expected_pcrs, extra_data);
+    }
 }
 
 #[cfg(test)]
@@ -664,6 +1167,19 @@ mod tests {
     use super::*;
     use crate::checkpoint::KeyRole;
     use ed25519_dalek::SigningKey;
+
+    #[test]
+    fn a_small_order_ak_signs_nothing() {
+        // The identity point and a signature that matches it for any
+        // message: non-strict Ed25519 accepted the pair, so an AK entry
+        // carrying it would have vouched for any certify or quote blob.
+        let mut weak = [0u8; 32];
+        weak[0] = 1;
+        let mut universal = [0u8; 64];
+        universal[0] = 1;
+        let ak = parse_ak(&hex::encode(weak)).expect("the point decodes");
+        assert!(ak.verify(b"any attest blob", &universal).is_err());
+    }
 
     fn pcr(index: u32, seed: u8) -> PcrExpectation {
         PcrExpectation {
@@ -891,6 +1407,218 @@ mod tests {
         let back: KeyAttestation = serde_json::from_str(&json).unwrap();
         assert!(verify_attestation(&identity_entry(&identity), &back).is_ok());
     }
+
+    // --- v4: the activation form ------------------------------------------
+
+    fn activated() -> (SigningKey, SigningKey, KeyAttestation) {
+        let identity = SigningKey::from_bytes(&[1u8; 32]);
+        let ak = SigningKey::from_bytes(&[2u8; 32]);
+        let att = attestation_activated("id-1", &identity.verifying_key(), &ak, vec![pcr(16, 10)]);
+        (identity, ak, att)
+    }
+
+    fn expect_mismatch(identity: &SigningKey, att: &KeyAttestation, needle: &str) {
+        match verify_attestation(&identity_entry(identity), att) {
+            Err(Error::AttestationMismatch(m)) => assert!(m.contains(needle), "got: {m}"),
+            other => panic!("expected a mismatch naming {needle:?}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_ek_policy_is_the_tcg_published_value() {
+        // TCG EK Credential Profile 2.0, B.3.3: PolicySecret(TPM_RH_ENDORSEMENT).
+        assert_eq!(
+            hex::encode(ek_policy()),
+            "837197674484b3f81a90cc8d46a5d724fd52d76e06520b64f2a1da1b331469aa"
+        );
+    }
+
+    #[test]
+    fn an_activated_attestation_verifies() {
+        let (identity, _ak, att) = activated();
+        verify_attestation(&identity_entry(&identity), &att).unwrap();
+        // And survives its JSON round trip, the form the bundle carries.
+        let back: KeyAttestation = serde_json::from_str(&serde_json::to_string(&att).unwrap()).unwrap();
+        verify_attestation(&identity_entry(&identity), &back).unwrap();
+    }
+
+    #[test]
+    fn statements_without_the_qualifier_are_refused() {
+        // The missing-nonce case: certify and quote carry no extraData, as
+        // every pre-v4 enrollment produced them. Replaying one under a new
+        // activation record must not pass.
+        let (identity, ak, mut att) = activated();
+        resign_activated(&mut att, &ak, &[]);
+        expect_mismatch(&identity, &att, "not qualified");
+    }
+
+    #[test]
+    fn statements_for_another_challenge_are_refused() {
+        // Honestly qualified, but for a different nonce: an enrollment
+        // answered once and replayed against a later challenge.
+        let (identity, ak, mut att) = activated();
+        let stale = activation_qualifier(&[0x33; 32], &[0x22; 32]);
+        resign_activated(&mut att, &ak, &stale);
+        expect_mismatch(&identity, &att, "not qualified");
+        // Same statements, the recorded nonce swapped instead.
+        let (identity, _ak, mut att) = activated();
+        att.activation.as_mut().unwrap().nonce = hex::encode([0x33u8; 32]);
+        expect_mismatch(&identity, &att, "not qualified");
+    }
+
+    #[test]
+    fn a_short_nonce_or_secret_is_refused() {
+        let (identity, _ak, mut att) = activated();
+        att.activation.as_mut().unwrap().nonce = hex::encode([0x11u8; 8]);
+        assert!(matches!(
+            verify_attestation(&identity_entry(&identity), &att),
+            Err(Error::BadAttestation(_))
+        ));
+    }
+
+    /// Rebuilds the identity public area with other attributes or policy and
+    /// re-signs, so the certify honestly names it and only the property
+    /// under test is wrong.
+    fn with_identity(att: &mut KeyAttestation, ak: &SigningKey, identity: &SigningKey, attrs: u32, policy: &[u8]) {
+        let tpmt = tpmt_public_ed25519_with(&identity.verifying_key(), attrs, policy);
+        att.identity_pub = Some(hex::encode(tpmt));
+        let act = att.activation.clone().unwrap();
+        let q = activation_qualifier(&hex::decode(act.nonce).unwrap(), &hex::decode(act.secret).unwrap());
+        resign_activated(att, ak, &q);
+    }
+
+    #[test]
+    fn an_identity_key_without_the_pcr_policy_is_refused() {
+        let (identity, ak, mut att) = activated();
+        with_identity(&mut att, &ak, &identity, IDENTITY_ATTRS, &[]);
+        expect_mismatch(&identity, &att, "authPolicy");
+        // A PCR policy, but over other values than the enrolled ones.
+        let other = pcr_policy_digest(&[pcr(16, 99)]).unwrap();
+        let (identity, ak, mut att) = activated();
+        with_identity(&mut att, &ak, &identity, IDENTITY_ATTRS, &other);
+        expect_mismatch(&identity, &att, "authPolicy");
+    }
+
+    #[test]
+    fn identity_key_attribute_violations_are_refused() {
+        let policy = pcr_policy_digest(&[pcr(16, 10)]).unwrap();
+        for (attrs, needle) in [
+            (IDENTITY_ATTRS | ATTR_USER_WITH_AUTH, "forbidden"),
+            (IDENTITY_ATTRS & !ATTR_FIXED_TPM, "lacks"),
+            (IDENTITY_ATTRS & !ATTR_FIXED_PARENT, "lacks"),
+            (IDENTITY_ATTRS & !ATTR_SENSITIVE_DATA_ORIGIN, "lacks"),
+            (IDENTITY_ATTRS | ATTR_RESTRICTED, "forbidden"),
+        ] {
+            let (identity, ak, mut att) = activated();
+            with_identity(&mut att, &ak, &identity, attrs, &policy);
+            expect_mismatch(&identity, &att, needle);
+        }
+    }
+
+    #[test]
+    fn ak_attribute_violations_are_refused() {
+        for attrs in [
+            AK_ATTRS & !ATTR_RESTRICTED,
+            AK_ATTRS & !ATTR_FIXED_TPM,
+            AK_ATTRS & !ATTR_SENSITIVE_DATA_ORIGIN,
+            AK_ATTRS | ATTR_DECRYPT,
+        ] {
+            let (identity, ak, mut att) = activated();
+            att.activation.as_mut().unwrap().ak_public =
+                hex::encode(tpmt_public_ed25519_with(&ak.verifying_key(), attrs, &[]));
+            expect_mismatch(&identity, &att, "the AK");
+        }
+        // An AK public area holding another key than the one that signed.
+        let (identity, _ak, mut att) = activated();
+        let other = SigningKey::from_bytes(&[7u8; 32]);
+        att.activation.as_mut().unwrap().ak_public =
+            hex::encode(tpmt_public_ed25519_with(&other.verifying_key(), AK_ATTRS, &[]));
+        expect_mismatch(&identity, &att, "different key than ak_pub");
+    }
+
+    #[test]
+    fn ek_shape_violations_are_refused() {
+        // An unrestricted EK would decrypt the credential seed for anyone.
+        let (identity, _ak, mut att) = activated();
+        att.activation.as_mut().unwrap().ek_pub =
+            hex::encode(tpmt_public_rsa_ek(&[0xC5; 256], EK_ATTRS & !ATTR_RESTRICTED, &ek_policy()));
+        expect_mismatch(&identity, &att, "the EK lacks");
+        // An EK usable without the endorsement hierarchy's policy.
+        let (identity, _ak, mut att) = activated();
+        att.activation.as_mut().unwrap().ek_pub =
+            hex::encode(tpmt_public_rsa_ek(&[0xC5; 256], EK_ATTRS, &[]));
+        expect_mismatch(&identity, &att, "EK policy");
+        // Not the supported template shape at all: an ECC key in its place.
+        let (identity, ak, mut att) = activated();
+        att.activation.as_mut().unwrap().ek_pub =
+            hex::encode(tpmt_public_ed25519_with(&ak.verifying_key(), EK_ATTRS, &ek_policy()));
+        assert!(matches!(
+            verify_attestation(&identity_entry(&identity), &att),
+            Err(Error::BadAttestation(_))
+        ));
+    }
+
+    /// A minimal X.509 shape around an RSA key: just enough structure for
+    /// the SPKI walk. Signature and names are filler, as the verifier never
+    /// judges them (the vendor chain is out of band).
+    fn ek_certificate(modulus: &[u8], exponent: &[u8]) -> Vec<u8> {
+        use crate::rfc3161::testutil::tlv;
+        let mut n = vec![0u8];
+        n.extend_from_slice(modulus);
+        let rsa = tlv(0x30, &[tlv(0x02, &n), tlv(0x02, exponent)].concat());
+        let mut bits = vec![0u8];
+        bits.extend_from_slice(&rsa);
+        let alg = tlv(
+            0x30,
+            &[tlv(0x06, &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01]), tlv(0x05, &[])].concat(),
+        );
+        let spki = tlv(0x30, &[alg.clone(), tlv(0x03, &bits)].concat());
+        let tbs = tlv(
+            0x30,
+            &[
+                tlv(0xA0, &tlv(0x02, &[2])),
+                tlv(0x02, &[1]),
+                alg.clone(),
+                tlv(0x30, &[]),
+                tlv(0x30, &[]),
+                tlv(0x30, &[]),
+                spki,
+            ]
+            .concat(),
+        );
+        tlv(0x30, &[tbs, alg, tlv(0x03, &[0, 0xAA])].concat())
+    }
+
+    #[test]
+    fn the_ek_certificate_must_certify_the_recorded_ek() {
+        let (identity, _ak, mut att) = activated();
+        att.ek_cert = hex::encode(ek_certificate(&[0xC5; 256], &[1, 0, 1]));
+        verify_attestation(&identity_entry(&identity), &att).unwrap();
+
+        // A genuine certificate for another EK: the pairing the activation
+        // form exists to refuse.
+        att.ek_cert = hex::encode(ek_certificate(&[0xC6; 256], &[1, 0, 1]));
+        expect_mismatch(&identity, &att, "EK certificate");
+        att.ek_cert = hex::encode(ek_certificate(&[0xC5; 256], &[3]));
+        expect_mismatch(&identity, &att, "EK certificate");
+
+        // Truncated or garbage certificates are refusals, never panics.
+        let good = ek_certificate(&[0xC5; 256], &[1, 0, 1]);
+        for cut in 0..good.len() {
+            att.ek_cert = hex::encode(&good[..cut]);
+            if cut == 0 {
+                continue; // empty: no certificate, the out-of-band caveat
+            }
+            assert!(verify_attestation(&identity_entry(&identity), &att).is_err(), "cut {cut}");
+        }
+    }
+
+    #[test]
+    fn the_activation_form_requires_the_identity_public_area() {
+        let (identity, _ak, mut att) = activated();
+        att.identity_pub = None;
+        assert!(verify_attestation(&identity_entry(&identity), &att).is_err());
+    }
 }
 
 #[cfg(test)]
@@ -957,5 +1685,72 @@ mod swtpm_fixture_tests {
             verify_attestation(&entry2, &good),
             Err(Error::AttestationMismatch(_))
         ));
+    }
+
+    /// The activation form from the same source: the full v4 exchange
+    /// against swtpm (RSA-2048 EK, credential activated, identity key under
+    /// a PolicyPCR policy, both statements qualified).
+    const FIXTURE_V4_ATTESTATION: &str =
+        include_str!("../tests/fixtures/swtpm-attestation-v4.json");
+    const FIXTURE_V4_ENTRY: &str = include_str!("../tests/fixtures/swtpm-identity-entry-v4.json");
+
+    fn fixture_v4() -> (PublicKeyEntry, KeyAttestation) {
+        (
+            serde_json::from_str(FIXTURE_V4_ENTRY).unwrap(),
+            serde_json::from_str(FIXTURE_V4_ATTESTATION).unwrap(),
+        )
+    }
+
+    #[test]
+    fn real_swtpm_activation_form_verifies() {
+        let (entry, att) = fixture_v4();
+        assert!(att.activation.is_some());
+        verify_attestation(&entry, &att).unwrap();
+    }
+
+    #[test]
+    fn real_swtpm_activation_form_rejects_tampering() {
+        let (entry, good) = fixture_v4();
+        let refused = |att: &KeyAttestation| verify_attestation(&entry, att).is_err();
+
+        // Another nonce or credential than the statements were qualified by.
+        let mut att = good.clone();
+        att.activation.as_mut().unwrap().nonce = hex::encode([7u8; 32]);
+        assert!(refused(&att), "foreign nonce accepted");
+        let mut att = good.clone();
+        att.activation.as_mut().unwrap().secret = hex::encode([7u8; 32]);
+        assert!(refused(&att), "forged credential accepted");
+
+        // The identity key's public area with userWithAuth set: a key its
+        // empty password opens. The Name then disagrees with the certify,
+        // and the attribute check refuses it on its own.
+        let mut att = good.clone();
+        let mut tp = hex::decode(att.identity_pub.as_ref().unwrap()).unwrap();
+        tp[7] |= 0x40;
+        att.identity_pub = Some(hex::encode(tp));
+        assert!(refused(&att), "password-usable identity key accepted");
+
+        // The AK public area with restricted cleared.
+        let mut att = good.clone();
+        let act = att.activation.as_mut().unwrap();
+        let mut ak = hex::decode(&act.ak_public).unwrap();
+        ak[5] &= !0x01;
+        act.ak_public = hex::encode(ak);
+        assert!(refused(&att), "unrestricted AK accepted");
+
+        // An EK of another shape (SHA-1 names): not the template the
+        // credential exchange relies on.
+        let mut att = good.clone();
+        let act = att.activation.as_mut().unwrap();
+        let mut ek = hex::decode(&act.ek_pub).unwrap();
+        ek[1] = 0x04; // nameAlg SHA-1: not the template
+        act.ek_pub = hex::encode(ek);
+        assert!(refused(&att), "EK of another shape accepted");
+
+        // The activation removed: verifies, but only in the earlier form,
+        // which the report names (attestation_unbound).
+        let mut att = good.clone();
+        att.activation = None;
+        verify_attestation(&entry, &att).unwrap();
     }
 }

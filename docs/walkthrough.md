@@ -115,7 +115,7 @@ curl -s http://127.0.0.1:8080/mcp \
 # → isError: refused by policy, recorded, never reached the server
 
 curl -s -X DELETE http://127.0.0.1:8080/mcp \
-     -H "Mcp-Session-Id: $SID"
+     -H "Authorization: Bearer $TOKEN" -H "Mcp-Session-Id: $SID"
 # → when this returns, the WAL holds the complete session (chain demo-$SID),
 #   ready for a obsign-ledger pass to seal
 ```
@@ -198,11 +198,15 @@ other sixty-one.
     --key-id seal-prod
 ```
 
-The key pair (Ed25519, both halves under the same label) is provisioned with
+The key pair (Ed25519, both halves under the same label and the same
+`CKA_ID`, which is what binds them) is provisioned with
 the vendor's tooling; the ledger only ever asks the token to sign, over a
 read-only session. When the module exposes several tokens, `--hsm-token-label`
-or `--hsm-slot` picks one; the PIN comes from a file or `OBSIGN_HSM_PIN`,
-never from an argument (arguments end up in `ps` and shell history).
+or `--hsm-slot` picks one (a label carried by several tokens is refused, not
+resolved by slot order); the PIN comes from a file or `OBSIGN_HSM_PIN`,
+never from an argument (arguments end up in `ps` and shell history). Both
+are trimmed of surrounding whitespace, and a PIN file readable by group or
+others is refused: `chmod 600` it, owned by the ledger's user.
 Everything that can be misconfigured fails at startup with the vendor's error
 code in clear text: wrong PIN, absent key, or a key of the wrong type. A
 P-256 key under the right label is refused as such, instead of being left to
@@ -236,7 +240,9 @@ deployments come first:
 The response is only attached if the TSA granted it and the token imprints
 exactly the checkpoint hash; the token names its own checkpoint, so there is no
 flag to get wrong. In the evidence pack, `obsign verify` re-checks both
-structurally and reports the anchors; the CMS signature of the token itself is
+structurally (a SHA-256 imprint, a well-formed `genTime`) and lists each anchor
+with the time the TSA gave it; an anchor over a checkpoint that failed
+verification is shown but not counted. The CMS signature of the token itself is
 validated against the TSA certificate with standard tooling (`openssl ts
 -verify`), and the report says so instead of passing a structural check off
 as a cryptographic one. It says so as a `CAVEAT`, not a warning: the check is
@@ -311,8 +317,13 @@ a period. With the HTTP transport every agent session is its own chain, so
 ```bash
 ./target/debug/obsign-control export \
     --wal /srv/obsign/wal --store /srv/obsign/ledger \
-    --out /tmp/dossier --key /tmp/ops.hex --key-id ops-2026
+    --out /tmp/dossier --key /tmp/ops.hex --key-id ops-2026 \
+    --seal-keys /secure/seal-keys.json   # your copy of the sealing keys
 ```
+
+`--out` must be absent or empty; the dossier is assembled beside it and
+appears complete or not at all. `--seal-keys` pins the sealing keys: without
+it, packs verify against the store's own `keys.json`.
 
 Every chain is exported, verified on the way out, and listed in a signed
 export manifest, so the dossier cannot lose a pack in transit without the loss
@@ -333,7 +344,11 @@ request), and records. No JavaScript, no template engine, no cache, so what
 the console shows is what the files say now. Read-only **by construction**.
 The only accepted method is GET, so the console can never become a second
 write path around git. It binds to localhost by default; authentication is the
-commercial layer's job, and it is no reason to weaken the core.
+commercial layer's job, and it is no reason to weaken the core. Binding it
+anywhere else prints a warning. It answers only a `Host` header that is
+`localhost` or an IP address, so a web page cannot reach it through DNS
+rebinding; pass `--allow-host <name>` for each name operators use to reach
+it.
 
 ## Verification in practice
 
@@ -354,7 +369,7 @@ The report ends on one warning, `identity_not_attested`, and that is the
 product working: the sample enrols no TPM, so nothing proves *which software*
 ran under the gateway key, and the verifier says so instead of staying quiet.
 It is also why this run would exit 1 under `--strict`; see
-[the attestation design note](design/attestation-v3.md).
+[the attestation design note](design/attestation-v4.md).
 
 Tamper with the result and re-run:
 
@@ -396,3 +411,19 @@ used, whatever the order of the entries.
 Without `--trusted-keys`, verification establishes internal consistency only,
 and the report says so explicitly. A forged pack signed with a made-up key
 validates itself: key anchoring must come from another channel.
+
+What a pack does **not** prove: its own completeness at the tail. Nothing in
+it commits to the head of the chain, so removing the newest checkpoints
+together with the records they seal leaves a pack that verifies, exit 0.
+Truncation anywhere else is detected: a record missing in the middle breaks
+the hash chain, a checkpoint missing in the middle breaks the checkpoint
+chain, and a pack that starts after seq 0 says so (`partial_chain`). The
+witness for the tail lives outside the pack: an RFC 3161 anchor over the
+latest checkpoint, or a copy of that checkpoint's hash kept elsewhere. The
+report prints the line to compare with it:
+
+```
+  last sealed : seq 41, checkpoint 9f3c…
+```
+
+If the witness names a later checkpoint than that line, the pack was cut.

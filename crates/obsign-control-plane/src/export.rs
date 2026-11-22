@@ -13,6 +13,7 @@
 //! verify`. Nothing here requires our tooling twice.
 
 use obsign_audit_core::canonical::Encoder;
+use obsign_audit_core::checkpoint::{KeyRole, PublicKeyEntry};
 use obsign_audit_core::evidence::Report;
 use obsign_audit_core::hash::{digest, domain, sha256, Hash};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier as _, VerifyingKey};
@@ -157,15 +158,30 @@ fn list_store_chains(store_dir: &Path) -> Result<Vec<String>, Error> {
 /// Packs that do not verify are written and listed anyway, marked invalid:
 /// during an incident, the failing pack is precisely the one you want on
 /// disk. The boolean says whether the whole dossier verified.
+///
+/// `pinned_seal_keys` is the auditor's out-of-band copy of the sealing keys.
+/// Without it, each pack is verified against the store's own `keys.json`,
+/// which proves the store agrees with itself and nothing more: a store
+/// re-sealed under a substitute key exports as valid. With it, every store
+/// key must be one of the pinned ones, and the packs are verified against
+/// the pinned set only.
+///
+/// The dossier is all or nothing. It is assembled in a sibling directory and
+/// renamed to `out_dir` once complete, the manifest written last inside it,
+/// so a failure at any point leaves `out_dir` as it was. `out_dir` must be
+/// absent or empty: packs from an earlier export left beside a new manifest
+/// would sit in the dossier unlisted, and deleting files the operator put
+/// there is not this command's call.
 pub fn export_all(
     wal_dir: &Path,
     store_dir: &Path,
     out_dir: &Path,
     ops: &OpsKey,
     ts_ms: i64,
+    pinned_seal_keys: Option<&[PublicKeyEntry]>,
 ) -> Result<(Vec<ChainExport>, bool), Error> {
     if !store_dir.is_dir() {
-        // Store::open would silently create an empty store, and every chain
+        // An absent store reads as empty, and every chain
         // would export as "0 sealed", technically true, operationally a
         // mistyped path. Refuse instead.
         return Err(Error::Source(format!(
@@ -200,22 +216,49 @@ pub fn export_all(
         )));
     }
 
-    std::fs::create_dir_all(out_dir)?;
+    let pinned: Option<Vec<PublicKeyEntry>> = pinned_seal_keys.map(|keys| {
+        keys.iter()
+            .filter(|k| k.role == KeyRole::Seal)
+            .cloned()
+            .collect()
+    });
+    if pinned.as_ref().is_some_and(|p| p.is_empty()) {
+        return Err(Error::Source(
+            "the pinned key file holds no key with role seal".to_string(),
+        ));
+    }
 
+    let staging = staging_dir(out_dir)?;
+
+    // Everything that can refuse runs before the first write.
     let mut exports = Vec::new();
     let mut entries = Vec::new();
+    let mut packs = Vec::new();
     let mut all_valid = true;
 
     for chain_id in chains {
         let records = obsign_wal::read(wal_dir, &chain_id)?;
-        let store = Store::open(store_dir, &chain_id)?;
-        let trusted = store.keys().to_vec();
+        let store = Store::open_read_only(store_dir, &chain_id)?;
+        let trusted = match &pinned {
+            None => store.keys().to_vec(),
+            Some(pinned) => {
+                if let Some(k) = store.keys().iter().find(|k| !pinned.contains(k)) {
+                    return Err(Error::Source(format!(
+                        "store {} records sealing key \"{}\", which is not one of \
+                         the pinned seal keys — the store was sealed under a key \
+                         you did not pin",
+                        store_dir.display(),
+                        k.key_id
+                    )));
+                }
+                pinned.clone()
+            }
+        };
         let evidence = obsign_ledger::export(records, &store, &[], None);
         let report = obsign_audit_core::evidence::verify(&evidence, &trusted);
 
         let file = format!("{chain_id}.evidence.json");
         let bytes = serde_json::to_vec_pretty(&evidence)?;
-        write_atomic(&out_dir.join(&file), &bytes)?;
 
         all_valid &= report.is_valid();
         entries.push(PackEntry {
@@ -228,6 +271,7 @@ pub fn export_all(
             anchors: evidence.anchors.len() as u64,
             valid: report.is_valid(),
         });
+        packs.push((file.clone(), bytes));
         exports.push(ChainExport {
             chain_id,
             file,
@@ -242,15 +286,63 @@ pub fn export_all(
     };
     let signed = manifest.sign(ops.key_id(), ops.signing_key());
     signed.verify(&ops.signing_key().verifying_key())?;
-    write_atomic(
-        &out_dir.join("export-manifest.json"),
-        &serde_json::to_vec_pretty(&signed)?,
-    )?;
-    // The manifest key is a trusted key the recipient can be given out of
-    // band, in the same file format the verifier already accepts.
-    record_key_file(out_dir, ops)?;
+    let manifest_bytes = serde_json::to_vec_pretty(&signed)?;
+
+    let written = (|| {
+        std::fs::create_dir(&staging)?;
+        for (file, bytes) in &packs {
+            write_atomic(&staging.join(file), bytes)?;
+        }
+        // The manifest key is a trusted key the recipient can be given out
+        // of band, in the same file format the verifier already accepts.
+        record_key_file(&staging, ops)?;
+        // Manifest last: a directory holding it holds every pack it names.
+        write_atomic(&staging.join("export-manifest.json"), &manifest_bytes)?;
+        if out_dir.exists() {
+            // Checked empty above; `remove_dir` refuses anything else.
+            std::fs::remove_dir(out_dir)?;
+        }
+        std::fs::rename(&staging, out_dir)?;
+        crate::sync_parent_dir(out_dir)
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(e);
+    }
 
     Ok((exports, all_valid))
+}
+
+/// The sibling directory the dossier is assembled in, after checking that
+/// `out_dir` is absent or an empty directory.
+fn staging_dir(out_dir: &Path) -> Result<std::path::PathBuf, Error> {
+    match std::fs::read_dir(out_dir) {
+        Ok(mut entries) => {
+            if entries.next().is_some() {
+                return Err(Error::Source(format!(
+                    "{} is not empty: a dossier is written to a new or empty \
+                     directory, so that no file from an earlier export sits \
+                     beside a manifest that does not list it",
+                    out_dir.display()
+                )));
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    let name = out_dir.file_name().ok_or_else(|| {
+        Error::Source(format!("{}: not a directory name", out_dir.display()))
+    })?;
+    let parent = match out_dir.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => std::path::PathBuf::from("."),
+    };
+    std::fs::create_dir_all(&parent)?;
+    Ok(parent.join(format!(
+        ".{}.partial-{}",
+        name.to_string_lossy(),
+        std::process::id()
+    )))
 }
 
 fn record_key_file(out_dir: &Path, ops: &OpsKey) -> Result<(), Error> {

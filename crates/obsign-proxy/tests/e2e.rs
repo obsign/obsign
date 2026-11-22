@@ -76,6 +76,7 @@ fn identity_bundle_json() -> String {
         audience: AUDIENCE.to_string(),
         jwks,
         claims: obsign_identity::ClaimMap::default(),
+        epoch: 0,
     };
     let signed = bundle.sign("identity-key", &SigningKey::from_bytes(&IDENTITY_SEED));
     serde_json::to_string(&signed).unwrap()
@@ -519,6 +520,85 @@ fn tool_outside_the_catalogue_is_refused() {
     assert!(!f.stderr.contains("[server] EXECUTING exfiltrate_secrets"));
 }
 
+/// Methods of the `mcp_access` records in the log, in order.
+fn accesses(f: &Fixture) -> Vec<String> {
+    f.evidence
+        .records
+        .iter()
+        .filter_map(|r| match &r.payload {
+            Payload::McpAccess(a) => Some(a.method.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn an_unparsable_line_is_refused_not_relayed() {
+    // Regression: a line our parser rejects was relayed to the server as-is.
+    // A server with a more lenient parser (trailing commas, comments) would
+    // execute a `tools/call` no policy saw and no record named.
+    let f = run(
+        "unparsable",
+        CEDAR,
+        declared(),
+        &[
+            TRAFFIC[0],
+            r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"delete_production_db","arguments":{}},}"#,
+        ],
+    );
+
+    assert!(
+        !f.stderr.contains("[server] RECEIVED UNPARSABLE"),
+        "the unparsable line reached the MCP server:\n{}",
+        f.stderr
+    );
+    let refusal = f
+        .stdout
+        .iter()
+        .find(|v| v.pointer("/error/code").and_then(Value::as_i64) == Some(-32700))
+        .expect("the agent is answered with a parse error");
+    assert_eq!(refusal.get("id"), Some(&Value::Null));
+
+    assert_eq!(accesses(&f), vec!["(unparsable message)"]);
+    assert_eq!(f.decisions(), vec![("deny".to_string(), None)]);
+}
+
+#[test]
+fn a_server_message_that_is_not_one_object_never_reaches_the_agent() {
+    // Regression: a batch from the server matched neither `method` nor `id`
+    // and was delivered untouched, past the listing filter and the
+    // server-initiated arbitration; a non-JSON line was relayed as-is.
+    let f = run(
+        "server-unreadable",
+        CEDAR,
+        declared(),
+        &[
+            TRAFFIC[0],
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_docs","arguments":{"emit":"unreadable"}}}"#,
+        ],
+    );
+
+    // The call itself still completes.
+    assert_eq!(f.reply(2).pointer("/result/isError"), Some(&Value::Bool(false)));
+    assert!(
+        f.stdout.iter().all(Value::is_object),
+        "a batch reached the agent: {:?}",
+        f.stdout
+    );
+    assert!(
+        f.stdout
+            .iter()
+            .all(|v| v.get("method").and_then(Value::as_str) != Some("sampling/createMessage")),
+        "an unarbitrated sampling request reached the agent"
+    );
+
+    // Both are in the log, refused.
+    assert_eq!(
+        accesses(&f),
+        vec!["(unreadable server message)", "(unreadable server message)"]
+    );
+}
+
 #[test]
 fn tools_list_is_filtered() {
     let f = run("list", CEDAR, declared(), TRAFFIC);
@@ -669,6 +749,17 @@ fn the_log_resumes_after_restart() {
 /// Runs `obsign-proxy` with raw arguments and no traffic. Used to check startup
 /// refusals.
 fn start_only(name: &str, extra: &[&str]) -> std::process::Output {
+    start_only_with_roles(name, extra, Default::default(), Default::default())
+}
+
+/// [`start_only`], with the policy key and the identity key declared under
+/// the given roles in the trusted keys.
+fn start_only_with_roles(
+    name: &str,
+    extra: &[&str],
+    policy_role: obsign_audit_core::checkpoint::KeyRole,
+    identity_role: obsign_audit_core::checkpoint::KeyRole,
+) -> std::process::Output {
     let dir = std::env::temp_dir().join(format!("obsign-start-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -685,7 +776,9 @@ fn start_only(name: &str, extra: &[&str]) -> std::process::Output {
         },
     };
     let signed = bundle.sign("policy-key", &key);
-    let keys = keyring(&key);
+    let mut keys = keyring(&key);
+    keys[0].role = policy_role;
+    keys[1].role = identity_role;
     std::fs::write(dir.join("bundle.json"), serde_json::to_string(&signed).unwrap()).unwrap();
     std::fs::write(dir.join("keys.json"), serde_json::to_string(&keys).unwrap()).unwrap();
     std::fs::write(dir.join("identity-bundle.json"), identity_bundle_json()).unwrap();
@@ -861,6 +954,55 @@ fn an_ambiguous_identity_configuration_is_refused() {
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("incompatible"), "unclear message: {err}");
+}
+
+#[test]
+fn a_policy_signed_by_an_origin_key_is_refused() {
+    // The policy key was resolved by id alone, whatever role the trusted
+    // keys gave it. An origin key sits on the gateway host to sign records;
+    // whoever reads it there could sign their own rules, and the gateway
+    // loaded them as authority.
+    use obsign_audit_core::checkpoint::KeyRole;
+    let declared = ["--insecure-declared-identity", "--principal", "marie"];
+
+    let out = start_only_with_roles("policy-origin", &declared, KeyRole::Origin, KeyRole::Ops);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("an origin key"), "unclear message: {err}");
+
+    // An ops key is what it should be; a legacy `seal` default still loads.
+    for role in [KeyRole::Ops, KeyRole::Seal] {
+        let out = start_only_with_roles("policy-ops", &declared, role, KeyRole::Ops);
+        assert!(
+            out.status.success(),
+            "role {role:?} refused: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn an_identity_bundle_signed_by_an_origin_key_is_refused() {
+    // Same rule for the identity bundle: an origin key signing a JWKS
+    // would let the record writer mint the principals it records.
+    use obsign_audit_core::checkpoint::KeyRole;
+    let oidc = [
+        "--identity-bundle",
+        "{dir}/identity-bundle.json",
+        "--token-file",
+        "{dir}/token.jwt",
+    ];
+    let out = start_only_with_roles("identity-origin", &oidc, KeyRole::Ops, KeyRole::Origin);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "an identity bundle signed by an origin key must not load: {err}"
+    );
+    assert!(err.contains("identity-key"), "unclear message: {err}");
+
+    // The control: the same configuration with an ops identity key starts.
+    let out = start_only_with_roles("identity-ops", &oidc, KeyRole::Ops, KeyRole::Ops);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
 }
 
 #[test]

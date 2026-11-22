@@ -6,10 +6,16 @@
 //! in framing: TCP delivers the response as a stream (header first, then the
 //! body it announces), a character device answers one `read` with the whole
 //! response.
-//! Authorization is the password session with an empty password throughout:
-//! enrollment runs against a freshly provisioned (or simulated) TPM whose
-//! hierarchies carry no auth yet; taking owner/endorsement passwords is a
-//! production-hardening step, not a protocol change.
+//! Authorization is the password session with an empty password for the
+//! hierarchies and the AK: enrollment runs against a freshly provisioned (or
+//! simulated) TPM whose hierarchies carry no auth yet; taking
+//! owner/endorsement passwords is a production-hardening step, not a protocol
+//! change. Two objects refuse their (empty) password and take a policy
+//! session instead, the point of attestation v4: the EK, under the TCG
+//! `PolicySecret(TPM_RH_ENDORSEMENT)` policy, for `TPM2_ActivateCredential`;
+//! and the identity key, under a `PolicyPCR` policy, for `TPM2_Sign`.
+//! Policy sessions are unbound and unsalted, so their HMAC is empty (TPM 2.0
+//! Part 1, §19.6: no session key and no authValue in the policy).
 //!
 //! Response parsing follows the obsign-audit-core `Reader` discipline: bounds
 //! checked, no recursion, a hostile or truncated response is a named error,
@@ -23,9 +29,14 @@ use std::time::Duration;
 // Command codes (TPM 2.0 Part 2, TPM_CC constants).
 const CC_CREATE_PRIMARY: u32 = 0x0000_0131;
 const CC_STARTUP: u32 = 0x0000_0144;
+const CC_ACTIVATE_CREDENTIAL: u32 = 0x0000_0147;
 const CC_CERTIFY: u32 = 0x0000_0148;
+const CC_POLICY_SECRET: u32 = 0x0000_0151;
 const CC_QUOTE: u32 = 0x0000_0158;
+const CC_SIGN: u32 = 0x0000_015D;
 const CC_FLUSH_CONTEXT: u32 = 0x0000_0165;
+const CC_START_AUTH_SESSION: u32 = 0x0000_0176;
+const CC_POLICY_PCR: u32 = 0x0000_017F;
 const CC_GET_CAPABILITY: u32 = 0x0000_017A;
 const CC_PCR_READ: u32 = 0x0000_017E;
 const CC_PCR_EXTEND: u32 = 0x0000_0182;
@@ -35,7 +46,10 @@ const TAG_SESSIONS: u16 = 0x8002;
 
 pub const TPM_RH_OWNER: u32 = 0x4000_0001;
 pub const TPM_RH_ENDORSEMENT: u32 = 0x4000_000B;
+const TPM_RH_NULL: u32 = 0x4000_0007;
 const TPM_RS_PW: u32 = 0x4000_0009;
+const TPM_SE_POLICY: u8 = 0x01;
+const TPM_ST_HASHCHECK: u16 = 0x8024;
 
 /// `TPM_RC_INITIALIZE`: Startup after the TPM already started, the one
 /// response code treated as success (a re-run against a live TPM).
@@ -47,20 +61,29 @@ const CAP_ECC_CURVES: u32 = 0x0000_0008;
 /// than this is a protocol violation.
 const CAP_PROPERTY_COUNT: u32 = 256;
 
+pub const ALG_RSA: u16 = 0x0001;
+pub const ALG_AES: u16 = 0x0006;
 pub const ALG_SHA256: u16 = 0x000B;
 pub const ALG_NULL: u16 = 0x0010;
+pub const ALG_CFB: u16 = 0x0043;
 pub const ALG_ECDSA: u16 = 0x0018;
 pub const ALG_ECC: u16 = 0x0023;
 pub const ALG_EDDSA: u16 = 0x0060;
 pub const ECC_NIST_P256: u16 = 0x0003;
 pub const ECC_CURVE_25519: u16 = 0x0040;
 
-/// Object attributes: fixedTPM | fixedParent | sensitiveDataOrigin |
-/// userWithAuth | sign, plus restricted for the AK. The identity key is
-/// deliberately *not* restricted, because it must sign session certificates,
-/// which are external bytes a restricted key refuses.
+/// Object attributes. The AK: fixedTPM | fixedParent | sensitiveDataOrigin |
+/// userWithAuth | restricted | sign. The identity key: the same minus
+/// restricted, because it must sign session certificates, which are external
+/// bytes a restricted key refuses; and minus userWithAuth, so its empty
+/// password cannot open it for signing: only its PolicyPCR policy can
+/// (`adminWithPolicy` stays clear: the ADMIN role, which `TPM2_Certify`
+/// needs, cannot sign or change the policy). The EK: TCG template L-1's
+/// fixedTPM | fixedParent | sensitiveDataOrigin | adminWithPolicy |
+/// restricted | decrypt. `obsign_audit_core::attestation` checks all three.
 const ATTRS_AK: u32 = 0x0005_0072;
-const ATTRS_IDENTITY: u32 = 0x0004_0072;
+const ATTRS_IDENTITY: u32 = 0x0004_0032;
+const ATTRS_EK: u32 = 0x0003_00B2;
 
 /// Largest response accepted. The biggest legitimate answer here is a
 /// CreatePrimary (~600 bytes); the cap only bounds a hostile size field.
@@ -298,29 +321,125 @@ impl Tpm {
 
     /// `TPM2_Certify(object, ak)`: the AK-signed statement that `object` is
     /// TPM-resident, carrying its Name.
-    pub fn certify(&mut self, object: u32, ak: u32) -> Result<SignedAttest, Error> {
+    /// `qualifying` lands in the attest's `extraData`, the freshness and
+    /// activation binding the verifier checks.
+    pub fn certify(&mut self, object: u32, ak: u32, qualifying: &[u8]) -> Result<SignedAttest, Error> {
         let name = "TPM2_Certify";
         let mut c = Vec::new();
         c.extend_from_slice(&object.to_be_bytes());
         c.extend_from_slice(&ak.to_be_bytes());
         c.extend_from_slice(&password_auth_area(2)); // both handles authorize
-        c.extend_from_slice(&tpm2b(&[])); // qualifyingData
+        c.extend_from_slice(&tpm2b(qualifying)); // qualifyingData
         c.extend_from_slice(&ALG_NULL.to_be_bytes()); // inScheme: the key's own
         let body = self.exec(name, TAG_SESSIONS, CC_CERTIFY, &c)?;
         parse_attest_and_signature(name, &body)
     }
 
-    /// `TPM2_Quote` over one SHA-256 PCR.
-    pub fn quote(&mut self, ak: u32, pcr: u32) -> Result<SignedAttest, Error> {
+    /// `TPM2_Quote` over one SHA-256 PCR, `qualifying` as for [`Tpm::certify`].
+    pub fn quote(&mut self, ak: u32, pcr: u32, qualifying: &[u8]) -> Result<SignedAttest, Error> {
         let name = "TPM2_Quote";
         let mut c = Vec::new();
         c.extend_from_slice(&ak.to_be_bytes());
         c.extend_from_slice(&password_auth_area(1));
-        c.extend_from_slice(&tpm2b(&[])); // qualifyingData
+        c.extend_from_slice(&tpm2b(qualifying)); // qualifyingData
         c.extend_from_slice(&ALG_NULL.to_be_bytes()); // inScheme: the key's own
         c.extend_from_slice(&pcr_selection(pcr)?);
         let body = self.exec(name, TAG_SESSIONS, CC_QUOTE, &c)?;
         parse_attest_and_signature(name, &body)
+    }
+
+    /// `TPM2_StartAuthSession`: an unbound, unsalted SHA-256 policy
+    /// session, returned by handle. Its policy digest starts at zero and each
+    /// policy command below extends it; a command authorized by it succeeds
+    /// only if the digest then equals the object's `authPolicy`.
+    pub fn start_policy_session(&mut self) -> Result<u32, Error> {
+        let name = "TPM2_StartAuthSession";
+        let nonce = crate::credential::random32()?;
+        let mut c = Vec::new();
+        c.extend_from_slice(&TPM_RH_NULL.to_be_bytes()); // tpmKey: unsalted
+        c.extend_from_slice(&TPM_RH_NULL.to_be_bytes()); // bind: unbound
+        c.extend_from_slice(&tpm2b(&nonce[..16])); // nonceCaller
+        c.extend_from_slice(&tpm2b(&[])); // encryptedSalt
+        c.push(TPM_SE_POLICY);
+        c.extend_from_slice(&ALG_NULL.to_be_bytes()); // symmetric: none
+        c.extend_from_slice(&ALG_SHA256.to_be_bytes()); // authHash
+        let body = self.exec(name, TAG_NO_SESSIONS, CC_START_AUTH_SESSION, &c)?;
+        Reader::new(name, &body).u32()
+    }
+
+    /// `TPM2_PolicySecret(TPM_RH_ENDORSEMENT)`: satisfies the EK policy by
+    /// proving the endorsement hierarchy's (empty) auth.
+    pub fn policy_secret_endorsement(&mut self, session: u32) -> Result<(), Error> {
+        let mut c = Vec::new();
+        c.extend_from_slice(&TPM_RH_ENDORSEMENT.to_be_bytes()); // authHandle
+        c.extend_from_slice(&session.to_be_bytes()); // policySession
+        c.extend_from_slice(&password_auth_area(1)); // for authHandle only
+        c.extend_from_slice(&tpm2b(&[])); // nonceTPM
+        c.extend_from_slice(&tpm2b(&[])); // cpHashA
+        c.extend_from_slice(&tpm2b(&[])); // policyRef
+        c.extend_from_slice(&0i32.to_be_bytes()); // expiration
+        self.exec("TPM2_PolicySecret", TAG_SESSIONS, CC_POLICY_SECRET, &c)?;
+        Ok(())
+    }
+
+    /// `TPM2_PolicyPCR` over `selection` (a marshalled
+    /// `TPML_PCR_SELECTION`), with an empty `pcrDigest`: the TPM folds in
+    /// the values the PCRs hold *now*, so the session satisfies a PCR policy
+    /// only if they hold the enrolled ones.
+    pub fn policy_pcr(&mut self, session: u32, selection: &[u8]) -> Result<(), Error> {
+        let mut c = Vec::new();
+        c.extend_from_slice(&session.to_be_bytes());
+        c.extend_from_slice(&tpm2b(&[])); // pcrDigest
+        c.extend_from_slice(selection);
+        self.exec("TPM2_PolicyPCR", TAG_NO_SESSIONS, CC_POLICY_PCR, &c)?;
+        Ok(())
+    }
+
+    /// `TPM2_ActivateCredential`: decrypts a credential made for the object
+    /// at `activate` (the AK) with the EK at `ek`, which the TPM does only
+    /// if both are loaded here and the credential's integrity, keyed on the
+    /// AK's Name, verifies. `ek_session` is a policy session already holding
+    /// the EK policy; it is consumed. Returns the credential.
+    pub fn activate_credential(
+        &mut self,
+        activate: u32,
+        ek: u32,
+        ek_session: u32,
+        credential_blob: &[u8],
+        encrypted_secret: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        let name = "TPM2_ActivateCredential";
+        let mut c = Vec::new();
+        c.extend_from_slice(&activate.to_be_bytes());
+        c.extend_from_slice(&ek.to_be_bytes());
+        c.extend_from_slice(&auth_area(&[Auth::Password, Auth::Policy(ek_session)]));
+        c.extend_from_slice(&tpm2b(credential_blob));
+        c.extend_from_slice(&tpm2b(encrypted_secret));
+        let body = self.exec(name, TAG_SESSIONS, CC_ACTIVATE_CREDENTIAL, &c)?;
+        let mut r = Reader::new(name, &body);
+        r.u32()?; // parameterSize
+        Ok(r.tpm2b()?.to_vec())
+    }
+
+    /// `TPM2_Sign` of a SHA-256 `digest` by `key`, authorized by the policy
+    /// session `session` (consumed). Fails with a policy error unless the
+    /// session's digest equals the key's `authPolicy`: for the identity key,
+    /// unless the PCRs hold the enrolled values.
+    pub fn sign_with_policy(&mut self, key: u32, session: u32, digest: &[u8; 32]) -> Result<[u8; 64], Error> {
+        let name = "TPM2_Sign";
+        let mut c = Vec::new();
+        c.extend_from_slice(&key.to_be_bytes());
+        c.extend_from_slice(&auth_area(&[Auth::Policy(session)]));
+        c.extend_from_slice(&tpm2b(digest));
+        c.extend_from_slice(&ALG_NULL.to_be_bytes()); // inScheme: the key's own
+        // validation: a NULL ticket, accepted for an unrestricted key.
+        c.extend_from_slice(&TPM_ST_HASHCHECK.to_be_bytes());
+        c.extend_from_slice(&TPM_RH_NULL.to_be_bytes());
+        c.extend_from_slice(&tpm2b(&[]));
+        let body = self.exec(name, TAG_SESSIONS, CC_SIGN, &c)?;
+        let mut r = Reader::new(name, &body);
+        r.u32()?; // parameterSize
+        parse_signature(&mut r)
     }
 
     /// `TPM2_FlushContext`: unloads a created key.
@@ -415,20 +534,38 @@ fn parse_response(name: &'static str, response: &[u8]) -> Result<Vec<u8>, Error>
     Ok(response[10..].to_vec())
 }
 
-/// The authorization area for `n` password sessions with empty passwords:
-/// the area's byte length, then per session `TPM_RS_PW`, an empty nonce,
-/// continueSession, and an empty hmac.
-fn password_auth_area(n: usize) -> Vec<u8> {
-    let mut session = Vec::new();
-    session.extend_from_slice(&TPM_RS_PW.to_be_bytes());
-    session.extend_from_slice(&tpm2b(&[])); // nonce
-    session.push(0x01); // continueSession
-    session.extend_from_slice(&tpm2b(&[])); // hmac (the empty password)
-    let mut area = ((session.len() * n) as u32).to_be_bytes().to_vec();
-    for _ in 0..n {
-        area.extend_from_slice(&session);
+/// One authorization in a command's authorization area.
+#[derive(Clone, Copy)]
+enum Auth {
+    /// The password session with an empty password.
+    Password,
+    /// A policy session by handle, unbound and unsalted: empty nonce and
+    /// hmac, continueSession clear so the TPM flushes it after the command.
+    Policy(u32),
+}
+
+/// The authorization area: its byte length, then per session the handle, an
+/// empty nonce, the attributes byte, and an empty hmac.
+fn auth_area(auths: &[Auth]) -> Vec<u8> {
+    let mut sessions = Vec::new();
+    for a in auths {
+        let (handle, attrs) = match *a {
+            Auth::Password => (TPM_RS_PW, 0x01), // continueSession
+            Auth::Policy(h) => (h, 0x00),
+        };
+        sessions.extend_from_slice(&handle.to_be_bytes());
+        sessions.extend_from_slice(&tpm2b(&[])); // nonce
+        sessions.push(attrs);
+        sessions.extend_from_slice(&tpm2b(&[])); // hmac
     }
+    let mut area = (sessions.len() as u32).to_be_bytes().to_vec();
+    area.extend_from_slice(&sessions);
     area
+}
+
+/// The authorization area for `n` password sessions with empty passwords.
+fn password_auth_area(n: usize) -> Vec<u8> {
+    auth_area(&vec![Auth::Password; n])
 }
 
 /// `TPM2B_*`: u16 length prefix, then the bytes.
@@ -438,34 +575,54 @@ fn tpm2b(b: &[u8]) -> Vec<u8> {
     v
 }
 
-/// A `TPML_PCR_SELECTION` naming one PCR in the SHA-256 bank.
-fn pcr_selection(pcr: u32) -> Result<Vec<u8>, Error> {
-    if pcr >= 24 {
-        return Err(Error::Unsupported(format!(
-            "PCR {pcr} out of range: a TPM 2.0 bank holds PCRs 0..23"
-        )));
-    }
-    let mut v = 1u32.to_be_bytes().to_vec(); // one selection
-    v.extend_from_slice(&ALG_SHA256.to_be_bytes());
-    v.push(3); // sizeofSelect: 24 PCRs
-    let mut bitmap = [0u8; 3];
-    bitmap[(pcr / 8) as usize] |= 1 << (pcr % 8);
-    v.extend_from_slice(&bitmap);
-    Ok(v)
+/// A `TPML_PCR_SELECTION` naming one PCR in the SHA-256 bank. Built by
+/// obsign-audit-core, which hashes the same bytes into the PCR policy it
+/// verifies: the selection sent to `TPM2_PolicyPCR` and the one the verifier
+/// assumes cannot drift apart.
+pub fn pcr_selection(pcr: u32) -> Result<Vec<u8>, Error> {
+    obsign_audit_core::attestation::sha256_pcr_selection(&[pcr])
+        .map_err(|e| Error::Unsupported(e.to_string()))
 }
 
 /// The `TPMT_PUBLIC` template for the AK: restricted ECC signing key.
 pub fn ak_template(alg: KeyAlg) -> Vec<u8> {
-    ecc_signing_template(ATTRS_AK, alg)
+    ecc_signing_template(ATTRS_AK, alg, &[])
 }
 
 /// The `TPMT_PUBLIC` template for the identity key: ordinary ECC signing
-/// key, non-restricted, so it signs session certificates (external bytes).
-pub fn identity_template(alg: KeyAlg) -> Vec<u8> {
-    ecc_signing_template(ATTRS_IDENTITY, alg)
+/// key, non-restricted, so it signs session certificates (external bytes),
+/// usable for signing only through `policy` (a `PolicyPCR` digest, see
+/// `obsign_audit_core::attestation::pcr_policy_digest`).
+pub fn identity_template(alg: KeyAlg, policy: &[u8]) -> Vec<u8> {
+    ecc_signing_template(ATTRS_IDENTITY, alg, policy)
 }
 
-fn ecc_signing_template(attrs: u32, alg: KeyAlg) -> Vec<u8> {
+/// The pre-v4 identity template: password-usable, no policy. Kept only so
+/// tests can show the verifier refusing what the enroller used to create.
+pub fn legacy_identity_template(alg: KeyAlg) -> Vec<u8> {
+    ecc_signing_template(0x0004_0072, alg, &[])
+}
+
+/// The TCG default EK template L-1 (EK Credential Profile 2.0, §B.3.3): RSA
+/// 2048, AES-128-CFB storage parameters, the `PolicySecret(TPM_RH_ENDORSEMENT)`
+/// policy, a zero-filled 256-byte unique. On real hardware this is the EK
+/// the manufacturer's certificate in NV (index 0x01C00002) was issued for.
+pub fn ek_template() -> Vec<u8> {
+    let mut v = ALG_RSA.to_be_bytes().to_vec();
+    v.extend_from_slice(&ALG_SHA256.to_be_bytes()); // nameAlg
+    v.extend_from_slice(&ATTRS_EK.to_be_bytes());
+    v.extend_from_slice(&tpm2b(&obsign_audit_core::attestation::ek_policy()));
+    v.extend_from_slice(&ALG_AES.to_be_bytes());
+    v.extend_from_slice(&128u16.to_be_bytes());
+    v.extend_from_slice(&ALG_CFB.to_be_bytes());
+    v.extend_from_slice(&ALG_NULL.to_be_bytes()); // scheme
+    v.extend_from_slice(&2048u16.to_be_bytes()); // keyBits
+    v.extend_from_slice(&0u32.to_be_bytes()); // exponent: default
+    v.extend_from_slice(&tpm2b(&[0u8; 256])); // unique
+    v
+}
+
+fn ecc_signing_template(attrs: u32, alg: KeyAlg, policy: &[u8]) -> Vec<u8> {
     let (scheme, curve) = match alg {
         KeyAlg::Ed25519 => (ALG_EDDSA, ECC_CURVE_25519),
         KeyAlg::EcdsaP256 => (ALG_ECDSA, ECC_NIST_P256),
@@ -473,7 +630,7 @@ fn ecc_signing_template(attrs: u32, alg: KeyAlg) -> Vec<u8> {
     let mut v = ALG_ECC.to_be_bytes().to_vec();
     v.extend_from_slice(&ALG_SHA256.to_be_bytes()); // nameAlg
     v.extend_from_slice(&attrs.to_be_bytes());
-    v.extend_from_slice(&tpm2b(&[])); // authPolicy
+    v.extend_from_slice(&tpm2b(policy)); // authPolicy
     v.extend_from_slice(&ALG_NULL.to_be_bytes()); // symmetric
     v.extend_from_slice(&scheme.to_be_bytes());
     v.extend_from_slice(&ALG_SHA256.to_be_bytes()); // scheme hash
@@ -546,6 +703,14 @@ fn parse_attest_and_signature(name: &'static str, body: &[u8]) -> Result<SignedA
     let mut r = Reader::new(name, body);
     r.u32()?; // parameterSize
     let attest = r.tpm2b()?.to_vec();
+    let sig = parse_signature(&mut r)?;
+    Ok(SignedAttest { attest, sig })
+}
+
+/// Parses an ECC `TPMT_SIGNATURE` (ECDSA or EdDSA, SHA-256) into 64 bytes,
+/// `r || s` zero-padded.
+fn parse_signature(r: &mut Reader) -> Result<[u8; 64], Error> {
+    let name = r.name;
     let sig_alg = r.u16()?;
     if sig_alg != ALG_ECDSA && sig_alg != ALG_EDDSA {
         return Err(Error::Protocol {
@@ -571,7 +736,7 @@ fn parse_attest_and_signature(name: &'static str, body: &[u8]) -> Result<SignedA
     let mut sig = [0u8; 64];
     sig[32 - part_r.len()..32].copy_from_slice(part_r);
     sig[64 - part_s.len()..].copy_from_slice(part_s);
-    Ok(SignedAttest { attest, sig })
+    Ok(sig)
 }
 
 /// Bounds-checked reader in the obsign-audit-core `Reader` discipline, with
@@ -735,13 +900,32 @@ mod tests {
         let area = password_auth_area(2);
         assert_eq!(area.len(), 22);
         assert_eq!(&area[..4], &18u32.to_be_bytes());
+        // A policy session names its handle and clears continueSession.
+        let area = auth_area(&[Auth::Password, Auth::Policy(0x0300_0000)]);
+        assert_eq!(&area[..4], &18u32.to_be_bytes());
+        assert_eq!(&area[13..17], &0x0300_0000u32.to_be_bytes());
+        assert_eq!(area[19], 0x00);
+    }
+
+    #[test]
+    fn templates_carry_the_attributes_the_verifier_requires() {
+        use obsign_audit_core::attestation as a;
+        let id = identity_template(KeyAlg::EcdsaP256, &[0xAB; 32]);
+        let attrs = u32::from_be_bytes(id[4..8].try_into().unwrap());
+        assert_eq!(attrs & a::ATTR_USER_WITH_AUTH, 0, "identity key opens by policy only");
+        assert_eq!(&id[8..10], &[0, 32], "authPolicy is carried");
+        assert!(a::check_ak_public(&ak_template(KeyAlg::EcdsaP256)).is_ok());
+        // The EK template has the shape check_ek_public accepts, filler
+        // modulus aside (a real one has its top bit set, zeros do too here
+        // as nothing computes with it).
+        assert!(a::check_ek_public(&ek_template(), &[]).is_ok());
     }
 
     #[test]
     fn a_template_roundtrips_through_public_key_extraction() {
         // The template has an empty unique. Extraction must still walk it,
         // yielding an empty point (a real response carries the coordinates).
-        let t = identity_template(KeyAlg::Ed25519);
+        let t = identity_template(KeyAlg::Ed25519, &[0xAB; 32]);
         let (alg, raw) = public_key_bytes(&t).unwrap();
         assert_eq!(alg, KeyAlg::Ed25519);
         assert!(raw.is_empty());

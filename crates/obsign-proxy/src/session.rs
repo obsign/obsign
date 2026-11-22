@@ -1,7 +1,7 @@
 use crate::origin::OriginSigner;
 use obsign_audit_core::record::*;
 use obsign_audit_core::{content_hash, origin_signing_bytes, ChainWriter, SignedRecord};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use obsign_wal::Wal;
@@ -27,6 +27,45 @@ pub struct Pending {
     pub started: Instant,
 }
 
+/// Ids of server machinery relayed to the agent and not yet answered.
+///
+/// Bounded, since a server can ping an agent that never answers. Past the
+/// cap the *oldest* id is forgotten, not the newest refused: a hard cap
+/// that stopped remembering once full refused every later legitimate pong
+/// for the rest of the session, after the first thousand unanswered pings.
+/// An evicted id's reply, should it ever come, is refused and recorded as
+/// unsolicited, which fails toward refusal, never toward an unarbitrated
+/// channel.
+#[derive(Default)]
+pub struct RelayedIds {
+    order: VecDeque<String>,
+}
+
+impl RelayedIds {
+    pub const CAP: usize = 1024;
+
+    pub fn insert(&mut self, id: String) {
+        if self.order.contains(&id) {
+            return;
+        }
+        if self.order.len() == Self::CAP {
+            self.order.pop_front();
+        }
+        self.order.push_back(id);
+    }
+
+    /// Forgets `id`; true when it was remembered.
+    pub fn remove(&mut self, id: &str) -> bool {
+        match self.order.iter().position(|k| k == id) {
+            Some(i) => {
+                self.order.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
 /// Mutable gateway state, shared between the upstream direction (agent to
 /// server) and the downstream one (server to agent).
 pub struct Session {
@@ -49,16 +88,26 @@ pub struct Session {
     /// relayed to the agent without arbitration. The agent's reply to one of
     /// these passes like the request did; a "response" matching neither this
     /// set nor `pending_to_agent` is unsolicited (an arbitrary payload
-    /// aimed at the server) and is refused. Bounded: past the cap, new
-    /// machinery requests still relay but their replies will be refused,
-    /// which fails toward refusal, never toward an unarbitrated channel.
-    pub relayed_to_agent: HashSet<String>,
+    /// aimed at the server) and is refused. Bounded, oldest out: see
+    /// [`RelayedIds`].
+    pub relayed_to_agent: RelayedIds,
+    /// Ids of agent machinery requests (`tools/list`, `ping`…) forwarded
+    /// and not yet answered. Not recorded, but they share the agent's id
+    /// space with the acts in `pending`: an act and a listing in flight
+    /// under one id would let the listing's response close the act's
+    /// effect. Whichever comes second is refused, so a response id names
+    /// at most one request.
+    pub machinery_in_flight: HashSet<String>,
     /// Call counter, used to build readable identifiers.
     pub counter: u64,
     /// Separate counter for `reload-N` identifiers: reloads are rarer than
     /// calls and sharing the call counter would leave holes in the dec-N /
     /// eff-N pairing an investigator reads by.
     pub reload_counter: u64,
+    /// Set by the first failed write, never cleared. See `write`.
+    pub poisoned: bool,
+    /// Effect records that could not be written. See `write_effect`.
+    pub lost_effects: u64,
 }
 
 impl Session {
@@ -74,9 +123,33 @@ impl Session {
     /// chain), and a record must never become durable unsigned when the
     /// gateway has a key; the sealer would refuse it later, far from the
     /// cause.
+    ///
+    /// A failure poisons the session: every later write fails too. The chain
+    /// has already moved past the record (`seq` and `prev_hash` are taken at
+    /// `chain.append`), so a record that failed to sign or to reach the disk
+    /// leaves a hole the next one would chain across: a log that reports a
+    /// broken link forever, or one that sits on a torn line. The transport
+    /// then refuses every act that needs a record, which is all of them;
+    /// the stdio loop exits, the HTTP session answers 500.
     pub fn write(
         &mut self,
         id: impl Into<String>,
+        parent: Option<String>,
+        payload: Payload,
+    ) -> Result<Record, obsign_wal::Error> {
+        if self.poisoned {
+            return Err(obsign_wal::Error::Poisoned);
+        }
+        let written = self.write_unpoisoned(id.into(), parent, payload);
+        if written.is_err() {
+            self.poisoned = true;
+        }
+        written
+    }
+
+    fn write_unpoisoned(
+        &mut self,
+        id: String,
         parent: Option<String>,
         payload: Payload,
     ) -> Result<Record, obsign_wal::Error> {
@@ -94,6 +167,26 @@ impl Session {
         Ok(sr.record)
     }
 
+    /// Writes the effect closing an act, when there is nothing left to
+    /// refuse if the write fails: the act already happened (a response came
+    /// back), or was already refused.
+    ///
+    /// The failure still poisons the session (see `write`), so the next act
+    /// is refused. What it must not be is silent: the act it closes stays
+    /// in the log as a call and a decision with no outcome, which reads
+    /// exactly like a response that never came. Said on stderr at the time,
+    /// and counted in the closing report, because a degradation nobody sees
+    /// is the one the log will be trusted on.
+    pub fn write_effect(&mut self, id: String, decision: String, effect: Effect) {
+        if let Err(e) = self.write(id.clone(), Some(decision), Payload::Effect(effect)) {
+            self.lost_effects += 1;
+            eprintln!(
+                "[obsign] AUDIT GAP: effect record {id} could not be written ({e}); \
+                 the act it closes has no recorded outcome"
+            );
+        }
+    }
+
     pub fn next_call_id(&mut self) -> String {
         self.counter += 1;
         format!("call-{}", self.counter)
@@ -107,13 +200,25 @@ impl Session {
     /// job ends when every record is durable in the WAL; the message says
     /// where to point the sealer.
     pub fn closing_report(&self) -> String {
-        format!(
+        let mut report = format!(
             "{} record(s) durable in {} — seal with: obsign-ledger seal \
              --wal <dir> --chain-id {}",
-            self.chain.next_seq(),
+            // The chain moved past the record whose write failed.
+            self.chain.next_seq() - u64::from(self.poisoned),
             self.wal.path().display(),
             self.chain.chain_id(),
-        )
+        );
+        if self.lost_effects > 0 {
+            report.push_str(&format!(
+                " — AUDIT GAP: {} effect record(s) could not be written, their \
+                 acts have no recorded outcome",
+                self.lost_effects
+            ));
+        }
+        if self.poisoned {
+            report.push_str(" — the log stopped accepting records after a failed write");
+        }
+        report
     }
 }
 
@@ -272,9 +377,12 @@ pub fn open(
         agent_record_id: String::new(),
         pending: HashMap::new(),
         pending_to_agent: HashMap::new(),
-        relayed_to_agent: HashSet::new(),
+        relayed_to_agent: RelayedIds::default(),
+        machinery_in_flight: HashSet::new(),
         counter: 0,
         reload_counter: 0,
+        poisoned: false,
+        lost_effects: 0,
     }
 }
 
@@ -313,6 +421,62 @@ mod tests {
             r.verify_origin("t", &vk)
                 .unwrap_or_else(|e| panic!("record {} unsigned or invalid: {e}", r.id));
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An origin signer whose first signature fails, then recovers: an HSM
+    /// hiccup, a key file briefly unreadable.
+    struct FlakySigner {
+        inner: crate::origin::FileOriginSigner,
+        failed_once: std::sync::atomic::AtomicBool,
+    }
+
+    impl OriginSigner for FlakySigner {
+        fn key_id(&self) -> &str {
+            self.inner.key_id()
+        }
+        fn public_key(&self) -> obsign_audit_core::checkpoint::PublicKeyEntry {
+            self.inner.public_key()
+        }
+        fn sign(&self, message: &[u8]) -> Result<[u8; 64], std::io::Error> {
+            if !self.failed_once.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return Err(std::io::Error::other("signer unavailable"));
+            }
+            self.inner.sign(message)
+        }
+    }
+
+    #[test]
+    fn a_failed_write_poisons_the_session() {
+        // The chain moves on at `chain.append`, before the signature and the
+        // fsync. A write that fails after that point used to leave the
+        // session running: the next record chained onto a seq that never
+        // reached the disk, and the log reported a broken link forever.
+        let dir = std::env::temp_dir()
+            .join(format!("obsign-session-poison-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let signer = Arc::new(FlakySigner {
+            inner: crate::origin::FileOriginSigner::from_seed([4u8; 32]),
+            failed_once: std::sync::atomic::AtomicBool::new(false),
+        });
+        let (wal, chain) = Wal::open(&dir, "t").unwrap();
+        let mut s = open(chain, wal, "sess".into(), Some(signer));
+
+        let effect = || {
+            Payload::Effect(Effect {
+                status: EffectStatus::Ok,
+                result_hash: None,
+                latency_ms: 0,
+            })
+        };
+        assert!(s.write("eff-1", None, effect()).is_err());
+        assert!(
+            matches!(s.write("eff-2", None, effect()), Err(obsign_wal::Error::Poisoned)),
+            "the signer recovered, but nothing may follow a lost record"
+        );
+
+        // What is on disk is still a valid chain.
+        assert!(s.wal.read_all().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

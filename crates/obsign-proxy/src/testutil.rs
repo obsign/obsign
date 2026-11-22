@@ -64,6 +64,7 @@ pub fn write_bundle(path: &PathBuf, version: &str, kids: &[(&str, u8)]) {
         audience: AUDIENCE.to_string(),
         jwks: jwks_with(kids),
         claims: ClaimMap::default(),
+        epoch: 0,
     };
     let signed = bundle.sign("identity-key", &SigningKey::from_bytes(&BUNDLE_SEED));
     std::fs::write(path, serde_json::to_string(&signed).unwrap()).unwrap();

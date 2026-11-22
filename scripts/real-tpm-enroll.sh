@@ -2,8 +2,9 @@
 # Real-hardware TPM interop pass — see docs/real-tpm-interop.md.
 #
 # Run from the repo root on a Linux machine with a TPM 2.0. Performs the
-# preflight checks, then a full enrollment against /dev/tpmrm0. The enroller
-# self-verifies with obsign-audit-core before emitting: exit 0 is the pass.
+# preflight checks, then the full attestation-v4 exchange against /dev/tpmrm0.
+# The finish step verifies with obsign-audit-core before emitting: exit 0 is
+# the pass.
 
 set -euo pipefail
 
@@ -42,14 +43,27 @@ fi
 BIN=target/release/obsign-tpm-enroll
 HASH="$(sha256sum "$BIN" | cut -d' ' -f1)"
 
-say "enrolling: PCR 16, binary hash $HASH"
-"$BIN" \
-    --tpm "$DEVICE" \
-    --key-id "real-hw-$(hostname -s)" \
-    --binary-hash "$HASH" \
-    --pcr 16 \
-    ${EK_ARGS[@]+"${EK_ARGS[@]}"} \
-    --out "$OUT"
+WORK="$(mktemp -d)"
+trap 'rm -r "$WORK"' EXIT
 
-say "PASS — attestation self-verified by obsign-audit-core, written to $OUT"
+# Both sides of the exchange on one machine: enough for an interop pass,
+# where the point is the TPM's behavior, not the separation of duties.
+# PCR 16 is extended once here, so run this right after a boot (or on a PCR
+# nothing else extends): finish checks the PCR holds exactly one extension
+# of the binary hash.
+say "measuring the enroller binary into PCR 16 ($HASH)"
+"$BIN" measure --tpm "$DEVICE" --pcr 16 --binary-hash "$HASH"
+say "step 1/4: EK and AK public areas"
+"$BIN" request --tpm "$DEVICE" ${EK_ARGS[@]+"${EK_ARGS[@]}"} --out "$WORK/request.json"
+say "step 2/4: credential challenge (ops side)"
+"$BIN" challenge --request "$WORK/request.json" --out "$WORK/challenge.json" \
+    --state "$WORK/ops-state.json"
+say "step 3/4: ActivateCredential, PCR-policy identity key, certify, quote"
+"$BIN" respond --tpm "$DEVICE" --challenge "$WORK/challenge.json" \
+    --key-id "real-hw-$(hostname -s)" --pcr 16 --out "$WORK/response.json"
+say "step 4/4: check and verify (ops side)"
+"$BIN" finish --state "$WORK/ops-state.json" --response "$WORK/response.json" \
+    --binary-hash "$HASH" --out "$OUT"
+
+say "PASS — attestation verified by obsign-audit-core, written to $OUT"
 say "record the machine + TPM in docs/real-tpm-interop.md"

@@ -471,18 +471,7 @@ impl DeploymentTrust {
         let signed: SignedDeploymentBundle =
             serde_json::from_str(&raw).context("parsing the deployment bundle")?;
 
-        let ops = trusted
-            .iter()
-            .find(|k| k.key_id == signed.key_id)
-            .with_context(|| {
-                format!(
-                    "deployment bundle signed by ops key \"{}\", absent from the \
-                     trusted keys",
-                    signed.key_id
-                )
-            })?
-            .to_verifying_key()
-            .context("unusable ops key")?;
+        let ops = bundle_key(trusted, &signed.key_id, "deployment bundle")?;
 
         let bundle = signed
             .verify(&ops)
@@ -513,6 +502,54 @@ impl DeploymentTrust {
         }
         Ok(())
     }
+}
+
+/// The trusted keys allowed to sign what the gateway loads: the policy, the
+/// identity and the deployment bundles. Every key but an origin one.
+///
+/// An origin key lives on the gateway host by design (it signs every record
+/// as it is written). Accepted as a bundle signer, whoever reads it off that
+/// host could sign their own rules, or their own JWKS, and the gateway would
+/// load them as authority: the writer would mint the authority it writes
+/// under. `--trusted-keys` may well list origin keys, the file the ledger
+/// reads does; they are simply never consulted here.
+///
+/// A `seal` key is kept, as everywhere a bundle is verified (see
+/// `evidence::verify`): `seal` is the default role, so every trusted-key
+/// file written before `ops` existed declares its ops key that way, and it
+/// must keep meaning what it meant.
+pub fn bundle_signers(trusted: &[PublicKeyEntry]) -> Vec<PublicKeyEntry> {
+    trusted
+        .iter()
+        .filter(|k| k.role != KeyRole::Origin)
+        .cloned()
+        .collect()
+}
+
+/// The key a signed bundle names, resolved in `trusted` under the rule of
+/// [`bundle_signers`]. An origin key is refused by name, not reported
+/// absent: the operator must learn the key is there and why it does not
+/// count.
+pub fn bundle_key(trusted: &[PublicKeyEntry], key_id: &str, what: &str) -> Result<VerifyingKey> {
+    let entry = trusted
+        .iter()
+        .find(|k| k.key_id == key_id)
+        .with_context(|| format!("{what} signed with key \"{key_id}\", absent from the trusted keys"))?;
+    match entry.role {
+        KeyRole::Ops => {}
+        KeyRole::Seal => eprintln!(
+            "[obsign] note: {what} signed by \"{key_id}\", which the trusted keys \
+             declare with the legacy default role (seal); declare it \"role\": \"ops\""
+        ),
+        KeyRole::Origin => bail!(
+            "{what} signed by \"{key_id}\", an origin key: a key that signs records \
+             on the gateway host cannot sign the authority the gateway loads. \
+             Sign it with an ops key."
+        ),
+    }
+    entry
+        .to_verifying_key()
+        .with_context(|| format!("unusable trusted key \"{key_id}\""))
 }
 
 #[cfg(test)]

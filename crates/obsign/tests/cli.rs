@@ -189,3 +189,76 @@ fn anchored_pack_with_unsealed_records_exits_3_and_says_not_proven() {
     assert_eq!(out.status.code(), Some(3), "stdout: {stdout}");
     assert!(stdout.contains("NOT PROVEN"), "stdout: {stdout}");
 }
+
+#[test]
+fn the_legacy_opt_out_does_not_tolerate_an_untrusted_signature() {
+    // `--allow-unsigned-legacy-chains` is for logs that predate origin
+    // signatures. A record signed by a key absent from the trusted set is
+    // not one of those, and used to exit 0 under the flag.
+    use ed25519_dalek::Signer;
+    let key = SigningKey::from_bytes(&[1u8; 32]);
+    let attacker = SigningKey::from_bytes(&[9u8; 32]);
+    let mut ev = pack(&key, "k1");
+    let rec = ev.records[1].record.clone();
+    let msg = obsign_audit_core::origin_signing_bytes("cli-chain", &rec.hash());
+    ev.records[1] = SignedRecord::signed(rec, "attacker", attacker.sign(&msg).to_bytes());
+    let ev = write_tmp("untrusted-sig.json", &serde_json::to_string(&ev).unwrap());
+    let keys = write_tmp(
+        "untrusted-sig.keys.json",
+        &serde_json::to_string(&vec![entry(&key, "k1")]).unwrap(),
+    );
+
+    let out = obsign(&[
+        "verify",
+        "--allow-unsigned-legacy-chains",
+        "--trusted-keys",
+        keys.to_str().unwrap(),
+        ev.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "stdout: {stdout}");
+}
+
+#[test]
+fn an_oversized_pack_is_refused_before_it_is_read() {
+    // A sparse file: 1 GiB + 1 byte on paper, nothing on disk. The verifier
+    // used to read it whole into memory before failing to parse it.
+    let path = write_tmp("oversized.json", "");
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len((1 << 30) + 1)
+        .unwrap();
+
+    let out = obsign(&["verify", path.to_str().unwrap()]);
+    let _ = std::fs::remove_file(&path);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "stderr: {stderr}");
+    assert!(stderr.contains("larger than"), "stderr: {stderr}");
+}
+
+#[test]
+fn the_report_states_the_last_sealed_checkpoint() {
+    // A pack does not prove its own end (see docs/walkthrough.md, "What
+    // verification establishes"): the auditor compares this line with an
+    // out-of-band record of the latest seal, so it has to be printed.
+    let key = SigningKey::from_bytes(&[1u8; 32]);
+    let ev = pack(&key, "k1");
+    let head = ev.checkpoints[0].checkpoint.hash();
+    let ev = write_tmp("head.json", &serde_json::to_string(&ev).unwrap());
+    let keys = write_tmp("head.keys.json", &serde_json::to_string(&vec![entry(&key, "k1")]).unwrap());
+
+    let out = obsign(&[
+        "verify",
+        "--allow-unsigned-legacy-chains",
+        "--trusted-keys",
+        keys.to_str().unwrap(),
+        ev.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(&format!("last sealed : seq 2, checkpoint {head}")),
+        "stdout: {stdout}"
+    );
+}

@@ -239,6 +239,137 @@ fn removing_a_checkpoint_is_visible() {
     assert!(codes(&r).contains(&"broken_checkpoint_link"));
 }
 
+/// Edits one field of the (single) checkpoint and verifies against the
+/// trusted keys. Every field is under the signature, so every edit must at
+/// least break it; the content checks add their own finding where the field
+/// also describes the records.
+fn tamper_checkpoint(edit: impl FnOnce(&mut obsign_audit_core::checkpoint::Checkpoint)) -> Vec<String> {
+    let (mut ev, keys) = sample();
+    edit(&mut ev.checkpoints[0].checkpoint);
+    let r = evidence::verify(&ev, &keys);
+    assert!(!r.is_valid());
+    assert_eq!(r.checkpoints_valid, 0);
+    assert_eq!(r.records_sealed, 0, "an invalid seal covers nothing");
+    codes(&r).into_iter().map(String::from).collect()
+}
+
+#[test]
+fn a_checkpoint_head_hash_edit_is_detected() {
+    let c = tamper_checkpoint(|cp| cp.head_hash = content_hash(b"another head"));
+    assert!(c.contains(&"invalid_signature".into()), "{c:?}");
+    assert!(c.contains(&"head_mismatch".into()), "{c:?}");
+}
+
+#[test]
+fn a_backdated_checkpoint_is_detected() {
+    // ts_ms is the key holder's word; moving it after signing is not.
+    let c = tamper_checkpoint(|cp| cp.ts_ms -= 86_400_000);
+    assert_eq!(c, ["invalid_signature"]);
+}
+
+#[test]
+fn a_narrowed_checkpoint_interval_is_detected() {
+    // Narrowing from either end would leave the excluded records unsealed
+    // under a seal that still claims to be valid.
+    let c = tamper_checkpoint(|cp| cp.from_seq = 1);
+    assert!(c.contains(&"invalid_signature".into()), "{c:?}");
+    assert!(c.contains(&"root_mismatch".into()), "{c:?}");
+
+    let c = tamper_checkpoint(|cp| cp.to_seq = 4);
+    assert!(c.contains(&"invalid_signature".into()), "{c:?}");
+    assert!(c.contains(&"root_mismatch".into()), "{c:?}");
+}
+
+#[test]
+fn a_checkpoint_moved_under_another_trusted_key_is_detected() {
+    // Two trusted sealing keys; the checkpoint signed by one is relabelled
+    // as the other's. The key id is under the signature, and the other key
+    // did not sign these bytes either way.
+    let (mut ev, mut keys) = sample();
+    let other = SigningKey::from_bytes(&[4u8; 32]);
+    keys.push(PublicKeyEntry { key_id: "other-key".into(), ..pubkey_entry(&other) });
+    ev.checkpoints[0].checkpoint.key_id = "other-key".into();
+
+    let r = evidence::verify(&ev, &keys);
+    assert!(!r.is_valid());
+    assert_eq!(codes(&r), ["invalid_signature"]);
+}
+
+#[test]
+fn tail_truncation_is_a_documented_limit_not_a_detection() {
+    // DOCUMENTS current behaviour, it does not endorse it. See "What
+    // verification establishes" in docs/walkthrough.md and the scope in
+    // SECURITY.md: nothing in a pack commits to the head of the chain, so
+    // dropping the newest checkpoints together with their records leaves a
+    // pack that verifies, exit 0. Truncation in the middle or at the head is
+    // detected (`removing_a_checkpoint_is_visible`, `partial_chain`). The
+    // witness for the tail is outside the pack: an RFC 3161 anchor or an
+    // out-of-band copy of the latest checkpoint, compared to the
+    // `last_checkpoint_hash` the report states. If this test starts failing
+    // because truncation is now detected, update the documents with it.
+    let key = signing_key();
+    let mut chain = ChainWriter::new(CHAIN_ID);
+    let mut records = Vec::new();
+    let mut cps = Vec::new();
+    for batch in 0..3 {
+        for i in 0..2 {
+            records.push(chain.append(batch * 100 + i, format!("r-{batch}-{i}"), None, "s", tool_call("t")));
+        }
+        cps.push(chain.seal(9_000 + batch, KEY_ID).unwrap().sign(&key));
+    }
+    let witnessed = cps[2].checkpoint.hash();
+
+    let entry = pubkey_entry(&key);
+    let mut ev = Evidence {
+        format: FORMAT.to_string(),
+        chain_id: CHAIN_ID.to_string(),
+        records: wrap(records),
+        checkpoints: cps,
+        keys: vec![entry.clone()],
+        anchors: Vec::new(),
+        deployment: None,
+    };
+    ev.checkpoints.truncate(2);
+    ev.records.truncate(4);
+
+    let r = evidence::verify(&ev, &[entry]);
+    assert!(r.is_valid(), "the truncated pack still verifies: {:?}", r.findings);
+    assert!(r.proves_every_record());
+    // Unsigned records here, hence `origin_unverified`; nothing else, and
+    // nothing about a missing tail.
+    assert!(
+        r.warnings().all(|f| f.code == "origin_unverified"),
+        "and says nothing about it: {:?}",
+        r.findings
+    );
+    // What the auditor compares to the witness: it no longer matches.
+    assert_eq!(r.last_sealed_seq, Some(3));
+    assert_eq!(r.last_checkpoint_hash, Some(ev.checkpoints[1].checkpoint.hash()));
+    assert_ne!(r.last_checkpoint_hash, Some(witnessed));
+}
+
+#[test]
+fn a_checkpoint_claiming_the_whole_u64_range_cannot_stall_the_verifier() {
+    // The interval bounds are read before the signature means anything, so
+    // anyone can write `[0..u64::MAX]`. The verifier used to walk it seq by
+    // seq, collecting every absent one: a pack that never returns. It must
+    // answer, and answer "tampered".
+    let (mut ev, keys) = sample();
+    ev.checkpoints[0].checkpoint.from_seq = 0;
+    ev.checkpoints[0].checkpoint.to_seq = u64::MAX;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(evidence::verify(&ev, &keys));
+    });
+    let r = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("verify must not iterate an attacker-sized interval");
+    assert!(!r.is_valid());
+    assert!(codes(&r).contains(&"missing_records"));
+    assert_eq!(r.checkpoints_valid, 0);
+}
+
 #[test]
 fn records_appended_after_sealing_are_reported() {
     // Consistent with the chain but covered by no seal: they are not proven,
@@ -821,6 +952,14 @@ fn an_attacker_signature_under_an_unknown_key_proves_nothing() {
     let r = evidence::verify_with(&ev, &trusted, &REQUIRE_ORIGIN);
     assert!(!r.is_valid());
     assert!(codes(&r).contains(&"origin_unverified"));
+
+    // The legacy opt-out tolerates records with no signature, which a log
+    // older than origin authentication has. This record has one, under a
+    // key nobody trusts: the opt-out used to turn it into a warning and let
+    // the forgery exit 0.
+    let legacy = evidence::verify_with(&ev, &trusted, &VerifyOptions::default());
+    assert!(!legacy.is_valid(), "an untrusted signature is not a legacy record");
+    assert!(codes(&legacy).contains(&"origin_unverified"));
 }
 
 #[test]
@@ -1024,6 +1163,24 @@ mod deployment {
         let r = evidence::verify_with(&ev, &legacy, &REQUIRE);
         assert!(r.is_valid(), "findings: {:?}", r.findings);
         assert_eq!(r.records_origin_ok, 3);
+    }
+
+    #[test]
+    fn an_origin_key_cannot_sign_a_deployment_bundle() {
+        // A gateway holding a trusted origin key signs a bundle enrolling a
+        // key of its choosing, then writes records under it. The bundle
+        // signer was looked up by key id whatever its role, so the gateway
+        // vouched for itself and the pack exited 0.
+        let gw = SigningKey::from_bytes(&[21u8; 32]);
+        let rogue = SigningKey::from_bytes(&[23u8; 32]);
+        let seal = signing_key();
+        let ev = pack_with_bundle(&rogue, &seal, &gw, "gw-1");
+
+        let trusted = vec![pubkey_entry(&seal), origin_entry("ops-1", &gw)];
+        let r = evidence::verify_with(&ev, &trusted, &REQUIRE);
+        assert!(!r.is_valid(), "an origin key must not enrol origin keys");
+        assert!(codes(&r).contains(&"key_role_mismatch"), "findings: {:?}", r.findings);
+        assert_eq!(r.records_origin_ok, 0);
     }
 
     #[test]
@@ -1328,6 +1485,12 @@ mod session_certs {
         let r = evidence::verify_with(&ev, &trust(&seal, &ops), &REQUIRE);
         assert!(!r.is_valid());
         assert!(codes(&r).contains(&"session_cert_unverified"));
+
+        // Same verdict under the legacy opt-out: a certificate is a
+        // signature, and the opt-out tolerates only the absence of one.
+        let legacy = evidence::verify_with(&ev, &trust(&seal, &ops), &VerifyOptions::default());
+        assert!(!legacy.is_valid());
+        assert!(codes(&legacy).contains(&"session_cert_unverified"));
     }
 
     #[test]
@@ -1358,6 +1521,125 @@ mod session_certs {
         let r = evidence::verify_with(&ev, &trust(&seal, &ops), &REQUIRE);
         assert!(!r.is_valid(), "an uncertified session key proves nothing");
         assert!(codes(&r).contains(&"origin_unverified"));
+    }
+
+    #[test]
+    fn a_session_key_cannot_take_over_an_existing_key_id() {
+        // The bundle binds an id to one gateway key; a certificate whose
+        // session key derives the same id must not replace it. The session
+        // key used to overwrite the entry silently, and every record signed
+        // under that id then verified against the newcomer.
+        let session = SigningKey::from_bytes(&[31u8; 32]);
+        let identity = SigningKey::from_bytes(&[32u8; 32]);
+        let gateway = SigningKey::from_bytes(&[34u8; 32]);
+        let seal = signing_key();
+        let ops = SigningKey::from_bytes(&[33u8; 32]);
+        let cert = make_cert(CHAIN_ID, &session, &identity, IDENTITY_ID);
+        let mut ev = v2_pack(&session, &identity, &seal, &ops, cert);
+        ev.deployment = Some(
+            DeploymentBundle {
+                format: DFMT.into(),
+                version: "deployment@v2".into(),
+                origin_keys: vec![
+                    origin_entry(IDENTITY_ID, &identity),
+                    origin_entry(&key_id_for(&session.verifying_key()), &gateway),
+                ],
+                attestations: Vec::new(),
+            }
+            .sign("ops-1", &ops),
+        );
+
+        let r = evidence::verify_with(&ev, &trust(&seal, &ops), &REQUIRE);
+        assert!(!r.is_valid(), "a rebinding must not pass");
+        assert!(codes(&r).contains(&"session_cert_invalid"), "findings: {:?}", r.findings);
+    }
+
+    // --- P-256 identity key (a TPM without EdDSA) ----------------------
+    // There is no P-256 signer in this tree, by design (`p256` verifies
+    // only), so the certificate signature is a fixture: an OpenSSL
+    // prime256v1 key signed the SHA-256 of `session_cert_signing_bytes` for
+    // the certificate `p256_cert` builds, checked with `openssl dgst -verify`
+    // before being embedded.
+    const P256_ID: &str = "id-gw-p256";
+    const P256_PUB: &str = "045ff7d8c7e8f2de4f601acf51e05fdf02ec625daa30a2a0267b6c82d0ad0848b7\
+                            f83a509eb7b1d3dba3fda9e872a4db6f7a3f921c21339c75ac7ae8af9fa1e97f";
+    const P256_SIG: &str = "0fbac7c5cef1b78e968dbf55f31f7c5bc0788d4e631afbe2a6fbc36b32b160f2\
+                            fc7082021f2df47651abf4af1713cf7b1a05ae363a7409941a88d67a09fb075b";
+
+    fn p256_cert(session: &SigningKey) -> SessionCert {
+        SessionCert {
+            session_pubkey: hex::encode(session.verifying_key().to_bytes()),
+            identity_key_id: P256_ID.into(),
+            gateway_id: "gw-1".into(),
+            not_before_ms: 0,
+            not_after_ms: 1_000_000,
+            identity_sig: P256_SIG.into(),
+        }
+    }
+
+    /// The v2 pack, its bundle enrolling the P-256 identity key instead.
+    fn p256_pack(cert: SessionCert, ops: &SigningKey) -> Evidence {
+        let session = SigningKey::from_bytes(&[31u8; 32]);
+        let unused_identity = SigningKey::from_bytes(&[32u8; 32]);
+        let mut ev = v2_pack(&session, &unused_identity, &signing_key(), ops, cert);
+        ev.deployment = Some(
+            DeploymentBundle {
+                format: DFMT.into(),
+                version: "deployment@p256".into(),
+                origin_keys: vec![PublicKeyEntry {
+                    key_id: P256_ID.into(),
+                    algo: "ecdsa-p256".into(),
+                    public_key: P256_PUB.into(),
+                    role: KeyRole::Origin,
+                }],
+                attestations: Vec::new(),
+            }
+            .sign("ops-1", ops),
+        );
+        ev
+    }
+
+    #[test]
+    fn a_p256_identity_key_certifies_a_session_end_to_end() {
+        // docs/design/attestation-v3.md: a TPM with no EdDSA holds a P-256
+        // identity key. Enrolled in the bundle, it must carry the chain of
+        // trust through `verify`; the whole bundle used to be refused as
+        // `deployment_bundle_invalid`.
+        let session = SigningKey::from_bytes(&[31u8; 32]);
+        let ops = SigningKey::from_bytes(&[33u8; 32]);
+        let ev = p256_pack(p256_cert(&session), &ops);
+
+        let r = evidence::verify_with(&ev, &trust(&signing_key(), &ops), &REQUIRE);
+        assert!(r.is_valid(), "findings: {:?}", r.findings);
+        assert_eq!(r.records_origin_ok, 3, "cert record included");
+    }
+
+    #[test]
+    fn a_forged_p256_certificate_is_rejected() {
+        let session = SigningKey::from_bytes(&[31u8; 32]);
+        let ops = SigningKey::from_bytes(&[33u8; 32]);
+        let mut cert = p256_cert(&session);
+        // Same signature, another gateway: the signed bytes no longer match.
+        cert.gateway_id = "gw-2".into();
+        let ev = p256_pack(cert, &ops);
+
+        let r = evidence::verify_with(&ev, &trust(&signing_key(), &ops), &REQUIRE);
+        assert!(!r.is_valid());
+        assert!(codes(&r).contains(&"session_cert_invalid"));
+    }
+
+    #[test]
+    fn a_p256_identity_key_never_signs_records_directly() {
+        // A record naming the P-256 identity key as its signer: that key
+        // certifies sessions only, so the record is refused outright.
+        let session = SigningKey::from_bytes(&[31u8; 32]);
+        let ops = SigningKey::from_bytes(&[33u8; 32]);
+        let mut ev = p256_pack(p256_cert(&session), &ops);
+        ev.records[1].origin_key_id = Some(P256_ID.into());
+
+        let r = evidence::verify_with(&ev, &trust(&signing_key(), &ops), &REQUIRE);
+        assert!(!r.is_valid());
+        assert!(codes(&r).contains(&"origin_invalid"));
     }
 }
 
@@ -1455,4 +1737,71 @@ fn the_same_key_repeated_under_one_id_is_not_a_conflict() {
     let r = evidence::verify(&ev, &[real.clone(), real, upper]);
     assert!(r.is_valid(), "findings: {:?}", r.findings);
     assert!(r.proves_every_record());
+}
+
+/// The identity point, compressed: a small-order "public key".
+const WEAK_KEY: [u8; 32] = {
+    let mut k = [0u8; 32];
+    k[0] = 1;
+    k
+};
+
+/// `R` = the identity point, `s` = 0. Under non-strict Ed25519 verification
+/// and `WEAK_KEY`, this "signs" every message.
+fn universal_signature() -> String {
+    let mut sig = [0u8; 64];
+    sig[0] = 1;
+    hex::encode(sig)
+}
+
+#[test]
+fn a_small_order_key_signs_nothing() {
+    // A key entry whose point is the identity, and one 64-byte signature
+    // that matched it for any message: the checkpoint, every record, the
+    // deployment bundle and the session certificate all verified with it.
+    // Strict verification refuses both the key and the signature.
+    use obsign_audit_core::deployment::{DeploymentBundle, FORMAT as DFMT};
+    use obsign_audit_core::origin::IdentityKey;
+
+    let weak = PublicKeyEntry {
+        key_id: KEY_ID.into(),
+        algo: "ed25519".into(),
+        public_key: hex::encode(WEAK_KEY),
+        role: KeyRole::Seal,
+    };
+    let weak_vk = weak.to_verifying_key().expect("the point decodes");
+
+    let (mut ev, _) = sample();
+    ev.checkpoints[0].signature = universal_signature();
+    let r = evidence::verify(&ev, std::slice::from_ref(&weak));
+    assert!(codes(&r).contains(&"invalid_signature"), "checkpoint: {:?}", r.findings);
+
+    let mut sr = ev.records[0].clone();
+    sr.origin_sig = Some(universal_signature());
+    sr.origin_key_id = Some("weak".into());
+    assert!(sr.verify_origin(CHAIN_ID, &weak_vk).is_err(), "record");
+
+    let mut bundle = DeploymentBundle {
+        format: DFMT.into(),
+        version: "deployment@weak".into(),
+        origin_keys: Vec::new(),
+        attestations: Vec::new(),
+    }
+    .sign("ops-1", &signing_key());
+    bundle.signature = universal_signature();
+    assert!(bundle.verify(&weak_vk).is_err(), "deployment bundle");
+
+    let cert = SessionCert {
+        session_pubkey: hex::encode(signing_key().verifying_key().to_bytes()),
+        identity_key_id: "weak".into(),
+        gateway_id: "gw-1".into(),
+        not_before_ms: 0,
+        not_after_ms: 1,
+        identity_sig: universal_signature(),
+    };
+    assert!(
+        obsign_audit_core::verify_session_cert_with(CHAIN_ID, &cert, &IdentityKey::Ed25519(weak_vk))
+            .is_err(),
+        "session certificate"
+    );
 }

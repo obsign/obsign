@@ -43,10 +43,11 @@ Options:
                              Ops-signed deployment bundle naming the gateway
                              origin keys, when the pack does not embed one.
       --allow-unsigned-legacy-chains
-                             Tolerate records with no verifiable origin
-                             signature (a warning, not an error). Origin
-                             authentication is required by default; this is
-                             the explicit opt-out for pre-origin logs.
+                             Tolerate records that carry no origin signature
+                             (a warning, not an error). Origin authentication
+                             is required by default; this is the explicit
+                             opt-out for pre-origin logs. A signature under a
+                             key absent from the trusted set stays an error.
       --require-attestation  Treat an enrolled identity key with no valid
                              remote attestation as an error, not a warning
                              (v3; the EK vendor-root check stays out of band).
@@ -56,6 +57,8 @@ Options:
                              offline (TSA signature, TPM vendor root), which
                              the auditor still performs out of band.
   -h, --help                 Print help
+
+Input files (pack, keys, bundle) over 1 GiB are refused (exit 2).
 
 Exit codes: 0 proven, 1 invalid, 2 execution error,
             3 consistent but unproven (no trusted keys supplied, or
@@ -177,9 +180,39 @@ fn main() -> ExitCode {
     }
 }
 
+/// Largest input file `verify` reads: 1 GiB. Generous (a pack is a few
+/// hundred bytes per record, so millions of records fit) and far below the
+/// canonical encoder's 4 GiB field limit. Without it, a file the auditor is
+/// handed decides how much memory the verifier takes.
+const MAX_INPUT_BYTES: u64 = 1 << 30;
+
+/// `read_to_string`, refusing a file over [`MAX_INPUT_BYTES`]. The size is
+/// checked up front and the read bounded too, for a file that grows or is not
+/// a regular file.
+fn read_input(path: &std::path::Path) -> Result<String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
+    let too_big = || {
+        anyhow::anyhow!(
+            "{} is larger than {MAX_INPUT_BYTES} bytes (1 GiB), the most `obsign verify` reads",
+            path.display()
+        )
+    };
+    if file.metadata().map(|m| m.len()).unwrap_or(0) > MAX_INPUT_BYTES {
+        return Err(too_big());
+    }
+    let mut raw = String::new();
+    file.take(MAX_INPUT_BYTES + 1)
+        .read_to_string(&mut raw)
+        .with_context(|| format!("reading {}", path.display()))?;
+    if raw.len() as u64 > MAX_INPUT_BYTES {
+        return Err(too_big());
+    }
+    Ok(raw)
+}
+
 fn run(cmd: VerifyCmd) -> Result<ExitCode> {
-    let raw = std::fs::read_to_string(&cmd.evidence)
-        .with_context(|| format!("reading {}", cmd.evidence.display()))?;
+    let raw = read_input(&cmd.evidence)?;
     let mut ev: Evidence = serde_json::from_str(&raw)
         .with_context(|| format!("parsing {}", cmd.evidence.display()))?;
 
@@ -187,8 +220,7 @@ fn run(cmd: VerifyCmd) -> Result<ExitCode> {
     // not embed one; a pack that embeds its own is authoritative. That is
     // the bundle that was in force when it was sealed.
     if let Some(p) = &cmd.deployment_bundle {
-        let raw =
-            std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?;
+        let raw = read_input(p)?;
         let supplied = serde_json::from_str(&raw)
             .with_context(|| format!("parsing {}", p.display()))?;
         if ev.deployment.is_none() {
@@ -203,8 +235,7 @@ fn run(cmd: VerifyCmd) -> Result<ExitCode> {
     let trusted: Vec<PublicKeyEntry> = match &cmd.trusted_keys {
         None => Vec::new(),
         Some(p) => {
-            let raw =
-                std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?;
+            let raw = read_input(p)?;
             serde_json::from_str(&raw).with_context(|| format!("parsing {}", p.display()))?
         }
     };
@@ -265,11 +296,28 @@ fn print_report(r: &evidence::Report) {
         "  checkpoints : {} valid / {}",
         r.checkpoints_valid, r.checkpoints_total
     );
+    // A pack does not prove its own end: dropping the newest checkpoints
+    // with their records leaves a pack that verifies. This is the line to
+    // compare with an out-of-band record of the latest seal.
+    if let (Some(seq), Some(h)) = (r.last_sealed_seq, r.last_checkpoint_hash) {
+        println!("  last sealed : seq {seq}, checkpoint {h}");
+    }
     if r.anchors_total > 0 {
         println!(
             "  anchors     : {} consistent / {} (RFC 3161)",
             r.anchors_ok, r.anchors_total
         );
+        // The date is the point of an anchor: show each one, and say so
+        // when it was not counted (the finding below says why).
+        for a in &r.anchors {
+            println!(
+                "                {} genTime {}{}{}",
+                a.checkpoint.as_deref().unwrap_or("[absent checkpoint]"),
+                a.gen_time.as_deref().unwrap_or("unreadable"),
+                a.tsa.as_deref().map(|t| format!(" ({t})")).unwrap_or_default(),
+                if a.consistent { "" } else { " — not counted" }
+            );
+        }
     }
     // "0 signed" on a legacy pack is information, not noise, and under
     // --require-origin it is the headline.
@@ -441,10 +489,13 @@ mod tests {
             checkpoints_valid: 1,
             anchors_total: 0,
             anchors_ok: 0,
+            anchors: Vec::new(),
             records_origin_ok: 1,
             records_unknown: 0,
             first_seq: Some(0),
             last_seq: Some(0),
+            last_sealed_seq: Some(0),
+            last_checkpoint_hash: None,
             self_referential,
             findings,
         }

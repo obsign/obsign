@@ -689,9 +689,10 @@ pub struct SessionCert {
     pub gateway_id: String,
     pub not_before_ms: i64,
     pub not_after_ms: i64,
-    /// Ed25519 signature by the identity key, 64 bytes in hex, over the
-    /// canonical encoding of the fields above plus the chain id (see
-    /// `crate::origin::session_cert_signing_bytes`).
+    /// Signature by the identity key, 64 bytes in hex, over the canonical
+    /// encoding of the fields above plus the chain id (see
+    /// `crate::origin::session_cert_signing_bytes`): Ed25519, or raw `r || s`
+    /// ECDSA-P256 over their SHA-256 for a P-256 identity key.
     pub identity_sig: String,
 }
 

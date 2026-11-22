@@ -20,11 +20,13 @@
 //! the gateway *is* the origin, and origin authentication cannot defend
 //! against the origin.
 
+use crate::attestation::ALGO_ECDSA_P256;
 use crate::canonical::Encoder;
+use crate::checkpoint::PublicKeyEntry;
 use crate::error::Error;
-use crate::hash::{digest, domain, Hash};
+use crate::hash::{digest, domain, sha256, Hash};
 use crate::record::{Record, SessionCert};
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::VerifyingKey;
 use serde::{Deserialize, Serialize};
 
 /// The canonical id an origin key is known by, derived from its public bytes.
@@ -32,8 +34,10 @@ use serde::{Deserialize, Serialize};
 /// One derivation, used by whoever signs (the gateway naming its key in a
 /// record envelope) and whoever verifies (resolving a session key from its
 /// certificate): two schemes drifting is the single-implementation risk this
-/// crate exists to remove. Sixteen hex chars of the public key; a collision
-/// there would already break the customer's key management.
+/// crate exists to remove. Sixteen hex chars of the public key. Widening it
+/// would orphan the `origin_key_id` every v2 record already names, so the
+/// verifier refuses an id that a certificate would rebind to another key
+/// instead of trusting 64 bits never to collide.
 pub fn key_id_for(key: &VerifyingKey) -> String {
     format!("origin-{}", &hex::encode(key.to_bytes())[..16])
 }
@@ -56,24 +60,87 @@ pub fn session_cert_signing_bytes(chain_id: &str, cert: &SessionCert) -> Vec<u8>
     digest(domain::SESSION_CERT, e.finish()).as_bytes().to_vec()
 }
 
-/// Verifies a session certificate under one identity key and returns the
-/// session key it authorizes.
+/// A key an origin-role entry may hold: what a deployment bundle enrols.
 ///
-/// On success the returned key is what every record of the chain must verify
-/// against; the caller keys it by [`key_id_for`], the id the records name.
+/// Ed25519 is what every software-held key signs, and the only kind that
+/// signs records. ECDSA-P256 exists for one caller: a TPM that implements no
+/// EdDSA (swtpm, much shipping silicon) can only hold a P-256 identity key
+/// (see docs/design/attestation-v3.md). Such a key certifies session keys,
+/// over the SHA-256 of [`session_cert_signing_bytes`] (what a TPM signs), and
+/// nothing else: a record naming it is refused, never verified.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdentityKey {
+    Ed25519(VerifyingKey),
+    /// Uncompressed point, `0x04 || x || y`, 65 bytes.
+    EcdsaP256(Vec<u8>),
+}
+
+impl IdentityKey {
+    /// Reads an origin-role entry. The role itself is the caller's to check.
+    pub fn from_entry(entry: &PublicKeyEntry) -> Result<Self, Error> {
+        if entry.algo != ALGO_ECDSA_P256 {
+            return entry.to_verifying_key().map(IdentityKey::Ed25519);
+        }
+        let raw = hex::decode(&entry.public_key)
+            .map_err(|_| Error::BadHex(entry.public_key.clone()))?;
+        if raw.len() != 65 || raw[0] != 0x04 {
+            return Err(Error::BadKey(entry.key_id.clone()));
+        }
+        Ok(IdentityKey::EcdsaP256(raw))
+    }
+
+    /// The key as a record signer: only an ed25519 key is one.
+    pub fn record_key(&self) -> Option<&VerifyingKey> {
+        match self {
+            IdentityKey::Ed25519(vk) => Some(vk),
+            IdentityKey::EcdsaP256(_) => None,
+        }
+    }
+
+    pub fn algo(&self) -> &'static str {
+        match self {
+            IdentityKey::Ed25519(_) => "ed25519",
+            IdentityKey::EcdsaP256(_) => ALGO_ECDSA_P256,
+        }
+    }
+
+    fn verify(&self, msg: &[u8], sig: &[u8; 64]) -> bool {
+        match self {
+            IdentityKey::Ed25519(vk) => crate::ed25519_verify(vk, msg, sig),
+            IdentityKey::EcdsaP256(point) => {
+                crate::p256::verify_ecdsa_p256(point, sha256(msg).as_bytes(), sig)
+            }
+        }
+    }
+}
+
+/// Verifies a session certificate under one ed25519 identity key and returns
+/// the session key it authorizes. See [`verify_session_cert_with`].
 pub fn verify_session_cert(
     chain_id: &str,
     cert: &SessionCert,
     identity_key: &VerifyingKey,
 ) -> Result<VerifyingKey, Error> {
-    let raw = hex::decode(&cert.identity_sig).map_err(|_| Error::BadHex(cert.identity_sig.clone()))?;
-    let bytes: [u8; 64] = raw.try_into().map_err(|_| Error::BadSignatureLength)?;
+    verify_session_cert_with(chain_id, cert, &IdentityKey::Ed25519(*identity_key))
+}
+
+/// Verifies a session certificate under one identity key, of either kind,
+/// and returns the session key it authorizes.
+///
+/// On success the returned key is what every record of the chain must verify
+/// against; the caller keys it by [`key_id_for`], the id the records name.
+pub fn verify_session_cert_with(
+    chain_id: &str,
+    cert: &SessionCert,
+    identity_key: &IdentityKey,
+) -> Result<VerifyingKey, Error> {
+    let bytes = crate::signature_from_hex(&cert.identity_sig)?;
     let msg = session_cert_signing_bytes(chain_id, cert);
-    identity_key
-        .verify(&msg, &Signature::from_bytes(&bytes))
-        .map_err(|_| Error::BadSessionCert {
+    if !identity_key.verify(&msg, &bytes) {
+        return Err(Error::BadSessionCert {
             identity_key_id: cert.identity_key_id.clone(),
-        })?;
+        });
+    }
 
     // The session public key must itself be a usable ed25519 key.
     let pk = hex::decode(&cert.session_pubkey)
@@ -186,14 +253,15 @@ impl SignedRecord {
                 seq: self.record.seq,
             });
         };
-        let raw = hex::decode(sig_hex).map_err(|_| Error::BadHex(sig_hex.clone()))?;
-        let bytes: [u8; 64] = raw.try_into().map_err(|_| Error::BadSignatureLength)?;
+        let sig = crate::signature_from_hex(sig_hex)?;
         let msg = origin_signing_bytes(chain_id, &self.record.hash());
-        key.verify(&msg, &Signature::from_bytes(&bytes))
-            .map_err(|_| Error::BadOriginSignature {
+        if !crate::ed25519_verify(key, &msg, &sig) {
+            return Err(Error::BadOriginSignature {
                 seq: self.record.seq,
                 key_id: self.origin_key_id.clone().unwrap_or_default(),
-            })
+            });
+        }
+        Ok(())
     }
 }
 

@@ -18,19 +18,27 @@
 //! Authentication is deliberately absent from the core console: bind it to
 //! localhost (the default) or an admin network. SSO/RBAC belongs to the
 //! commercial layer.
+//!
+//! Localhost is not a boundary a browser respects on its own: a page on
+//! `evil.example` whose name is re-pointed at 127.0.0.1 (DNS rebinding) is
+//! same-origin with the console and can read it. Such a request still says
+//! `Host: evil.example`, so the console answers only a Host that is
+//! `localhost`, an IP literal (no rebinding goes through one), or a name
+//! the operator allowed with `--allow-host`.
 
 use obsign_audit_core::checkpoint::PublicKeyEntry;
 use obsign_audit_core::record::{Payload, Record};
 use obsign_ledger::Store;
 use std::fmt::Write as _;
-use std::io::{BufRead, BufReader, Read as _, Write as _};
+use std::io::{BufRead, BufReader, Read as _};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::export::list_chains;
-use crate::release::SignedManifest;
+use crate::release::{Artifact, SignedManifest};
+use obsign_audit_core::hash::sha256;
 use crate::Error;
 
 /// Ceiling on request head bytes. Above this, nobody is browsing.
@@ -40,6 +48,11 @@ const MAX_HEAD_BYTES: u64 = 8 * 1024;
 /// fine for an admin page, but only if a client that stops mid-request
 /// releases its thread instead of holding it forever.
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Deadline on a whole request, head read to response written. The per-read
+/// timeout alone is reset by every byte, so a client trickling one header
+/// line every few seconds held its thread for as long as it liked.
+pub const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Records shown on a chain page. Not a silent cap: the page says when it
 /// truncates and points at `export` for the full log.
@@ -52,15 +65,21 @@ pub struct Console {
     pub store_dir: Option<PathBuf>,
     /// Distribution directory, for the release page.
     pub dist_dir: Option<PathBuf>,
+    /// Host names answered besides `localhost` and IP literals, the names
+    /// operators type to reach a console bound to an admin network.
+    pub allowed_hosts: Vec<String>,
+    /// Whole-request deadline, [`REQUEST_DEADLINE`] outside tests.
+    pub request_deadline: Duration,
 }
 
 impl Console {
     pub fn serve(self, addr: &str) -> Result<(), Error> {
         let listener = TcpListener::bind(addr)?;
-        eprintln!(
-            "[control] console on http://{}/ — read-only",
-            listener.local_addr()?
-        );
+        let local = listener.local_addr()?;
+        eprintln!("[control] console on http://{local}/ — read-only");
+        if let Some(w) = exposure_warning(local) {
+            eprintln!("[control] WARNING: {w}");
+        }
         self.serve_on(listener)
     }
 
@@ -78,16 +97,101 @@ impl Console {
     }
 }
 
+/// The console has no authentication: bound anywhere but loopback, anyone
+/// who can reach the port reads the log. Allowed (an admin network is a
+/// legitimate place for it), but never silently.
+pub fn exposure_warning(addr: std::net::SocketAddr) -> Option<String> {
+    if addr.ip().is_loopback() {
+        return None;
+    }
+    Some(format!(
+        "the console is bound to {addr}, not a loopback address, and has no \
+         authentication — everyone who can reach this port can read the log"
+    ))
+}
+
+/// Whether a `Host` header names this console rather than a name re-pointed
+/// at it. `localhost` and IP literals always pass (a rebinding attack needs
+/// a name it controls); anything else must be in `allowed`.
+fn host_allowed(host: Option<&str>, allowed: &[String]) -> bool {
+    let Some(host) = host.map(|h| h.trim().to_ascii_lowercase()) else {
+        return false;
+    };
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        match rest.split_once(']') {
+            Some((v6, _)) => v6.to_string(),
+            None => return false,
+        }
+    } else {
+        match host.rsplit_once(':') {
+            Some((n, port)) if port.bytes().all(|b| b.is_ascii_digit()) => n.to_string(),
+            _ => host.clone(),
+        }
+    };
+    name == "localhost"
+        || name.parse::<std::net::IpAddr>().is_ok()
+        || allowed
+            .iter()
+            .any(|a| a.eq_ignore_ascii_case(&name) || a.eq_ignore_ascii_case(&host))
+}
+
+/// The connection, with every read and write bounded by what is left of the
+/// request's deadline as well as by [`IO_TIMEOUT`].
+struct Deadlined {
+    stream: TcpStream,
+    deadline: Instant,
+}
+
+impl Deadlined {
+    fn arm(&self, write: bool) -> std::io::Result<()> {
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "request deadline exceeded",
+            ));
+        }
+        let t = Some(left.min(IO_TIMEOUT));
+        if write {
+            self.stream.set_write_timeout(t)
+        } else {
+            self.stream.set_read_timeout(t)
+        }
+    }
+}
+
+impl std::io::Read for Deadlined {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.arm(false)?;
+        self.stream.read(buf)
+    }
+}
+
+impl std::io::Write for Deadlined {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.arm(true)?;
+        self.stream.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.stream.flush()
+    }
+}
+
 /// One request per connection. Keep-alive buys nothing on an admin page and
 /// the close is what makes the hand-written test client trivial.
 fn handle(console: &Console, stream: TcpStream) -> std::io::Result<()> {
-    stream.set_read_timeout(Some(IO_TIMEOUT))?;
-    stream.set_write_timeout(Some(IO_TIMEOUT))?;
+    let deadline = Instant::now() + console.request_deadline;
     // The cap sits under the reader, so it bounds the request line too:
     // `read_line` otherwise buffers a newline-less line without limit, and an
     // unbounded allocation driven by the peer is a one-connection DoS.
-    let mut reader = BufReader::new(stream.try_clone()?.take(MAX_HEAD_BYTES));
-    let mut stream = stream;
+    let mut reader = BufReader::new(
+        Deadlined {
+            stream: stream.try_clone()?,
+            deadline,
+        }
+        .take(MAX_HEAD_BYTES),
+    );
+    let mut stream = Deadlined { stream, deadline };
 
     let mut line = String::new();
     reader.read_line(&mut line)?;
@@ -103,8 +207,9 @@ fn handle(console: &Console, stream: TcpStream) -> std::io::Result<()> {
     let method = method.to_string();
     let path = target.split('?').next().unwrap_or(target).to_string();
 
-    // Drain headers; their content is irrelevant to a GET-only server. EOF
-    // before the blank line means the head was truncated by the cap above.
+    // Drain headers; only Host matters to a GET-only server. EOF before the
+    // blank line means the head was truncated by the cap above.
+    let mut host: Option<String> = None;
     loop {
         let mut h = String::new();
         if reader.read_line(&mut h)? == 0 {
@@ -113,6 +218,24 @@ fn handle(console: &Console, stream: TcpStream) -> std::io::Result<()> {
         if h.trim_end().is_empty() {
             break;
         }
+        if let Some((name, value)) = h.split_once(':') {
+            if name.trim().eq_ignore_ascii_case("host") {
+                if host.is_some() {
+                    return respond(&mut stream, 400, "Bad Request", "text/plain", b"duplicate Host header");
+                }
+                host = Some(value.trim().to_string());
+            }
+        }
+    }
+
+    if !host_allowed(host.as_deref(), &console.allowed_hosts) {
+        return respond(
+            &mut stream,
+            403,
+            "Forbidden",
+            "text/plain",
+            b"unexpected Host header: use localhost or an IP address, or start the console with --allow-host <name>",
+        );
     }
 
     if method != "GET" {
@@ -144,8 +267,17 @@ fn is_safe_chain_id(id: &str) -> bool {
         && !id.contains("..")
 }
 
+/// Pages are inline-styled HTML with no script, image, form or frame: the
+/// policy forbids everything else, so an injection that slipped past `esc`
+/// still runs nothing. They are also never cached: a log page left in a
+/// shared browser cache is a copy of the log.
+const SECURITY_HEADERS: &str = "X-Content-Type-Options: nosniff\r\n\
+     Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; \
+     frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\n\
+     Cache-Control: no-store\r\nReferrer-Policy: no-referrer\r\n";
+
 fn respond(
-    stream: &mut TcpStream,
+    stream: &mut impl std::io::Write,
     status: u16,
     reason: &str,
     content_type: &str,
@@ -153,7 +285,7 @@ fn respond(
 ) -> std::io::Result<()> {
     let head = format!(
         "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\n\
-         Content-Length: {}\r\nConnection: close\r\n\r\n",
+         Content-Length: {}\r\n{SECURITY_HEADERS}Connection: close\r\n\r\n",
         body.len()
     );
     stream.write_all(head.as_bytes())?;
@@ -204,7 +336,7 @@ fn chain_row(console: &Console, id: &str) -> ChainRow {
     let last_ms = records.last().map(|r| r.ts_ms);
 
     let store = match &console.store_dir {
-        Some(dir) if dir.is_dir() => match Store::open(dir, id) {
+        Some(dir) if dir.is_dir() => match Store::open_read_only(dir, id) {
             Ok(s) => Some(s),
             Err(e) => {
                 return ChainRow {
@@ -322,57 +454,133 @@ fn overview(console: &Console) -> Option<String> {
     Some(page("Obsign — control plane", &body))
 }
 
-fn release_summary(dist: &Path) -> String {
+/// What the console can vouch for about the current release: the manifest's
+/// signature, and for each artifact, that the file in dist/ is the one the
+/// manifest names (sha256) and carries a valid ops signature of its own.
+///
+/// The manifest signature alone covers the manifest's bytes, nothing else:
+/// a policy bundle swapped in dist/ after publish would be displayed under a
+/// green "signature valid" that never looked at it.
+struct ReleaseState {
+    signed: SignedManifest,
+    verdict: String,
+    /// Per artifact the manifest names: (name, sha256, verified, status).
+    artifacts: Vec<(String, String, bool, String)>,
+}
+
+/// Resolves a key that may sign releases and bundles: trusted, and trusted
+/// *as ops*. A key the fleet trusts to seal, or a gateway's origin key, has
+/// no business signing rules, and its signature here is a finding.
+fn ops_key(keys: &[PublicKeyEntry], key_id: &str) -> Result<ed25519_dalek::VerifyingKey, String> {
+    let entry = keys
+        .iter()
+        .find(|k| k.key_id == key_id)
+        .ok_or_else(|| format!("signed with unknown key \"{key_id}\""))?;
+    if entry.role != obsign_audit_core::checkpoint::KeyRole::Ops {
+        return Err(format!(
+            "key \"{key_id}\" is trusted as {}, not ops (a key recorded by an \
+             earlier build is upgraded by the next publish)",
+            entry.role.as_str()
+        ));
+    }
+    entry.to_verifying_key().map_err(|e| e.to_string())
+}
+
+/// Checks one current artifact against its manifest entry and its own
+/// signature. `Ok` carries the status line shown next to it.
+fn check_artifact(dist: &Path, keys: &[PublicKeyEntry], a: &Artifact) -> Result<String, String> {
+    let bytes = std::fs::read(dist.join(&a.name)).map_err(|e| format!("unreadable: {e}"))?;
+    if sha256(&bytes) != a.sha256 {
+        return Err("sha256 MISMATCH: the file in dist/ is not the one the manifest names".to_string());
+    }
+    let key_id = match a.name.as_str() {
+        "policy-bundle.json" => {
+            let b: obsign_policy::SignedBundle = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            b.verify(&ops_key(keys, &b.key_id)?).map_err(|e| format!("signature INVALID: {e}"))?;
+            b.key_id
+        }
+        "identity-bundle.json" => {
+            let b: obsign_identity::SignedIdentityBundle =
+                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            b.verify(&ops_key(keys, &b.key_id)?).map_err(|e| format!("signature INVALID: {e}"))?;
+            b.key_id
+        }
+        "deployment-bundle.json" => {
+            let b: obsign_audit_core::deployment::SignedDeploymentBundle =
+                serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+            b.verify(&ops_key(keys, &b.key_id)?).map_err(|e| format!("signature INVALID: {e}"))?;
+            b.key_id
+        }
+        _ => return Err("unknown artifact: not verified".to_string()),
+    };
+    Ok(format!("hash matches, signature valid (key {key_id})"))
+}
+
+fn release_state(dist: &Path) -> Result<Option<ReleaseState>, String> {
     let manifest_path = dist.join("manifest.json");
     if !manifest_path.is_file() {
-        return "<p class=\"mut\">nothing published yet</p>".to_string();
+        return Ok(None);
     }
-    let parsed: Result<SignedManifest, _> = std::fs::read_to_string(&manifest_path)
+    let signed: SignedManifest = std::fs::read_to_string(&manifest_path)
         .map_err(|e| e.to_string())
-        .and_then(|s| serde_json::from_str(&s).map_err(|e| e.to_string()));
-    let signed = match parsed {
-        Ok(s) => s,
-        Err(e) => return format!("<p class=\"bad\">manifest unreadable: {}</p>", esc(&e)),
-    };
+        .and_then(|s| serde_json::from_str(&s).map_err(|e| e.to_string()))
+        .map_err(|e| format!("manifest unreadable: {e}"))?;
 
     // Verified against the published trusted keys, and the outcome is shown
     // either way. An unverifiable current release is front-page news.
-    let verdict = match load_keys(&dist.join("trusted-keys.json"))
-        .iter()
-        .find(|k| k.key_id == signed.key_id)
+    let keys = load_keys(&dist.join("trusted-keys.json"));
+    let verdict = match ops_key(&keys, &signed.key_id)
+        .and_then(|vk| signed.verify(&vk).map(|_| ()).map_err(|e| format!("signature INVALID: {e}")))
     {
-        None => format!(
-            "<span class=\"bad\">signed with unknown key \"{}\"</span>",
+        Ok(()) => format!(
+            "<span class=\"ok\">manifest signature valid (key {})</span>",
             esc(&signed.key_id)
         ),
-        Some(entry) => match entry
-            .to_verifying_key()
-            .map_err(Error::from)
-            .and_then(|vk| signed.verify(&vk).map(|_| ()))
-        {
-            Ok(()) => format!(
-                "<span class=\"ok\">signature valid (key {})</span>",
-                esc(&signed.key_id)
-            ),
-            Err(e) => format!("<span class=\"bad\">signature INVALID: {}</span>", esc(&e.to_string())),
-        },
+        Err(e) => format!("<span class=\"bad\">manifest {}</span>", esc(&e)),
+    };
+    let artifacts = signed
+        .manifest
+        .artifacts
+        .iter()
+        .map(|a| {
+            let (ok, status) = match check_artifact(dist, &keys, a) {
+                Ok(s) => (true, s),
+                Err(s) => (false, s),
+            };
+            (a.name.clone(), a.sha256.to_string(), ok, status)
+        })
+        .collect();
+    Ok(Some(ReleaseState {
+        signed,
+        verdict,
+        artifacts,
+    }))
+}
+
+fn release_summary(dist: &Path) -> String {
+    let state = match release_state(dist) {
+        Ok(None) => return "<p class=\"mut\">nothing published yet</p>".to_string(),
+        Ok(Some(s)) => s,
+        Err(e) => return format!("<p class=\"bad\">{}</p>", esc(&e)),
     };
 
-    let m = &signed.manifest;
+    let m = &state.signed.manifest;
     let mut out = format!(
         "<p>version <code>{}</code> — published {} — {} — \
          <a href=\"/release\">details</a></p><table>\
-         <tr><th>artifact</th><th>sha256</th></tr>",
+         <tr><th>artifact</th><th>sha256</th><th>status</th></tr>",
         esc(&m.version),
         fmt_utc(m.ts_ms),
-        verdict
+        state.verdict
     );
-    for a in &m.artifacts {
+    for (name, hash, ok, status) in &state.artifacts {
         let _ = write!(
             out,
-            "<tr><td>{}</td><td><code>{}</code></td></tr>",
-            esc(&a.name),
-            a.sha256
+            "<tr><td>{}</td><td><code>{}</code></td><td class=\"{}\">{}</td></tr>",
+            esc(name),
+            esc(hash),
+            if *ok { "ok" } else { "bad" },
+            esc(status)
         );
     }
     out.push_str("</table>");
@@ -386,9 +594,32 @@ fn load_keys(path: &Path) -> Vec<PublicKeyEntry> {
         .unwrap_or_default()
 }
 
+/// The status line shown above an artifact's contents. Contents are shown
+/// either way (they are what an operator investigating needs to see), but
+/// never under a verdict that did not look at them.
+fn artifact_status(state: &Result<Option<ReleaseState>, String>, name: &str) -> String {
+    let found = state
+        .as_ref()
+        .ok()
+        .and_then(|s| s.as_ref())
+        .and_then(|s| s.artifacts.iter().find(|a| a.0 == name));
+    match found {
+        Some((_, _, true, status)) => format!("<p class=\"ok\">{}</p>", esc(status)),
+        Some((_, _, false, status)) => format!(
+            "<p class=\"bad\">NOT VERIFIED — {} — the contents below are not \
+             what the release vouches for</p>",
+            esc(status)
+        ),
+        None => "<p class=\"bad\">NOT VERIFIED — not named in the current \
+                 manifest — the contents below are not part of the release</p>"
+            .to_string(),
+    }
+}
+
 fn release_page(console: &Console) -> Option<String> {
     let dist = console.dist_dir.as_ref()?;
     let mut body = release_summary(dist);
+    let state = release_state(dist);
 
     let bundle_path = dist.join("policy-bundle.json");
     if let Ok(raw) = std::fs::read_to_string(&bundle_path) {
@@ -404,11 +635,12 @@ fn release_page(console: &Console) -> Option<String> {
                 let b = &signed.bundle;
                 let _ = write!(
                     body,
-                    "<h2>Policy bundle <code>{}</code></h2>\
+                    "<h2>Policy bundle <code>{}</code></h2>{}\
                      <h3>Tool catalogue</h3><table>\
                      <tr><th>tool</th><th>server</th><th>destructive</th>\
                      <th>required scope</th><th>on failure</th></tr>",
-                    esc(&b.version)
+                    esc(&b.version),
+                    artifact_status(&state, "policy-bundle.json")
                 );
                 for t in &b.tools {
                     let _ = write!(
@@ -436,10 +668,11 @@ fn release_page(console: &Console) -> Option<String> {
             let kids: Vec<String> = b.jwks.keys.iter().map(|k| esc(&k.kid)).collect();
             let _ = write!(
                 body,
-                "<h2>Identity bundle <code>{}</code></h2>\
+                "<h2>Identity bundle <code>{}</code></h2>{}\
                  <p>issuer <code>{}</code> — audience <code>{}</code> — \
                  {} key(s): {}</p>",
                 esc(&b.version),
+                artifact_status(&state, "identity-bundle.json"),
                 esc(&b.issuer),
                 esc(&b.audience),
                 b.jwks.keys.len(),

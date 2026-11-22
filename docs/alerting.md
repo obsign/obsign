@@ -4,19 +4,26 @@ When the ledger finds that sealed history no longer matches the WAL, it
 refuses to seal and exits non-zero. That is deliberate: a rewritten log is an
 incident, not a heartbeat, and a service that retried it every thirty seconds
 would dress the incident up as one. The conditions in this class never
-self-heal:
+self-heal. The most common ones:
 
 | Error | Meaning |
 |---|---|
 | `DivergedLog` | the record at the sealed boundary no longer hashes to the sealed head — the WAL was rewritten after sealing |
 | `TruncatedLog` | sealed records have disappeared from the WAL |
 | `UnauthenticatedRecord` | a record no trusted origin key vouches for — someone other than the gateway wrote to the WAL |
-| `StoreBroken` | the checkpoint store itself is corrupt |
+| `StoreBroken` | the checkpoint store itself is corrupt, including a garbled line anywhere in it |
 | `KeyConflict` | a key id reused with different key material |
+| a bad signature | a checkpoint in the store was edited after it was sealed |
+| a broken or corrupt chain | a WAL record was edited in place, without even recomputing the hashes |
 
-Everything else (an I/O blip, a WAL segment caught mid-write) is retried
-inside `run` mode's loop and never exits. So any exit of `run` mode is in the
-never-self-heals class by construction.
+The list is open on purpose: `run` mode retries only what can clear on its
+own, an I/O error (reading the WAL or the store), an HSM error, and a store
+locked by another ledger process (a one-shot `seal` or an `anchor attach`
+overlapping the daemon), and exits on everything else. An allowlist, because the two mistakes do not cost the
+same: an incident filed as transient is retried silently forever and nobody
+is told, a hiccup filed as fatal costs one restart. A WAL line caught
+mid-write is not an error at all: it is skipped until its write completes.
+So any exit of `run` mode is in the never-self-heals class by construction.
 
 Exiting is only half the job. The other half is the question this page
 answers: **who is told?** Not by the ledger itself, which makes no network
@@ -204,7 +211,8 @@ WantedBy=timers.target
 
 One honest caveat: unlike `run` mode, a one-shot `seal` cannot retry
 internally, so a transient failure (the HSM briefly unreachable, an I/O
-error) also exits non-zero and also raises the alert. The journal tail in the
+error, a store locked by a pass still running) also exits non-zero and also
+raises the alert. The journal tail in the
 alert says which class you are in. If that distinction matters at your scale,
 run the daemon; its exits are all incident-class.
 

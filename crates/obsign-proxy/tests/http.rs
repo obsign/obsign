@@ -87,6 +87,7 @@ fn identity_bundle_json() -> String {
         audience: AUDIENCE.to_string(),
         jwks,
         claims: obsign_identity::ClaimMap::default(),
+        epoch: 0,
     };
     let signed = bundle.sign("identity-key", &SigningKey::from_bytes(&IDENTITY_SEED));
     serde_json::to_string(&signed).unwrap()
@@ -97,6 +98,12 @@ fn mint(exp_offset: i64, scopes: &str) -> String {
 }
 
 fn mint_for(sub: &str, exp_offset: i64, scopes: &str) -> String {
+    mint_acting(sub, None, exp_offset, scopes)
+}
+
+/// A token for `sub`, optionally exchanged (RFC 8693) so that `actor` acts
+/// on its behalf: same principal, another delegation.
+fn mint_acting(sub: &str, actor: Option<&str>, exp_offset: i64, scopes: &str) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -115,6 +122,10 @@ fn mint_for(sub: &str, exp_offset: i64, scopes: &str) -> String {
         "scope": scopes,
         "realm_access": { "roles": ["support-n2"] },
     });
+    let mut claims = claims;
+    if let Some(actor) = actor {
+        claims["act"] = json!({ "sub": actor });
+    }
     jsonwebtoken::encode(&header, &claims, &EncodingKey::from_ed_der(&der)).unwrap()
 }
 
@@ -617,6 +628,47 @@ fn an_id_less_act_is_arbitrated_not_smuggled() {
 }
 
 #[test]
+fn a_refused_response_shaped_message_is_not_forwarded() {
+    // Regression: on the response path the verdict of `handle_from_agent`
+    // was discarded and the bytes forwarded anyway, so the log said
+    // "blocked" about a message the server received. A non-string `method`
+    // took the same path, and a message with neither `method` nor `id` was
+    // forwarded without even being recorded.
+    let gw = start("unsolicited", false, &[]);
+    let (sid, _) = initialize(&gw, &[]);
+
+    for (msg, code) in [
+        (json!({"jsonrpc":"2.0","id":99,"result":{"text":"free text"}}), -32600),
+        (json!({"jsonrpc":"2.0","id":7,"method":123,"params":{}}), -32601),
+        (json!({"jsonrpc":"2.0","result":{"text":"free text"}}), -32600),
+    ] {
+        let r = post(&gw, &[("Mcp-Session-Id", &sid)], msg.clone());
+        assert_eq!(r.status, 200, "{msg} was accepted for forwarding");
+        assert_eq!(
+            r.body.pointer("/error/code").and_then(Value::as_i64),
+            Some(code),
+            "{msg}: {:?}",
+            r.body
+        );
+    }
+
+    let r = http(&gw, "DELETE", &[("Mcp-Session-Id", &sid)], "");
+    assert_eq!(r.status, 200);
+
+    // Each one left its refusal in the sealed log.
+    let ev = evidence(&gw, &sid);
+    let outcomes: Vec<String> = ev
+        .records
+        .iter()
+        .filter_map(|r| match &r.payload {
+            Payload::Decision(d) => Some(d.outcome.as_str().to_string()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(outcomes, vec!["deny", "deny", "deny"]);
+}
+
+#[test]
 fn sessions_are_isolated_from_each_other() {
     let gw = start("isolation", false, &[]);
 
@@ -771,24 +823,31 @@ fn the_get_stream_carries_server_notifications() {
 
 #[test]
 fn concurrent_identities_keep_their_own_attribution_subtrees() {
-    // Two principals share one MCP session, per-request bearers make that
-    // legal, and their calls race on separate connections. The gateway once
-    // snapshotted the identity under the auth lock, released it, then took
-    // the session lock to write the call: in that gap the other principal
-    // could record its delegation and move `agent_record_id`, and a call
-    // whose token had not changed attached under the wrong subtree. The
-    // invariant checked here is interleaving-independent: every call in the
-    // log must climb, through its parents, to the delegation of the token
-    // that carried it. Each principal calls a distinct tool so the log
-    // itself says who was really calling.
+    // Two delegations of one principal share one MCP session: the user's
+    // own token, and the token an automation obtained to act on their
+    // behalf (RFC 8693). Per-request bearers make that legal, and their
+    // calls race on separate connections. The gateway once snapshotted the
+    // identity under the auth lock, released it, then took the session
+    // lock to write the call: in that gap the other token could record its
+    // delegation and move `agent_record_id`, and a call whose token had not
+    // changed attached under the wrong subtree. The invariant checked here
+    // is interleaving-independent: every call in the log must climb,
+    // through its parents, to the actor chain of the token that carried
+    // it. Each token calls a distinct tool so the log itself says who was
+    // really calling.
     let gw = start("concurrent-ids", true, &[]);
     let alice = format!(
         "Bearer {}",
         mint_for("u:alice.durand", 1800, "support:ticket_update")
     );
-    let bob = format!(
+    let automation = format!(
         "Bearer {}",
-        mint_for("u:bob.martin", 1800, "support:ticket_update")
+        mint_acting(
+            "u:alice.durand",
+            Some("svc:automation"),
+            1800,
+            "support:ticket_update"
+        )
     );
 
     let (sid, r) = initialize(&gw, &[("Authorization", &alice)]);
@@ -808,11 +867,11 @@ fn concurrent_identities_keep_their_own_attribution_subtrees() {
             }
         });
         for i in 0..N {
-            let r = call(&gw, &sid, &[("Authorization", &bob)], 2000 + i, "ticket_update");
+            let r = call(&gw, &sid, &[("Authorization", &automation)], 2000 + i, "ticket_update");
             assert_eq!(
                 r.body.pointer("/result/isError"),
                 Some(&Value::Bool(false)),
-                "bob call {i}: {}",
+                "automation call {i}: {}",
                 r.body
             );
         }
@@ -838,31 +897,106 @@ fn concurrent_identities_keep_their_own_attribution_subtrees() {
     let mut checked = 0;
     for rec in &ev.records {
         let Payload::ToolCall(tc) = &rec.payload else { continue };
-        // call -> agent_session -> actor -> delegation.
+        // call -> agent_session -> actor.
         let mut cursor = &rec.record;
-        let sub = loop {
+        let chain = loop {
             let parent = cursor
                 .parent_id
                 .as_deref()
-                .unwrap_or_else(|| panic!("{} never reaches a delegation", rec.id));
+                .unwrap_or_else(|| panic!("{} never reaches an actor record", rec.id));
             cursor = by_id[parent];
-            if let Payload::Delegation(d) = &cursor.payload {
-                break d.principal_sub.clone();
+            if let Payload::Actor(a) = &cursor.payload {
+                break a.chain.clone();
             }
         };
-        let expected = match tc.tool.as_str() {
-            "search_docs" => "u:alice.durand",
-            "ticket_update" => "u:bob.martin",
+        let expected: &[&str] = match tc.tool.as_str() {
+            "search_docs" => &["u:alice.durand"],
+            "ticket_update" => &["svc:automation", "u:alice.durand"],
             other => panic!("unexpected tool in the log: {other}"),
         };
         assert_eq!(
-            sub, expected,
-            "{} ({}) is attributed to {sub}",
+            chain, expected,
+            "{} ({}) is attributed to {chain:?}",
             rec.id, tc.tool
         );
         checked += 1;
     }
     assert_eq!(checked, 2 * N as usize, "every call must have been audited");
+}
+
+#[test]
+fn a_session_belongs_to_the_principal_that_opened_it() {
+    // The session id is a routing key the client echoes, visible to every
+    // proxy on the way. With it, any other valid token used to switch the
+    // delegation in force inside the session: the next acts were attributed
+    // to, and authorized for, whoever presented a token last. And DELETE
+    // checked no token at all.
+    let gw = start("session-binding", true, &[]);
+    let alice = format!(
+        "Bearer {}",
+        mint_for("u:alice.durand", 1800, "support:ticket_update")
+    );
+    let mallory = format!(
+        "Bearer {}",
+        mint_for("u:mallory", 1800, "support:ticket_update db:admin")
+    );
+
+    let (sid, r) = initialize(&gw, &[("Authorization", &alice)]);
+    assert_eq!(r.status, 200);
+
+    // An act under another principal's token: refused, and recorded.
+    let r = call(&gw, &sid, &[("Authorization", &mallory)], 2, "ticket_update");
+    assert_eq!(r.status, 403, "body: {}", r.body);
+    // Machinery too: a listing would otherwise renew the delegation that
+    // filters it.
+    let r = post(
+        &gw,
+        &[("Mcp-Session-Id", &sid), ("Authorization", &mallory)],
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}),
+    );
+    assert_eq!(r.status, 403);
+
+    // Nor can another principal, or no one, end the session.
+    let r = http(
+        &gw,
+        "DELETE",
+        &[("Mcp-Session-Id", &sid), ("Authorization", &mallory)],
+        "",
+    );
+    assert_eq!(r.status, 403);
+    let r = http(&gw, "DELETE", &[("Mcp-Session-Id", &sid)], "");
+    assert_eq!(r.status, 401);
+
+    // The owner's session is untouched, and still under the owner.
+    let r = call(&gw, &sid, &[("Authorization", &alice)], 4, "ticket_update");
+    assert_eq!(r.body.pointer("/result/isError"), Some(&Value::Bool(false)));
+
+    let r = http(
+        &gw,
+        "DELETE",
+        &[("Mcp-Session-Id", &sid), ("Authorization", &alice)],
+        "",
+    );
+    assert_eq!(r.status, 200);
+
+    let ev = evidence(&gw, &sid);
+    assert!(
+        ev.records.iter().all(|r| !matches!(
+            &r.payload,
+            Payload::Delegation(d) if d.principal_sub == "u:mallory"
+        )),
+        "no delegation of another principal may enter the session's chain"
+    );
+    let denied = ev
+        .records
+        .iter()
+        .filter(|r| matches!(
+            &r.payload,
+            Payload::Decision(d) if d.outcome == obsign_audit_core::record::Outcome::Deny
+                && d.reason.as_deref().is_some_and(|r| r.contains("u:mallory"))
+        ))
+        .count();
+    assert_eq!(denied, 1, "the refused act must leave its record");
 }
 
 #[test]
@@ -889,4 +1023,94 @@ fn batches_are_refused() {
         json!([{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}]),
     );
     assert_eq!(r.status, 400);
+}
+
+#[test]
+fn an_endless_header_line_is_cut_at_its_bound() {
+    // The header ceiling was checked after `read_line` returned, that is
+    // after the newline arrived: a line that never ends was buffered for as
+    // long as the client kept sending, before any token was looked at.
+    let gw = start("endless-header", false, &[]);
+    let mut stream = TcpStream::connect(&gw.addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    write!(stream, "POST /mcp HTTP/1.1\r\nX-Junk: ").unwrap();
+    // Past the 16 KiB ceiling, and no newline, ever.
+    stream.write_all(&[b'a'; 20 * 1024]).unwrap();
+
+    let mut status_line = String::new();
+    BufReader::new(&stream)
+        .read_line(&mut status_line)
+        .expect("the gateway must answer without waiting for the newline");
+    assert!(status_line.contains(" 431 "), "got: {status_line:?}");
+}
+
+#[test]
+fn connections_past_the_ceiling_are_turned_away() {
+    // One thread per connection, reachable before any token is checked:
+    // without a ceiling, idle sockets alone exhaust the gateway.
+    let gw = start("max-conns", false, &["--http-max-connections", "2"]);
+    let idle: Vec<TcpStream> = (0..2)
+        .map(|_| TcpStream::connect(&gw.addr).unwrap())
+        .collect();
+    // Let the accept loop admit both before the next one arrives.
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Answered before anything is read from it, so read before writing: a
+    // request already sent would be discarded unread, and the close reset.
+    let third = TcpStream::connect(&gw.addr).unwrap();
+    third
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut status_line = String::new();
+    BufReader::new(&third)
+        .read_line(&mut status_line)
+        .expect("the newcomer must be answered, not left hanging");
+    assert!(status_line.contains(" 503 "), "got: {status_line:?}");
+
+    // A slot frees up when its connection ends.
+    drop(idle);
+    std::thread::sleep(Duration::from_millis(200));
+    let (_, r) = initialize(&gw, &[]);
+    assert_eq!(r.status, 200);
+}
+
+#[test]
+fn a_cancelled_call_releases_its_post_and_its_id() {
+    // The agent cancels a call the server never answers. Its POST stayed
+    // blocked on the waiter until the session ended, and the id stayed
+    // taken: every later request reusing it was refused.
+    let gw = start("cancelled", false, &[]);
+    let (sid, _) = initialize(&gw, &[]);
+
+    std::thread::scope(|scope| {
+        let hung = scope.spawn(|| {
+            post(
+                &gw,
+                &[("Mcp-Session-Id", &sid)],
+                json!({"jsonrpc":"2.0","id":7,"method":"tools/call",
+                       "params":{"name":"search_docs","arguments":{"emit":"never"}}}),
+            )
+        });
+        // Let the call reach the server before cancelling it.
+        std::thread::sleep(Duration::from_millis(300));
+        let r = post(
+            &gw,
+            &[("Mcp-Session-Id", &sid)],
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled",
+                   "params":{"requestId":7,"reason":"gave up"}}),
+        );
+        assert_eq!(r.status, 202);
+        let r = hung.join().expect("the cancelled POST must return");
+        assert_eq!(r.status, 502);
+    });
+
+    let r = call(&gw, &sid, &[], 7, "search_docs");
+    assert_eq!(
+        r.body.pointer("/result/isError"),
+        Some(&Value::Bool(false)),
+        "the id must be free again: {}",
+        r.body
+    );
 }

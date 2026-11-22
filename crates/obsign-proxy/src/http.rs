@@ -27,19 +27,20 @@
 //! that invariant bans *outbound* dependencies (JWKS fetches, ledger RTTs),
 //! which would break air-gapped deployment. Listening is the transport.
 
-use crate::auth::Auth;
+use crate::auth::{Auth, Binding};
 use crate::gateway::{self, Ctx, Forward};
 use crate::session::{self, now_ms};
 use anyhow::{Context as _, Result};
 use obsign_identity::BundleSource;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use obsign_wal::Wal;
 
 /// The single MCP endpoint.
@@ -55,6 +56,12 @@ const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 /// Idle time after which a kept-alive connection is closed. Closing is always
 /// safe: HTTP clients reconnect.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Budget for reading one whole request, from its first byte to the last
+/// byte of its body. A per-read timeout alone bounds nothing: a client
+/// trickling one byte every few seconds never trips it, and holds a thread
+/// and a buffer for as long as it likes, before any token is checked.
+const REQUEST_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Interval between comment lines on the GET stream, so that a dead client is
 /// eventually detected by a write failing.
@@ -88,6 +95,8 @@ pub struct Gateway {
     pub chain_id: String,
     pub server_cmd: Vec<String>,
     pub allowed_origins: Vec<String>,
+    /// Ceiling on simultaneous connections (`--http-max-connections`).
+    pub max_connections: usize,
     /// The gateway's signing keys and deployment trust, shared by every
     /// session: each derives its own per-chain signer (a fresh session key
     /// under the two-tier scheme) from this.
@@ -129,15 +138,44 @@ pub fn serve(gw: Gateway, addr: &str) -> Result<()> {
     let gw = Arc::new(gw);
     let registry: Registry = Arc::new(Mutex::new(HashMap::new()));
 
+    // Every connection holds a thread until it closes, and the listener is
+    // reachable before any token is checked. Past the ceiling, a newcomer
+    // is turned away before a byte of it is read; the connections already
+    // admitted, sessions in flight among them, are not disturbed.
+    let live = Arc::new(AtomicUsize::new(0));
     for conn in listener.incoming() {
-        let Ok(stream) = conn else { continue };
+        let Ok(mut stream) = conn else { continue };
+        if live.fetch_add(1, Ordering::SeqCst) >= gw.max_connections {
+            live.fetch_sub(1, Ordering::SeqCst);
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+            let _ = respond_json(
+                &mut stream,
+                503,
+                "Service Unavailable",
+                &[("Retry-After", "1")],
+                &rpc_error(&Value::Null, -32000, "too many connections"),
+            );
+            continue;
+        }
+        let slot = Slot(Arc::clone(&live));
         let gw = Arc::clone(&gw);
         let registry = Arc::clone(&registry);
         std::thread::spawn(move || {
+            let _slot = slot;
             let _ = handle_connection(stream, &gw, &registry);
         });
     }
     Ok(())
+}
+
+/// One admitted connection, given back when its thread ends, however it
+/// ends.
+struct Slot(Arc<AtomicUsize>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -160,7 +198,7 @@ fn handle_connection(
     let mut stream = stream;
 
     loop {
-        let req = match read_request(&mut reader, &mut stream) {
+        let req = match read_request(&mut reader, &mut stream, REQUEST_DEADLINE) {
             Ok(Some(r)) => r,
             // Clean close or idle timeout: nothing to answer.
             Ok(None) => return Ok(()),
@@ -219,7 +257,7 @@ fn route(
     match req.method.as_str() {
         "POST" => handle_post(req, stream, gw, registry),
         "GET" => handle_get(req, stream, gw, registry),
-        "DELETE" => handle_delete(req, stream, registry),
+        "DELETE" => handle_delete(req, stream, gw, registry),
         _ => {
             respond(
                 stream,
@@ -320,6 +358,46 @@ fn handle_post(
     }
 
     let has_id = msg.get("id").is_some_and(|v| !v.is_null());
+    // Read from the message, not from `method`: a `method` that is present
+    // but not a string makes a request the gateway refuses as out of scope,
+    // never a response.
+    let is_response = msg.get("method").is_none();
+    let arbitrated = match msg.get("method") {
+        Some(Value::String(m)) => gateway::arbitrated(Some(m)),
+        Some(_) => true,
+        None => false,
+    };
+
+    // The session belongs to the principal that opened it. A valid token of
+    // anyone else presented with this session id is refused outright, on
+    // every method: accepted, it would swap the delegation in force inside
+    // someone else's session, and with it the attribution of every act that
+    // follows. An arbitrated act still goes through `handle_from_agent`
+    // first, which refuses it on the same grounds (`Auth::present`) and
+    // leaves the record of the attempt; the 403 is what the client sees.
+    if let Some(token) = bearer {
+        if let Binding::Foreign(subject) = binding_of(&sess, token) {
+            eprintln!(
+                "[obsign] session {}: token of {subject} refused, the session belongs to \
+                 another principal",
+                &sess.id[..8]
+            );
+            let id = msg.get("id").cloned().unwrap_or(Value::Null);
+            if arbitrated {
+                if let Err(e) = gateway::handle_from_agent(msg, &sess.state, &sess.ctx, bearer) {
+                    eprintln!("[obsign] audit write failed while refusing a foreign token: {e}");
+                }
+            }
+            respond_json(
+                stream,
+                403,
+                "Forbidden",
+                &[],
+                &rpc_error(&id, -32600, "token does not belong to this session's principal"),
+            )?;
+            return Ok(Next::KeepAlive);
+        }
+    }
 
     // Requests the gateway does not arbitrate never reach the auth path
     // inside `handle_from_agent`, but their *responses* consult the
@@ -327,97 +405,68 @@ fn handle_post(
     // a renewal takes effect before the request is forwarded, not one call
     // later. Arbitrated methods present it themselves, under the session
     // lock, where it belongs.
-    if !gateway::arbitrated(method) {
+    if !arbitrated {
         present_bearer(&sess, bearer);
     }
 
-    // No method: the agent is *answering* a server-initiated request
-    // (sampling, elicitation). The server does not respond to a response,
-    // so there is nothing to wait for; `forward_and_wait` would block
-    // this POST forever. `handle_from_agent` closes the pending effect
-    // with the response's hash; the bytes are then relayed. 202 per spec.
-    if method.is_none() && has_id {
-        let _ = gateway::handle_from_agent(msg.clone(), &sess.state, &sess.ctx, bearer);
-        return match forward_raw(&sess, &msg.to_string()) {
-            Ok(()) => {
-                respond(stream, 202, "Accepted", &[], None, b"")?;
-                Ok(Next::KeepAlive)
-            }
-            Err(_) => {
+    // Nothing to wait for: a response to a server-initiated request (the
+    // server does not respond to a response, so `forward_and_wait` would
+    // block this POST forever), or a message without an id. An arbitrated
+    // method without an id is not machinery: JSON-RPC calls the shape a
+    // notification, but a lenient server parser may execute it anyway, and
+    // a `resources/subscribe` processed that way has a lasting effect.
+    //
+    // All of them go through `handle_from_agent`, exactly as on stdio, and
+    // its answer is the one enforced: a response matching no in-flight
+    // request, an act refused by policy, a record that cannot be written,
+    // none of them reaches the server. Only the transport answer differs:
+    // 202 on a pass, the refusal with a null id otherwise.
+    if is_response || !has_id {
+        // A cancelled request's POST is still blocked on its waiter. The
+        // gateway frees the id below; the waiter goes too, or the id stays
+        // taken here and the POST hangs until the session ends.
+        let cancelled = (method == Some("notifications/cancelled"))
+            .then(|| msg.pointer("/params/requestId").filter(|v| !v.is_null()))
+            .flatten()
+            .map(Value::to_string);
+        let fwd = match gateway::handle_from_agent(msg, &sess.state, &sess.ctx, bearer) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("[obsign] audit write failed, message refused: {e}");
                 respond_json(
                     stream,
-                    502,
-                    "Bad Gateway",
+                    500,
+                    "Internal Server Error",
                     &[],
-                    &rpc_error(&Value::Null, -32603, "wrapped MCP server is gone"),
+                    &rpc_error(&Value::Null, -32603, "audit log unavailable"),
                 )?;
-                Ok(Next::KeepAlive)
+                return Ok(Next::KeepAlive);
             }
         };
-    }
-
-    if !has_id {
-        // An arbitrated method with no id is not machinery: JSON-RPC calls
-        // the shape a notification, but a lenient server parser may execute
-        // it anyway, and a `resources/subscribe` processed that way has a
-        // lasting effect. It goes through arbitration like any other act,
-        // exactly as the stdio path does; only the transport answer differs
-        // (nothing to wait for on a pass, the refusal carries a null id).
-        if gateway::arbitrated(method) {
-            let fwd = match gateway::handle_from_agent(msg, &sess.state, &sess.ctx, bearer) {
-                Ok(f) => f,
-                Err(e) => {
-                    eprintln!("[obsign] audit write failed, call refused: {e}");
-                    respond_json(
-                        stream,
-                        500,
-                        "Internal Server Error",
-                        &[],
-                        &rpc_error(&Value::Null, -32603, "audit log unavailable"),
-                    )?;
-                    return Ok(Next::KeepAlive);
-                }
-            };
-            return match fwd {
-                Forward::Reply(resp) => {
-                    respond_json(stream, 200, "OK", &[], resp.as_bytes())?;
+        return match fwd {
+            Forward::Reply(resp) => {
+                respond_json(stream, 200, "OK", &[], resp.as_bytes())?;
+                Ok(Next::KeepAlive)
+            }
+            Forward::Pass(raw) => match forward_raw(&sess, &raw) {
+                Ok(()) => {
+                    if let Some(key) = cancelled {
+                        sess.waiters.lock().unwrap().remove(&key);
+                    }
+                    respond(stream, 202, "Accepted", &[], None, b"")?;
                     Ok(Next::KeepAlive)
                 }
-                Forward::Pass(raw) => match forward_raw(&sess, &raw) {
-                    Ok(()) => {
-                        respond(stream, 202, "Accepted", &[], None, b"")?;
-                        Ok(Next::KeepAlive)
-                    }
-                    Err(_) => {
-                        respond_json(
-                            stream,
-                            502,
-                            "Bad Gateway",
-                            &[],
-                            &rpc_error(&Value::Null, -32603, "wrapped MCP server is gone"),
-                        )?;
-                        Ok(Next::KeepAlive)
-                    }
-                },
-            };
-        }
-        // Notification, or a response to a server-initiated request: forward,
-        // nothing to wait for. 202 per spec.
-        return match forward_raw(&sess, &msg.to_string()) {
-            Ok(()) => {
-                respond(stream, 202, "Accepted", &[], None, b"")?;
-                Ok(Next::KeepAlive)
-            }
-            Err(_) => {
-                respond_json(
-                    stream,
-                    502,
-                    "Bad Gateway",
-                    &[],
-                    &rpc_error(&Value::Null, -32603, "wrapped MCP server is gone"),
-                )?;
-                Ok(Next::KeepAlive)
-            }
+                Err(_) => {
+                    respond_json(
+                        stream,
+                        502,
+                        "Bad Gateway",
+                        &[],
+                        &rpc_error(&Value::Null, -32603, "wrapped MCP server is gone"),
+                    )?;
+                    Ok(Next::KeepAlive)
+                }
+            },
         };
     }
 
@@ -472,7 +521,18 @@ fn forward_and_wait(
     id: &Value,
 ) -> std::result::Result<Value, &'static str> {
     let (tx, rx) = mpsc::channel();
-    sess.waiters.lock().unwrap().insert(id.to_string(), tx);
+    // Never overwritten: a displaced waiter would hang until the session
+    // ends, and its response would answer the newcomer's POST. The gateway
+    // already refuses a second request under an id in flight
+    // (`handle_from_agent`), so an occupied slot is not forwarded either.
+    match sess.waiters.lock().unwrap().entry(id.to_string()) {
+        std::collections::hash_map::Entry::Occupied(_) => {
+            return Err("JSON-RPC id already awaiting a response on this session")
+        }
+        std::collections::hash_map::Entry::Vacant(slot) => {
+            slot.insert(tx);
+        }
+    }
 
     // The waiter is registered *before* the write: the response cannot lose
     // the race with its own registration.
@@ -482,7 +542,7 @@ fn forward_and_wait(
     }
 
     rx.recv()
-        .map_err(|_| "session terminated before the server answered")
+        .map_err(|_| "request cancelled, or session terminated before the server answered")
 }
 
 fn forward_raw(sess: &McpSession, raw: &str) -> std::io::Result<()> {
@@ -492,6 +552,14 @@ fn forward_raw(sess: &McpSession, raw: &str) -> std::io::Result<()> {
     };
     writeln!(stdin, "{raw}")?;
     stdin.flush()
+}
+
+/// [`Auth::binding_of`] for this session, with the auth lock released on
+/// return: a guard left alive in a `match` or `if let` scrutinee would be
+/// held across whatever the arms lock next.
+fn binding_of(sess: &McpSession, token: &str) -> Binding {
+    let mut a = sess.ctx.auth.lock().unwrap();
+    a.binding_of(token, now_ms())
 }
 
 /// Takes the bearer of a non-`tools/call` request into account, recording the
@@ -754,13 +822,13 @@ fn dispatch_from_server(
         if line.trim().is_empty() {
             continue;
         }
-        let Ok(msg) = serde_json::from_str::<Value>(&line) else {
-            // stdio relays unknown bytes as-is; HTTP has no channel for them.
-            eprintln!("[obsign] session {}: non-JSON server line dropped", &sess.id[..8]);
-            continue;
+        let downstream = match serde_json::from_str::<Value>(&line) {
+            Ok(msg) => gateway::handle_from_server(msg, &sess.state, &sess.ctx, &sess.id),
+            // Recorded and dropped, as on stdio.
+            Err(_) => gateway::unreadable_from_server(&line, &sess.state, &sess.ctx),
         };
 
-        let out = match gateway::handle_from_server(msg, &sess.state, &sess.ctx, &sess.id) {
+        let out = match downstream {
             gateway::Downstream::Forward(v) => v,
             gateway::Downstream::Reply(v) => {
                 // Refused server-initiated request: answered in the agent's
@@ -806,17 +874,14 @@ fn dispatch_from_server(
                     {
                         let mut s = sess.state.lock().unwrap();
                         if let Some(p) = s.pending_to_agent.remove(&key) {
-                            let _ = s.write(
+                            s.write_effect(
                                 p.effect_record_id,
-                                Some(p.decision_record_id),
-                                obsign_audit_core::record::Payload::Effect(
-                                    obsign_audit_core::record::Effect {
-                                        status: obsign_audit_core::record::EffectStatus::Blocked,
-                                        result_hash: None,
-                                        latency_ms: p.started.elapsed().as_millis()
-                                            as u64,
-                                    },
-                                ),
+                                p.decision_record_id,
+                                obsign_audit_core::record::Effect {
+                                    status: obsign_audit_core::record::EffectStatus::Blocked,
+                                    result_hash: None,
+                                    latency_ms: p.started.elapsed().as_millis() as u64,
+                                },
                             );
                         }
                         s.relayed_to_agent.remove(&key);
@@ -879,6 +944,7 @@ fn dispatch_from_server(
 fn handle_delete(
     req: Request,
     stream: &mut TcpStream,
+    gw: &Arc<Gateway>,
     registry: &Registry,
 ) -> std::io::Result<Next> {
     let Some(sid) = req.header("mcp-session-id") else {
@@ -891,7 +957,7 @@ fn handle_delete(
         )?;
         return Ok(Next::KeepAlive);
     };
-    let Some(sess) = registry.lock().unwrap().remove(sid) else {
+    let Some(sess) = registry.lock().unwrap().get(sid).cloned() else {
         respond_json(
             stream,
             404,
@@ -901,6 +967,53 @@ fn handle_delete(
         )?;
         return Ok(Next::KeepAlive);
     };
+
+    // Ending a session is an act on it like any other: in OIDC mode only
+    // its own principal may, with a token that verifies. Without this, the
+    // session id alone, which travels in every request and every proxy log,
+    // was enough to cut someone else's audited session short.
+    if matches!(gw.identity, Identity::Oidc { .. }) {
+        let refusal = match req.bearer() {
+            None => Some((401, "Unauthorized", "Authorization: Bearer required")),
+            Some(token) => match binding_of(&sess, token) {
+                Binding::Owner => None,
+                Binding::Foreign(_) => Some((
+                    403,
+                    "Forbidden",
+                    "token does not belong to this session's principal",
+                )),
+                Binding::Unverified(_) => Some((401, "Unauthorized", "token rejected")),
+            },
+        };
+        if let Some((status, reason, text)) = refusal {
+            let challenge: &[(&str, &str)] = if status == 401 {
+                &[("WWW-Authenticate", "Bearer")]
+            } else {
+                &[]
+            };
+            respond_json(
+                stream,
+                status,
+                reason,
+                challenge,
+                &rpc_error(&Value::Null, -32600, text),
+            )?;
+            return Ok(Next::KeepAlive);
+        }
+    }
+    // Removed only once the request is known to be entitled to it, and
+    // only by whoever finds it still there: two concurrent DELETEs close
+    // the session once.
+    if registry.lock().unwrap().remove(sid).is_none() {
+        respond_json(
+            stream,
+            404,
+            "Not Found",
+            &[],
+            &rpc_error(&Value::Null, -32600, "unknown or terminated session"),
+        )?;
+        return Ok(Next::KeepAlive);
+    }
 
     // Closing stdin is the whole termination protocol: the server exits, its
     // stdout reaches EOF, and the dispatcher closes the log after the last
@@ -964,11 +1077,17 @@ fn handle_get(
     };
 
     if matches!(gw.identity, Identity::Oidc { .. }) {
-        if req.bearer().is_none() {
+        let Some(token) = req.bearer() else {
             respond(stream, 401, "Unauthorized", &[("WWW-Authenticate", "Bearer")], None, b"")?;
             return Ok(Next::KeepAlive);
+        };
+        // Same binding as POST: another principal's token does not get to
+        // read this session's server-initiated traffic.
+        if let Binding::Foreign(_) = binding_of(&sess, token) {
+            respond(stream, 403, "Forbidden", &[], None, b"")?;
+            return Ok(Next::KeepAlive);
         }
-        present_bearer(&sess, req.bearer());
+        present_bearer(&sess, Some(token));
     }
 
     let (tx, rx) = mpsc::channel();
@@ -1063,22 +1182,37 @@ impl HttpError {
 /// Reads one request. `Ok(None)` means the connection ended between requests
 /// (closed by the client or idle past the timeout), which calls for silence,
 /// not an error page.
+///
+/// Nothing is buffered beyond its bound: a line is read up to what is left
+/// of `MAX_HEADER_BYTES`, never to whatever newline the client eventually
+/// sends, and a body grows as its bytes arrive, never allocated from a
+/// `Content-Length` nobody has backed with data yet. The whole request must
+/// arrive within `deadline` of its first byte.
 fn read_request(
     reader: &mut BufReader<TcpStream>,
     stream: &mut TcpStream,
+    deadline: Duration,
 ) -> std::result::Result<Option<Request>, HttpError> {
-    let mut line = String::new();
-    match reader.read_line(&mut line) {
-        Ok(0) => return Ok(None),
+    // Between requests the connection may idle; once a request starts, the
+    // deadline runs.
+    match fill(reader, Instant::now() + IDLE_TIMEOUT) {
         Ok(_) => {}
-        Err(e)
-            if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut =>
-        {
-            return Ok(None)
-        }
         Err(_) => return Ok(None),
     }
+    let deadline = Instant::now() + deadline;
+    let too_large =
+        || HttpError::new(431, "Request Header Fields Too Large", "headers too large");
+    let timed_out = || HttpError::new(408, "Request Timeout", "request not received in time");
+
+    let line = match read_line_bounded(reader, deadline, MAX_HEADER_BYTES) {
+        Ok(l) => l,
+        Err(ReadFail::Closed) => return Ok(None),
+        Err(ReadFail::TimedOut) => return Err(timed_out()),
+        Err(ReadFail::TooLarge) => return Err(too_large()),
+    };
+    let mut total = line.len();
+    let line = String::from_utf8(line)
+        .map_err(|_| HttpError::new(400, "Bad Request", "malformed request line"))?;
 
     let mut parts = line.split_whitespace();
     let (Some(method), Some(target), Some(version)) =
@@ -1093,18 +1227,16 @@ fn read_request(
     let target = target.to_string();
 
     let mut headers = Vec::new();
-    let mut total = line.len();
     loop {
-        let mut h = String::new();
-        match reader.read_line(&mut h) {
-            Ok(0) => return Ok(None),
-            Ok(_) => {}
-            Err(_) => return Ok(None),
-        }
+        let h = match read_line_bounded(reader, deadline, MAX_HEADER_BYTES - total) {
+            Ok(h) => h,
+            Err(ReadFail::Closed) => return Ok(None),
+            Err(ReadFail::TimedOut) => return Err(timed_out()),
+            Err(ReadFail::TooLarge) => return Err(too_large()),
+        };
         total += h.len();
-        if total > MAX_HEADER_BYTES {
-            return Err(HttpError::new(431, "Request Header Fields Too Large", "headers too large"));
-        }
+        let h = String::from_utf8(h)
+            .map_err(|_| HttpError::new(400, "Bad Request", "malformed header"))?;
         let t = h.trim_end();
         if t.is_empty() {
             break;
@@ -1146,14 +1278,92 @@ fn read_request(
             let _ = stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n");
             let _ = stream.flush();
         }
-        let mut body = vec![0u8; len];
-        reader
-            .read_exact(&mut body)
-            .map_err(|_| HttpError::new(400, "Bad Request", "body shorter than Content-Length"))?;
+        // Grown as the bytes arrive: a 4 MiB `Content-Length` with nothing
+        // behind it costs the client a header line, not the gateway 4 MiB.
+        let mut body = Vec::with_capacity(len.min(64 * 1024));
+        while body.len() < len {
+            let buf = match fill(reader, deadline) {
+                Ok(b) => b,
+                Err(ReadFail::TimedOut) => return Err(timed_out()),
+                Err(_) => {
+                    return Err(HttpError::new(
+                        400,
+                        "Bad Request",
+                        "body shorter than Content-Length",
+                    ))
+                }
+            };
+            let n = buf.len().min(len - body.len());
+            body.extend_from_slice(&buf[..n]);
+            reader.consume(n);
+        }
         req.body = body;
     }
 
     Ok(Some(req))
+}
+
+/// Why a bounded read stopped short.
+enum ReadFail {
+    /// End of stream, or a socket error: nothing to answer.
+    Closed,
+    /// The deadline passed first.
+    TimedOut,
+    /// The line outgrew its bound before its newline arrived.
+    TooLarge,
+}
+
+/// The buffered bytes, reading more if there are none, waiting no later than
+/// `deadline`. The socket timeout is reset before every read, so the
+/// deadline holds across any number of reads, however slowly each one is
+/// fed.
+fn fill(
+    reader: &mut BufReader<TcpStream>,
+    deadline: Instant,
+) -> std::result::Result<&[u8], ReadFail> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err(ReadFail::TimedOut);
+    }
+    reader
+        .get_ref()
+        .set_read_timeout(Some(left))
+        .map_err(|_| ReadFail::Closed)?;
+    match reader.fill_buf() {
+        Ok([]) => Err(ReadFail::Closed),
+        Ok(buf) => Ok(buf),
+        Err(e)
+            if e.kind() == std::io::ErrorKind::WouldBlock
+                || e.kind() == std::io::ErrorKind::TimedOut =>
+        {
+            Err(ReadFail::TimedOut)
+        }
+        Err(_) => Err(ReadFail::Closed),
+    }
+}
+
+/// One line, newline included, of at most `limit` bytes.
+fn read_line_bounded(
+    reader: &mut BufReader<TcpStream>,
+    deadline: Instant,
+    limit: usize,
+) -> std::result::Result<Vec<u8>, ReadFail> {
+    let mut line = Vec::new();
+    loop {
+        let buf = fill(reader, deadline)?;
+        let (n, done) = match buf.iter().position(|&b| b == b'\n') {
+            Some(i) => (i + 1, true),
+            None => (buf.len(), false),
+        };
+        if line.len() + n > limit {
+            return Err(ReadFail::TooLarge);
+        }
+        line.extend_from_slice(&buf[..n]);
+        reader.consume(n);
+        if done {
+            return Ok(line);
+        }
+    }
 }
 
 fn respond(
@@ -1207,4 +1417,71 @@ fn new_session_id() -> std::result::Result<String, getrandom::Error> {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes)?;
     Ok(hex::encode(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    /// A connected pair: the client end, and the server end wrapped the way
+    /// `handle_connection` wraps it.
+    fn pair() -> (TcpStream, BufReader<TcpStream>, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let reader = BufReader::new(server.try_clone().unwrap());
+        (client, reader, server)
+    }
+
+    #[test]
+    fn a_trickled_request_runs_out_of_time() {
+        // A byte every 50 ms never trips a per-read timeout. The request as
+        // a whole has a deadline, and that one does trip.
+        let (mut client, mut reader, mut server) = pair();
+        let feeder = std::thread::spawn(move || {
+            for b in b"POST /mcp HTTP/1.1\r\nHost: x\r\nX-Slow: ".iter().cycle().take(200) {
+                if client.write_all(&[*b]).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+
+        let started = Instant::now();
+        match read_request(&mut reader, &mut server, Duration::from_millis(500)) {
+            Err(e) => assert_eq!(e.status, 408, "{}", e.message),
+            Ok(_) => panic!("a trickled request must not be read to its end"),
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "the deadline must bound the whole request"
+        );
+        drop(server);
+        drop(reader);
+        let _ = feeder.join();
+    }
+
+    #[test]
+    fn a_body_is_read_as_it_arrives() {
+        // The body is no longer allocated from `Content-Length` up front;
+        // what arrives is still read exactly, across several reads.
+        let (mut client, mut reader, mut server) = pair();
+        let body = vec![b'x'; 200_000];
+        let writer = std::thread::spawn(move || {
+            write!(client, "POST /mcp HTTP/1.1\r\nContent-Length: {}\r\n\r\n", body.len())
+                .unwrap();
+            for chunk in body.chunks(7_000) {
+                client.write_all(chunk).unwrap();
+            }
+            client
+        });
+        let req = read_request(&mut reader, &mut server, REQUEST_DEADLINE)
+            .ok()
+            .flatten()
+            .expect("a whole request");
+        assert_eq!(req.body.len(), 200_000);
+        assert!(req.body.iter().all(|&b| b == b'x'));
+        drop(writer.join());
+    }
 }

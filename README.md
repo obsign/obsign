@@ -50,6 +50,9 @@ flowchart TB
 - **Verifier**: the only binary the auditor needs. No network, no trust in
   you.
 
+A fifth, `obsign-tpm-enroll`, runs once per gateway host to bind its key
+to a TPM; it is a tool, not a service.
+
 </td>
 </tr>
 <tr>
@@ -168,7 +171,7 @@ can write it but cannot seal it; the ledger can seal but cannot write it.
 | **Reverse proxy**: nginx, Caddy | Terminates TLS in front of the gateway's plaintext HTTP port | [deploy-tls.md](docs/deploy-tls.md) |
 | **HSM / smartcard** | Vendor PKCS#11 module loaded by the ledger; the sealing key never leaves it | [walkthrough](docs/walkthrough.md#sealing-through-an-hsm-pkcs11) |
 | **Timestamping authority** | RFC 3161, exchanged by file | [walkthrough](docs/walkthrough.md#rfc-3161-anchoring) |
-| **TPM 2.0** | Proves which gateway binary held the signing key | [attestation](docs/design/attestation-v3.md) · [real TPM](docs/real-tpm-interop.md) |
+| **TPM 2.0** | Binds the gateway's identity key to one TPM and to a measured state | [attestation](docs/design/attestation-v4.md) · [real TPM](docs/real-tpm-interop.md) |
 | **Supervision** | The ledger exits non-zero on a rewritten WAL; systemd `OnFailure=` raises the alert | [alerting.md](docs/alerting.md) |
 | **Backup** | WAL and checkpoint store, long-term retention | [runbook](docs/runbook-backup-restore.md) |
 
@@ -228,7 +231,7 @@ Each of these is a reason to refuse a pull request:
 | **Understand** | [Walkthrough](docs/walkthrough.md) · [Identity and delegation](docs/identity.md) · [Design notes](docs/design-notes.md) (decisions, format compatibility, known debt, tests) |
 | **Write policies** | [Cedar policies](docs/policies-cedar.md) · [Source tree reference](docs/policy-source-reference.md) |
 | **Deploy and operate** | [Docker](docs/deploy-docker.md) · [TLS](docs/deploy-tls.md) · [Alerting](docs/alerting.md) · [Backup and restore](docs/runbook-backup-restore.md) · [Real TPM](docs/real-tpm-interop.md) |
-| **Design specs** | [WAL origin auth](docs/design/wal-origin-auth.md) · [Deployment bundle](docs/design/deployment-bundle-v1.md) · [Session certs](docs/design/session-certs-v2.md) · [Attestation](docs/design/attestation-v3.md) · [Argument policy](docs/design/argument-policy-v1.md) |
+| **Design specs** | [WAL origin auth](docs/design/wal-origin-auth.md) · [Deployment bundle](docs/design/deployment-bundle-v1.md) · [Session certs](docs/design/session-certs-v2.md) · [Attestation](docs/design/attestation-v4.md) · [Argument policy](docs/design/argument-policy-v1.md) |
 
 ## Build and test
 

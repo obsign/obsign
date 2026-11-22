@@ -46,6 +46,15 @@ struct CompileArgs {
 
     #[arg(long, default_value = "ops-key")]
     key_id: String,
+
+    /// Identity bundle epoch, in seconds. Gateways refuse to reload an
+    /// identity bundle older than the one in force, so this must grow from
+    /// one release to the next. Defaults to `SOURCE_DATE_EPOCH`, then to the
+    /// commit time of HEAD (read with `git`); required with `--label` and no
+    /// `SOURCE_DATE_EPOCH`. Never the wall clock: the same commit compiles
+    /// to the same bytes.
+    #[arg(long)]
+    epoch: Option<u64>,
 }
 
 #[derive(Subcommand)]
@@ -80,7 +89,8 @@ enum Command {
         #[arg(long)]
         store: PathBuf,
 
-        /// Output directory for the dossier
+        /// Output directory for the dossier. Must not exist or be empty;
+        /// it appears only once the dossier is complete.
         #[arg(long)]
         out: PathBuf,
 
@@ -90,6 +100,14 @@ enum Command {
 
         #[arg(long, default_value = "ops-key")]
         key_id: String,
+
+        /// Your out-of-band copy of the sealing public keys (a JSON array of
+        /// key entries, as in the store's keys.json). Without it, packs are
+        /// verified against the store's own keys.json, which a substituted
+        /// store would carry too. With it, a store sealed under any other
+        /// key is refused.
+        #[arg(long)]
+        seal_keys: Option<PathBuf>,
     },
 
     /// Write the Cedar schema of the model these rules see
@@ -132,6 +150,13 @@ enum Command {
         /// authentication, do not point it at a network you do not trust.
         #[arg(long, default_value = "127.0.0.1:9090")]
         listen: String,
+
+        /// A host name the console answers to, besides localhost and IP
+        /// addresses (repeatable). Any other Host header is refused, which
+        /// is what stops a web page from reading the console through DNS
+        /// rebinding.
+        #[arg(long = "allow-host")]
+        allow_host: Vec<String>,
     },
 }
 
@@ -152,18 +177,22 @@ fn main() -> Result<()> {
             out,
             key,
             key_id,
-        } => do_export(&wal, &store, &out, &key, &key_id),
+            seal_keys,
+        } => do_export(&wal, &store, &out, &key, &key_id, seal_keys.as_deref()),
         Command::Schema { source, out, check } => do_schema(&source, out.as_deref(), check),
         Command::Console {
             wal,
             store,
             dist,
             listen,
+            allow_host,
         } => {
             let console = Console {
                 wal_dir: wal,
                 store_dir: store,
                 dist_dir: dist,
+                allowed_hosts: allow_host,
+                request_deadline: obsign_control_plane::console::REQUEST_DEADLINE,
             };
             console.serve(&listen).context("serving the console")?;
             Ok(())
@@ -175,8 +204,14 @@ fn load_and_compile(args: &CompileArgs) -> Result<(obsign_control_plane::Compile
     let ops = OpsKey::from_seed_file(&args.key, &args.key_id).context("loading the ops key")?;
     let tree = SourceTree::load(&args.source).context("loading the source tree")?;
 
+    let mut head = None;
     let source_ref = match &args.label {
-        Some(l) => l.clone(),
+        Some(l) => {
+            // Refused here, before signing, not only at publish: the label
+            // is stamped into every bundle version.
+            obsign_control_plane::release::check_version(l)?;
+            l.clone()
+        }
         None => {
             let sha = git_head(&args.source)?;
             // The version will cite this sha. Refuse to sign bytes the
@@ -187,11 +222,21 @@ fn load_and_compile(args: &CompileArgs) -> Result<(obsign_control_plane::Compile
                 let listed: Vec<String> = divergence.iter().map(|d| format!("  {d}")).collect();
                 return Err(obsign_control_plane::Error::DirtyTree(listed.join("\n")).into());
             }
-            short_ref(&sha).to_string()
+            let short = short_ref(&sha).to_string();
+            head = Some(sha);
+            short
         }
     };
 
-    let compiled = compile(&tree, &source_ref, &ops).context("compiling")?;
+    // Only the identity bundle carries an epoch: a tree without one needs
+    // none.
+    let epoch = if tree.identity.is_none() {
+        0
+    } else {
+        source_epoch(args, &args.source, head.as_deref())?
+    };
+
+    let compiled = compile(&tree, &source_ref, epoch, &ops).context("compiling")?;
     for w in &compiled.warnings {
         eprintln!("[control] warning: {w}");
     }
@@ -208,6 +253,50 @@ fn load_and_compile(args: &CompileArgs) -> Result<(obsign_control_plane::Compile
         }
     );
     Ok((compiled, ops))
+}
+
+/// The identity bundle epoch: explicit, then `SOURCE_DATE_EPOCH` (the
+/// reproducible-builds convention), then the commit time of `head`.
+///
+/// The commit time is read with the `git` binary because reading it from the
+/// object store means inflating zlib and walking packs; a host with no `git`
+/// passes `--epoch` or `SOURCE_DATE_EPOCH` instead.
+fn source_epoch(
+    args: &CompileArgs,
+    source: &std::path::Path,
+    head: Option<&str>,
+) -> Result<u64> {
+    if let Some(e) = args.epoch {
+        return Ok(e);
+    }
+    if let Ok(v) = std::env::var("SOURCE_DATE_EPOCH") {
+        return v
+            .trim()
+            .parse()
+            .with_context(|| format!("SOURCE_DATE_EPOCH is not a number of seconds: {v:?}"));
+    }
+    let Some(sha) = head else {
+        bail!(
+            "an identity bundle needs an epoch: with --label, pass --epoch or set \
+             SOURCE_DATE_EPOCH, and keep it above the last published one"
+        );
+    };
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(source)
+        .args(["show", "-s", "--format=%ct", sha])
+        .output()
+        .context("reading the commit time with git: pass --epoch or set SOURCE_DATE_EPOCH")?;
+    if !out.status.success() {
+        bail!(
+            "git could not read the time of commit {sha}: pass --epoch or set \
+             SOURCE_DATE_EPOCH"
+        );
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .context("git returned a commit time that is not a number")
 }
 
 fn do_compile(args: &CompileArgs, out: &std::path::Path) -> Result<()> {
@@ -295,9 +384,18 @@ fn do_export(
     out: &std::path::Path,
     key: &std::path::Path,
     key_id: &str,
+    seal_keys: Option<&std::path::Path>,
 ) -> Result<()> {
     let ops = OpsKey::from_seed_file(key, key_id).context("loading the ops key")?;
-    let (exports, all_valid) = export_all(wal, store, out, &ops, now_ms()).context("exporting")?;
+    let pinned: Option<Vec<obsign_audit_core::checkpoint::PublicKeyEntry>> = match seal_keys {
+        None => None,
+        Some(p) => Some(
+            serde_json::from_str(&std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?)
+                .with_context(|| format!("parsing {}", p.display()))?,
+        ),
+    };
+    let (exports, all_valid) =
+        export_all(wal, store, out, &ops, now_ms(), pinned.as_deref()).context("exporting")?;
 
     for e in &exports {
         eprintln!(

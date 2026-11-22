@@ -15,6 +15,13 @@ pub struct Auth {
     /// common case (the same token on every request) costs a string
     /// comparison, not a signature verification.
     presented: Option<String>,
+    /// Issuer and subject of the token that opened the session (HTTP
+    /// transport). The session id is only a routing key the client echoes;
+    /// this is what makes it belong to someone. A token speaking for anyone
+    /// else is refused, however valid, so a leaked or guessed session id
+    /// does not let another principal act inside it under their own
+    /// delegation.
+    bound: Option<(String, String)>,
     current: Delegation,
     /// Incremented on every renewal, to number the delegation records.
     generation: u64,
@@ -47,6 +54,7 @@ impl Auth {
             source: None,
             token_path: None,
             presented: None,
+            bound: None,
             current: Delegation {
                 subject: principal.to_string(),
                 // Deliberately conspicuous marker: an auditor reading
@@ -85,6 +93,7 @@ impl Auth {
             source: Some(source),
             token_path: Some(token_path),
             presented: None,
+            bound: None,
             current,
             generation: 1,
             reloads,
@@ -107,6 +116,7 @@ impl Auth {
             source: Some(source),
             token_path: None,
             presented: Some(token.to_string()),
+            bound: Some((current.issuer.clone(), current.subject.clone())),
             current,
             generation: 1,
             reloads,
@@ -216,6 +226,12 @@ impl Auth {
         };
 
         match verify_token(source, token, now_ms, &mut self.reloads) {
+            Ok(fresh) if !self.binds(&fresh) => Err(AuthDenied(format!(
+                "presented token speaks for {} ({}), this session belongs to {}",
+                fresh.subject,
+                fresh.issuer,
+                self.current.subject
+            ))),
             Ok(fresh) if !fresh.is_expired(now_ms) => {
                 self.presented = Some(token.to_string());
                 // Same rationale as `refresh`: whole-struct comparison, so a
@@ -233,6 +249,48 @@ impl Auth {
             Err(e) => Err(AuthDenied(format!("presented token rejected: {e}"))),
         }
     }
+
+    /// True when `deleg` speaks for the principal this session is bound to,
+    /// or when the session is bound to nobody (declared identity, stdio).
+    fn binds(&self, deleg: &Delegation) -> bool {
+        self.bound
+            .as_ref()
+            .is_none_or(|(iss, sub)| *iss == deleg.issuer && *sub == deleg.subject)
+    }
+
+    /// Whom `token` speaks for, relative to the principal the session is
+    /// bound to. Changes nothing: the delegation in force moves only through
+    /// `present`, under the session lock.
+    ///
+    /// The transport asks before routing a request, so a token naming
+    /// another principal is refused with 403 on every method, the
+    /// unarbitrated ones included, which would otherwise let it renew the
+    /// delegation that filters discovery, or close the session.
+    pub fn binding_of(&mut self, token: &str, now_ms: i64) -> Binding {
+        if self.presented.as_deref() == Some(token) {
+            return Binding::Owner;
+        }
+        let Some(source) = &mut self.source else {
+            return Binding::Owner;
+        };
+        match verify_token(source, token, now_ms, &mut self.reloads) {
+            Ok(d) if self.binds(&d) => Binding::Owner,
+            Ok(d) => Binding::Foreign(d.subject),
+            Err(e) => Binding::Unverified(e),
+        }
+    }
+}
+
+/// Answer of [`Auth::binding_of`].
+#[derive(Debug, PartialEq)]
+pub enum Binding {
+    /// A token of the principal the session is bound to (expired or not:
+    /// expiry is enforced per act, not here).
+    Owner,
+    /// A valid token of another principal, named.
+    Foreign(String),
+    /// A token that does not verify. Says nothing about whose it is.
+    Unverified(String),
 }
 
 /// Verifies the token, recovering from a key rotation on the provider side.
@@ -618,6 +676,7 @@ mod rotation_tests {
             audience: crate::testutil::AUDIENCE.into(),
             jwks,
             claims: ClaimMap::default(),
+            epoch: 0,
         }
         .sign("identity-key", &SigningKey::from_bytes(&[0x99; 32]));
         std::fs::write(&bp, serde_json::to_string(&rogue).unwrap()).unwrap();

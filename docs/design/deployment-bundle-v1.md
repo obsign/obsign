@@ -228,7 +228,8 @@ so pre-origin deployments are not force-upgraded by a version bump.
 
 In the verifier, `--require-origin` becomes the default and
 `--allow-unsigned-legacy-chains` downgrades `origin_unverified` back to a
-warning. The person accepting the asterisk types the flag; everyone else gets
+warning for records that carry no signature at all; a record signed under a
+key absent from the trusted set stays an error. The person accepting the asterisk types the flag; everyone else gets
 the strict verdict. `--strict` already fails on warnings, so nothing
 regresses for callers who were strict.
 

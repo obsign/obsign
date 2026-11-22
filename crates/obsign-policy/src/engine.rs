@@ -223,11 +223,19 @@ impl Engine {
             validate_arg_specs(t, &bundle.format)?;
         }
 
-        let tools = bundle
-            .tools
-            .iter()
-            .map(|t| (t.name.clone(), t.clone()))
-            .collect();
+        // One definition per name. Collecting into the map would keep the
+        // last one silently, so the catalogue the signer reviewed (where the
+        // first `ticket_update` may be destructive, or declare the argument
+        // a rule reads) is not the one the gateway enforces.
+        let mut tools = HashMap::new();
+        for t in &bundle.tools {
+            if tools.insert(t.name.clone(), t.clone()).is_some() {
+                return Err(Error::Bundle(format!(
+                    "tool \"{}\" is defined more than once in the catalogue",
+                    t.name
+                )));
+            }
+        }
 
         Ok(Engine {
             policies,
@@ -351,6 +359,21 @@ impl Engine {
     pub fn evaluate_capability(&self, cap: Capability, req: &ToolRequest) -> Verdict {
         match self.authorize_capability(cap, req) {
             Ok(v) => v,
+            // The same line `evaluate` draws for tools with arguments. A
+            // resource URI or a prompt name is chosen by whoever sends the
+            // request and reaches policies as `context.target`, so an
+            // evaluation error over it can be input-dependent (a rule calling
+            // `ip(context.target)` raises on any target that is not an
+            // address) and must never reach the open path. A server-keyed
+            // channel is evaluated against the fixed literal, so its errors
+            // are a broken policy and keep the customer's fail mode.
+            Err(e) if !cap.keyed_on_server() => Verdict {
+                outcome: Outcome::Deny,
+                policy_id: None,
+                reason: Some(format!(
+                    "policy evaluation failed over the request target, denied: {e}"
+                )),
+            },
             Err(e) => self.on_failure(cap.action(), &e),
         }
     }
@@ -567,11 +590,18 @@ impl Engine {
             return Err(Error::Cedar(errors.join(" ; ")));
         }
 
+        // The record carries one policy id, and more than one rule can
+        // determine a decision (two `forbid`s firing on the same call).
+        // Cedar hands them back as a `HashSet`, whose order changes from one
+        // call to the next, so taking the first one recorded a different
+        // rule for the same decision run after run. The smallest id is a
+        // stable choice. Recording all of them would change the decision
+        // record's frozen encoding.
         let policy_id = response
             .diagnostics()
             .reason()
-            .next()
-            .map(|p| p.to_string());
+            .map(|p| p.to_string())
+            .min();
 
         Ok(match response.decision() {
             Decision::Allow => Verdict {

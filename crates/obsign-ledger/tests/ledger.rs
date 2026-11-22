@@ -283,6 +283,196 @@ fn edited_store_refuses_to_open() {
 }
 
 #[test]
+fn run_mode_exits_on_a_forged_checkpoint_instead_of_retrying() {
+    // Regression: `run` exited only on a hand-picked list of errors. A
+    // forged checkpoint surfaces as `Core(BadSignature)`, was filed as
+    // transient, and retried every interval forever: no exit, so no
+    // `OnFailure=`, so nobody told (docs/alerting.md).
+    let wal_dir = tmpdir("runforged-wal");
+    let store_dir = tmpdir("runforged-store");
+    grow_wal(&wal_dir, 3);
+    {
+        let mut store = Store::open(&store_dir, "c1").unwrap();
+        let records = obsign_wal::read(&wal_dir, "c1").unwrap();
+        seal_pass(&records, &mut store, &sealer(), &no_origin(), 1000, 1).unwrap().unwrap();
+    }
+    let path = store_dir.join("c1.checkpoints.jsonl");
+    let line = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, line.replace("\"to_seq\":2", "\"to_seq\":1")).unwrap();
+
+    let seed = wal_dir.join("seed.hex");
+    std::fs::write(&seed, hex::encode([7u8; 32])).unwrap();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_obsign-ledger"))
+        .arg("run")
+        .args(["--store", store_dir.to_str().unwrap()])
+        .args(["--wal", wal_dir.to_str().unwrap()])
+        .args(["--chain-id", "c1", "--key-id", "seal-k1", "--interval-secs", "1"])
+        .args(["--key", seed.to_str().unwrap()])
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break Some(status);
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    let status = status.expect("`run` kept retrying a forged checkpoint instead of exiting");
+    assert!(!status.success());
+
+    let _ = std::fs::remove_dir_all(&wal_dir);
+    let _ = std::fs::remove_dir_all(&store_dir);
+}
+
+#[test]
+fn a_second_writer_on_the_store_fails_fast() {
+    let store_dir = tmpdir("lock-store");
+    let held = Store::open_exclusive(&store_dir, "c1").unwrap();
+    // Any chain: the lock is store-wide, because keys.json is.
+    assert!(matches!(Store::open_exclusive(&store_dir, "c1"), Err(obsign_ledger::Error::Locked(_))));
+    assert!(matches!(Store::open_exclusive(&store_dir, "c2"), Err(obsign_ledger::Error::Locked(_))));
+    // Readers are not writers.
+    Store::open(&store_dir, "c1").unwrap();
+    drop(held);
+    Store::open_exclusive(&store_dir, "c1").unwrap();
+    let _ = std::fs::remove_dir_all(&store_dir);
+}
+
+#[test]
+fn a_cron_seal_overlapping_a_pass_neither_forks_the_store_nor_stops_run() {
+    // `seal` from cron while another pass holds the store: before the lock,
+    // both sealed from the same head and appended, two checkpoints with the
+    // same predecessor, and the store never opened again.
+    let wal_dir = tmpdir("overlap-wal");
+    let store_dir = tmpdir("overlap-store");
+    grow_wal(&wal_dir, 3);
+    let seed = wal_dir.join("seed.hex");
+    std::fs::write(&seed, hex::encode([7u8; 32])).unwrap();
+    let ledger = |mode: &str| {
+        let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_obsign-ledger"));
+        c.arg(mode)
+            .args(["--store", store_dir.to_str().unwrap()])
+            .args(["--wal", wal_dir.to_str().unwrap()])
+            .args(["--chain-id", "c1", "--key-id", "seal-k1"])
+            .args(["--key", seed.to_str().unwrap()]);
+        c
+    };
+
+    let held = Store::open_exclusive(&store_dir, "c1").unwrap();
+    let out = ledger("seal").output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("locked"), "{out:?}");
+    assert!(Store::open(&store_dir, "c1").unwrap().checkpoints().is_empty());
+
+    // The daemon waits the other pass out instead of exiting.
+    let mut child = ledger("run")
+        .args(["--interval-secs", "1"])
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    let still_running = child.try_wait().unwrap().is_none();
+    drop(held);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut sealed = false;
+    while std::time::Instant::now() < deadline && still_running {
+        // Read-only: a repairing open could trim the line `run` is writing.
+        if Store::open_read_only(&store_dir, "c1").map(|s| s.checkpoints().len()).unwrap_or(0) == 1 {
+            sealed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(still_running, "`run` exited on a locked store instead of retrying");
+    assert!(sealed, "`run` did not seal once the lock was released");
+
+    let _ = std::fs::remove_dir_all(&wal_dir);
+    let _ = std::fs::remove_dir_all(&store_dir);
+}
+
+fn checkpoint_to(to_seq: u64, s: &FileSealer) -> obsign_audit_core::checkpoint::SignedCheckpoint {
+    let cp = obsign_audit_core::checkpoint::Checkpoint {
+        chain_id: "c1".to_string(),
+        from_seq: 0,
+        to_seq,
+        root: obsign_audit_core::Hash([1u8; 32]),
+        head_hash: obsign_audit_core::Hash([2u8; 32]),
+        prev_checkpoint_hash: None,
+        ts_ms: 1,
+        key_id: s.key_id().to_string(),
+    };
+    obsign_ledger::sign_checkpoint(cp, s).unwrap()
+}
+
+#[test]
+fn coverage_reaching_the_last_seq_is_refused_not_wrapped() {
+    // `to_seq + 1` on u64::MAX: a panic in a debug build, and in release a
+    // wrap to 0 that tells the next pass coverage resumes at the start.
+    let store_dir = tmpdir("overflow-store");
+    let s = sealer();
+    let mut store = Store::open(&store_dir, "c1").unwrap();
+    let err = store.append_checkpoint(checkpoint_to(u64::MAX, &s), &s.public_key()).unwrap_err();
+    assert!(matches!(err, obsign_ledger::Error::StoreBroken(_)), "{err:?}");
+    drop(store);
+
+    // Written to disk by hand: refused on open, not a panic.
+    std::fs::write(store_dir.join("keys.json"), serde_json::to_string(&[s.public_key()]).unwrap()).unwrap();
+    std::fs::write(
+        store_dir.join("c1.checkpoints.jsonl"),
+        format!("{}\n", serde_json::to_string(&checkpoint_to(u64::MAX, &s)).unwrap()),
+    )
+    .unwrap();
+    let err = Store::open(&store_dir, "c1").unwrap_err();
+    assert!(matches!(err, obsign_ledger::Error::StoreBroken(_)), "{err:?}");
+    let _ = std::fs::remove_dir_all(&store_dir);
+}
+
+#[test]
+fn a_seal_that_fails_verification_records_no_key() {
+    let store_dir = tmpdir("verify-first-store");
+    let s = sealer();
+    let mut store = Store::open(&store_dir, "c1").unwrap();
+    // The right id, the wrong key material: the signature cannot verify.
+    let wrong = FileSealer::from_seed([9u8; 32], s.key_id()).public_key();
+    assert!(store.append_checkpoint(checkpoint_to(2, &s), &wrong).is_err());
+    assert!(store.keys().is_empty());
+    assert!(!store_dir.join("keys.json").exists(), "a failed seal bound its key id");
+
+    // So the real key is not locked out as a "conflict" afterwards.
+    store.append_checkpoint(checkpoint_to(2, &s), &s.public_key()).unwrap();
+    let _ = std::fs::remove_dir_all(&store_dir);
+}
+
+#[test]
+fn keys_json_holds_unique_seal_keys_only() {
+    let s = sealer();
+    for (name, keys) in [
+        ("role", {
+            let mut k = s.public_key();
+            k.role = obsign_audit_core::checkpoint::KeyRole::Origin;
+            vec![k]
+        }),
+        ("dup", vec![s.public_key(), s.public_key()]),
+    ] {
+        let store_dir = tmpdir(&format!("keys-{name}-store"));
+        std::fs::create_dir_all(&store_dir).unwrap();
+        std::fs::write(store_dir.join("keys.json"), serde_json::to_string(&keys).unwrap()).unwrap();
+        let err = Store::open(&store_dir, "c1").unwrap_err();
+        assert!(matches!(err, obsign_ledger::Error::StoreBroken(_)), "{name}: {err:?}");
+        let _ = std::fs::remove_dir_all(&store_dir);
+    }
+}
+
+#[test]
 fn removed_checkpoint_breaks_the_store_chain() {
     let wal_dir = tmpdir("storedrop-wal");
     let store_dir = tmpdir("storedrop-store");
@@ -339,6 +529,111 @@ fn torn_final_store_line_is_survivable() {
     grow_wal(&wal_dir, 1);
     let records = obsign_wal::read(&wal_dir, "c1").unwrap();
     assert!(seal_pass(&records, &mut store, &s, &no_origin(), 2000, 1).unwrap().is_some());
+
+    let _ = std::fs::remove_dir_all(&wal_dir);
+    let _ = std::fs::remove_dir_all(&store_dir);
+}
+
+#[test]
+fn readers_leave_a_torn_tail_as_found() {
+    // `export` and `anchor request` only read. Pointed at a backup copy, or
+    // at a store `run` is appending to, they must not trim or complete the
+    // last line: that is the writer's repair, made under its lock.
+    let wal_dir = tmpdir("ro-wal");
+    let store_dir = tmpdir("ro-store");
+    grow_wal(&wal_dir, 3);
+    {
+        let mut store = Store::open(&store_dir, "c1").unwrap();
+        let records = obsign_wal::read(&wal_dir, "c1").unwrap();
+        seal_pass(&records, &mut store, &sealer(), &no_origin(), 1000, 1).unwrap().unwrap();
+    }
+    let path = store_dir.join("c1.checkpoints.jsonl");
+    let mut bytes = std::fs::read(&path).unwrap();
+    bytes.extend_from_slice(b"{\"checkpoint\":{\"chain_id\":\"c1\",\"from_s");
+    std::fs::write(&path, &bytes).unwrap();
+
+    let store = Store::open_read_only(&store_dir, "c1").unwrap();
+    assert_eq!(store.checkpoints().len(), 1);
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
+    let out = wal_dir.join("pack.json");
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_obsign-ledger"))
+        .arg("export")
+        .args(["--store", store_dir.to_str().unwrap()])
+        .args(["--wal", wal_dir.to_str().unwrap()])
+        .args(["--chain-id", "c1", "--out", out.to_str().unwrap()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert_eq!(std::fs::read(&path).unwrap(), bytes, "export repaired the store it read");
+
+    // A missing store is read as empty, not created.
+    let missing = store_dir.join("nope");
+    assert!(Store::open_read_only(&missing, "c1").unwrap().checkpoints().is_empty());
+    assert!(!missing.exists());
+
+    let _ = std::fs::remove_dir_all(&wal_dir);
+    let _ = std::fs::remove_dir_all(&store_dir);
+}
+
+#[test]
+fn a_garbled_last_checkpoint_is_refused_not_trimmed() {
+    // Regression: any unparseable last line was trimmed as if a crash had
+    // torn it. Garbling the last seal therefore erased the sealed boundary,
+    // and a WAL rewritten below it was then sealed as history. A terminated
+    // line is never torn: it is an edit.
+    let wal_dir = tmpdir("garbled-wal");
+    let store_dir = tmpdir("garbled-store");
+    grow_wal(&wal_dir, 3);
+    {
+        let mut store = Store::open(&store_dir, "c1").unwrap();
+        let records = obsign_wal::read(&wal_dir, "c1").unwrap();
+        seal_pass(&records, &mut store, &sealer(), &no_origin(), 1000, 1).unwrap().unwrap();
+    }
+
+    let path = store_dir.join("c1.checkpoints.jsonl");
+    let line = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, line.replacen('{', "{garbage", 1)).unwrap();
+
+    let err = Store::open(&store_dir, "c1").unwrap_err();
+    assert!(matches!(err, obsign_ledger::Error::StoreBroken(_)), "got {err:?}");
+    assert!(
+        std::fs::read_to_string(&path).unwrap().contains("garbage"),
+        "the evidence was trimmed away"
+    );
+
+    let _ = std::fs::remove_dir_all(&wal_dir);
+    let _ = std::fs::remove_dir_all(&store_dir);
+}
+
+#[test]
+fn a_seal_that_lost_only_its_newline_is_kept() {
+    // A crash between a checkpoint line and its newline (the old two-write
+    // append) left a whole, signed seal without a terminator. It is
+    // completed rather than trimmed, and the next append starts on a line of
+    // its own instead of gluing itself to it.
+    let wal_dir = tmpdir("nonewline-wal");
+    let store_dir = tmpdir("nonewline-store");
+    grow_wal(&wal_dir, 3);
+    let s = sealer();
+    {
+        let mut store = Store::open(&store_dir, "c1").unwrap();
+        let records = obsign_wal::read(&wal_dir, "c1").unwrap();
+        seal_pass(&records, &mut store, &s, &no_origin(), 1000, 1).unwrap().unwrap();
+    }
+    let path = store_dir.join("c1.checkpoints.jsonl");
+    let line = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, line.trim_end_matches('\n')).unwrap();
+
+    let mut store = Store::open(&store_dir, "c1").unwrap();
+    assert_eq!(store.checkpoints().len(), 1, "the seal is intact and kept");
+
+    grow_wal(&wal_dir, 1);
+    let records = obsign_wal::read(&wal_dir, "c1").unwrap();
+    assert!(seal_pass(&records, &mut store, &s, &no_origin(), 2000, 1).unwrap().is_some());
+    drop(store);
+    assert_eq!(Store::open(&store_dir, "c1").unwrap().checkpoints().len(), 2);
 
     let _ = std::fs::remove_dir_all(&wal_dir);
     let _ = std::fs::remove_dir_all(&store_dir);

@@ -378,8 +378,10 @@ curl -s https://idp.example.com/realms/corp/protocol/openid-connect/certs \
 | `keys[].kty` | enum | **yes** | — | `RSA` \| `EC` \| `OKP`. Anything else is refused. |
 | `keys[].kid` | string | **yes** | — | Matched against the token's `kid` header. **Mandatory in the token too**: without it we would have to try every key, which hides a failed rotation and muddies diagnosis. |
 | `keys[].alg` | string | no | per `kty`, below | Signing algorithm. |
-| `keys[].crv` | string | no | — | Carried and signed, not otherwise interpreted; the curve is implied by `alg` for `EC` and by `kty` for `OKP`. |
-| `keys[].n`, `keys[].e` | base64url | for `RSA` | — | Modulus and exponent. |
+| `keys[].crv` | string | no | — | When present, must match `alg`: `P-256` for `ES256`, `P-384` for `ES384`, `Ed25519` for `OKP`. Names the `alg` of an `EC` key that has none. |
+| `keys[].use` | string | no | — | A key with anything but `sig` (an IdP's `enc` key) is skipped. Signed. |
+| `keys[].key_ops` | array | no | — | When present, a key not listing `verify` is skipped. Signed. |
+| `keys[].n`, `keys[].e` | base64url | for `RSA` | — | Modulus (2048 bits at least) and exponent. |
 | `keys[].x` | base64url | for `EC` and `OKP` | — | X coordinate (`EC`) or the raw public key (`OKP`/Ed25519). |
 | `keys[].y` | base64url | for `EC` | — | Y coordinate. Ignored for `OKP`. |
 
@@ -394,10 +396,16 @@ curl -s https://idp.example.com/realms/corp/protocol/openid-connect/certs \
 **HMAC algorithms (`HS256` …) and `none` are deliberately absent.** A
 symmetric key in a published JWKS is a vulnerability.
 
+**Skipped, not refused:** a key that is not a signing key here, by its `use`,
+its `key_ops`, an `alg` outside the table above (`RSA-OAEP`, `ECDH-ES`, ...)
+or an `OKP` curve other than `Ed25519`. The JWKS an IdP serves holds its
+encryption keys too, and stays usable as fetched.
+
 **Refused at compile** (the same checks the gateway runs, moved to CI): an
-empty or all-unusable key set; a duplicate `kid` (two keys for one id means we
-can no longer tell which one signed); a missing component for the declared
-`kty`; an unsupported `kty` or `alg`.
+empty key set or one with no signing key left; a duplicate `kid` (two keys for
+one id means we can no longer tell which one signed); a missing component for
+the declared `kty`; an unsupported `kty`; an HMAC `alg` or `none`; a `crv` that
+contradicts `alg`; an RSA modulus under 2048 bits.
 
 **Rotation does not need a restart.** The identity bundle is re-read at
 runtime, and every reload (applied or rejected) lands in the log as a
@@ -466,12 +474,14 @@ no proof.
 
 ---
 
-## 7. `deployment/attestation.json` (optional, v3)
+## 7. `deployment/attestation.json` (optional, v4)
 
-TPM enrollments: proof that a gateway's identity key is resident in real
-hardware running measured software. Optional, and only meaningful with a TPM
-2.0. See [real-tpm-interop.md](real-tpm-interop.md) and
-[design/attestation-v3.md](design/attestation-v3.md).
+TPM enrollments: proof that a gateway's identity key is resident in a TPM,
+bound to its EK by credential activation, and usable only while the enrolled
+PCRs hold the enrolled values. Optional, and only meaningful with a TPM 2.0.
+What it proves and what it does not:
+[design/attestation-v4.md](design/attestation-v4.md) §5. Running it:
+[real-tpm-interop.md](real-tpm-interop.md).
 
 Top level is an **array**, one entry per enrolled key.
 
@@ -486,22 +496,30 @@ Top level is an **array**, one entry per enrolled key.
 | `expected_pcrs[].index` | integer | **yes** | — | PCR index. The gateway-binary measurement conventionally goes in 16. |
 | `expected_pcrs[].digest` | hex | **yes** | — | Expected value of that PCR. |
 | `identity_pub` | hex | no | *absent* | The identity key's marshalled `TPMT_PUBLIC`. **Present** in everything a real TPM emits: the verifier recomputes the Name the certify must match (`alg ‖ H(these bytes)`) and extracts the raw public key, which must equal the enrolled entry, so the chain from that entry through the public area and the Name to the AK signature closes with no gap. **Absent** falls back to the earlier synthetic binding, kept so pre-hardware attestations keep verifying. |
+| `activation` | object | no | *absent* | The credential-activation record: `ek_pub` (EK `TPMT_PUBLIC`), `ak_public` (AK `TPMT_PUBLIC`), `nonce` and `secret` (32 bytes each). **Present** (everything `obsign-tpm-enroll finish` writes): the verifier checks the EK, AK and identity-key attributes, the identity key's PCR policy, the EK certificate against the EK, and that certify and quote are qualified by the nonce and the credential. Requires `ek_cert` to be the certificate of that EK, or empty. **Absent**: the attestation verifies in its earlier form and the report raises `attestation_unbound` (an error under `--require-attestation`). A bundle carrying one is published as `obsign-deployment/2`. |
 
 All hex fields are lowercase hex with no `0x` prefix.
 
 ### Generating it
 
+An exchange of files between the gateway host (which has the TPM) and the
+ops side (which keeps the challenge secret until the end):
+
 ```bash
-obsign-tpm-enroll \
-  --tpm /dev/tpmrm0 \
-  --key-id origin-3f19c2a8b4d70e51 \
-  --binary-hash "$(sha256sum ./obsign-proxy | cut -d' ' -f1)" \
-  --pcr 16 \
-  --ek-cert-file ./ek.der \
-  --out ./one-attestation.json
+# gateway host, after the launch wrapper ran `obsign-tpm-enroll measure`
+obsign-tpm-enroll request --tpm /dev/tpmrm0 --ek-cert-file ./ek.der --out request.json
+# ops side
+obsign-tpm-enroll challenge --request request.json \
+  --out challenge.json --state ops-state.json      # ops-state.json stays here
+# gateway host
+obsign-tpm-enroll respond --tpm /dev/tpmrm0 --challenge challenge.json \
+  --key-id origin-3f19c2a8b4d70e51 --pcr 16 --out response.json
+# ops side
+obsign-tpm-enroll finish --state ops-state.json --response response.json \
+  --binary ./obsign-proxy --out ./one-attestation.json
 ```
 
-Two things to know:
+Three things to know:
 
 1. **`--out` writes one bare object; the file must be an array.** Wrap it
    with `jq -s '.' one-attestation.json > deployment/attestation.json`, or
@@ -511,6 +529,9 @@ Two things to know:
    bundles accept only Ed25519 origin keys today, and a P-256 entry takes the
    whole bundle down as `deployment_bundle_invalid`. The attestation itself is
    fine; the entry waits for P-256 origin-key support.
+3. **An attestation with `activation` makes the bundle `obsign-deployment/2`**,
+   which ledgers and verifiers older than this format refuse: upgrade them
+   before publishing it.
 
 **Refused at compile:** an attestation whose `key_id` is not an enrolled
 origin key, a copy-paste slip that review should catch before the verifier

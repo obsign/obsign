@@ -1,16 +1,21 @@
-//! TPM enrollment for attestation v3, the gateway-side signer the design
-//! doc deferred until a TPM existed to exercise it against.
+//! TPM enrollment for attestation v4: both sides of the credential
+//! activation exchange (`docs/design/attestation-v4.md`).
 //!
-//! What it produces, pointed at a TPM 2.0 command socket:
+//! The gateway side, pointed at a TPM 2.0 command socket, produces:
 //!
-//! * an **AK** (restricted signing key, endorsement hierarchy),
-//! * an **identity key** (ordinary signing key, owner hierarchy),
-//! * a designated PCR extended with the gateway binary hash,
-//! * `TPM2_Certify(identity, AK)` and `TPM2_Quote(AK, PCR)`,
+//! * the **EK** (TCG default RSA-2048 template) and an **AK** (restricted
+//!   signing key), both primaries of the endorsement hierarchy;
+//! * the credential the ops side encrypted to that EK for that AK,
+//!   recovered with `TPM2_ActivateCredential`;
+//! * an **identity key** (ordinary signing key, owner hierarchy) usable only
+//!   under a `PolicyPCR` policy over the measured gateway binary's PCR;
+//! * `TPM2_Certify(identity, AK)` and `TPM2_Quote(AK, PCR)`, both qualified
+//!   by the ops nonce and the activated credential.
 //!
-//! assembled into the exact [`obsign_audit_core::attestation::KeyAttestation`] the
-//! offline verifier checks, plus the identity public key for the deployment
-//! bundle entry.
+//! The ops side makes the challenge ([`credential`], in software, no TPM)
+//! and checks the response. The result is the exact
+//! [`obsign_audit_core::attestation::KeyAttestation`] the offline verifier
+//! checks, plus the identity public key for the deployment bundle entry.
 //!
 //! The TPM2 marshalling is hand-rolled, following the PKCS#11/DER/HTTP
 //! stance: only the command subset enrollment needs, bounds-checked response
@@ -27,11 +32,15 @@
 //! `CreatePrimary` fails `TPM_RC_SCHEME`, so the exercised path is P-256;
 //! the verifier accepts both (see `obsign_audit_core::attestation`).
 
+pub mod credential;
 pub mod ctrl;
 pub mod enroll;
 pub mod tpm;
 
-pub use enroll::{enroll, Enrollment, EnrollmentRequest};
+pub use enroll::{
+    challenge, finish, request, respond, sign, ActivationRequest, Challenge, Enrollment,
+    EnrollmentRequest, OpsState,
+};
 pub use tpm::{KeyAlg, Tpm};
 
 use thiserror::Error;
@@ -52,6 +61,11 @@ pub enum Error {
 
     #[error("{0}")]
     Unsupported(String),
+
+    /// The exchange refused its input: a request, challenge or response
+    /// that does not have the shape or binding the protocol requires.
+    #[error("refused: {0}")]
+    Refused(String),
 }
 
 /// Renders a TPM_RC the way an operator will look it up: raw, plus the

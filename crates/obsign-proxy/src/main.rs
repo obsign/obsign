@@ -35,7 +35,10 @@ mod session;
 use anyhow::{bail, Context as _, Result};
 use auth::Auth;
 use clap::Parser;
-use gateway::{handle_from_agent, handle_from_server, spawn_server, Ctx, Downstream, Forward};
+use gateway::{
+    handle_from_agent, handle_from_server, spawn_server, unreadable_from_agent,
+    unreadable_from_server, Ctx, Downstream, Forward,
+};
 use obsign_identity::BundleSource;
 use origin::OriginSigner as _;
 use obsign_policy::{Engine, SignedBundle};
@@ -91,6 +94,14 @@ struct Cli {
     /// Non-browser clients send no Origin and are unaffected.
     #[arg(long = "allowed-origin")]
     allowed_origins: Vec<String>,
+
+    /// Ceiling on simultaneous HTTP connections, open GET streams included.
+    /// Past it, a new connection is answered 503 and closed before anything
+    /// is read from it: the listener is reachable before any token is
+    /// checked, and one thread per connection must not become one thread
+    /// per attacker socket.
+    #[arg(long, default_value_t = 256)]
+    http_max_connections: usize,
 
     // --- Identity: OIDC (normal) --------------------------------------
     /// Signed identity bundle: issuer, audience, JWKS, claim mapping.
@@ -228,17 +239,9 @@ fn main() -> Result<()> {
     )
     .context("unreadable trusted keys")?;
 
-    let vk = trusted
-        .iter()
-        .find(|k| k.key_id == signed.key_id)
-        .with_context(|| {
-            format!(
-                "bundle signed with key \"{}\", absent from the trusted keys",
-                signed.key_id
-            )
-        })?
-        .to_verifying_key()
-        .context("unusable trusted key")?;
+    // Resolved by key id *and* role: an origin key in the file is never a
+    // bundle signer (see `origin::bundle_signers`).
+    let vk = origin::bundle_key(&trusted, &signed.key_id, "policy bundle")?;
 
     // An unverified bundle must never be loaded: otherwise changing the
     // rules amounts to writing a file on the gateway's disk.
@@ -358,6 +361,9 @@ fn main() -> Result<()> {
     // will refuse: fail at startup, in front of the operator.
     keys.verify_enrolled()?;
 
+    // Past this point `trusted` only verifies identity bundles, at startup
+    // and on every rotation: the same rule applies, so the origin keys go.
+    let trusted = origin::bundle_signers(&trusted);
     match &cli.http {
         Some(addr) => run_http(&cli, addr, engine, bundle_version, trusted, keys),
         None => run_stdio(&cli, engine, bundle_version, trusted, keys),
@@ -439,6 +445,7 @@ fn run_http(
             chain_id: cli.chain_id.clone(),
             server_cmd: cli.server_cmd.clone(),
             allowed_origins: cli.allowed_origins.clone(),
+            max_connections: cli.http_max_connections,
             keys,
         },
         addr,
@@ -591,24 +598,26 @@ fn run_stdio(
                 if line.trim().is_empty() {
                     continue;
                 }
-                let out = match serde_json::from_str::<Value>(&line) {
-                    Ok(msg) => match handle_from_server(msg, &state, &ctx, &session_id) {
-                        Downstream::Forward(v) => v.to_string(),
-                        Downstream::Reply(v) => {
-                            // Refusal of a server-initiated request: answered
-                            // upstream, nothing reaches the agent.
-                            let mut guard = child_stdin.lock().unwrap();
-                            if let Some(stdin) = guard.as_mut() {
-                                let _ = writeln!(stdin, "{v}");
-                                let _ = stdin.flush();
-                            }
-                            continue;
+                let downstream = match serde_json::from_str::<Value>(&line) {
+                    Ok(msg) => handle_from_server(msg, &state, &ctx, &session_id),
+                    // Non-JSON line: recorded and dropped, never relayed. An
+                    // agent parser more lenient than ours would read in it
+                    // whatever the filters were meant to hide.
+                    Err(_) => unreadable_from_server(&line, &state, &ctx),
+                };
+                let out = match downstream {
+                    Downstream::Forward(v) => v.to_string(),
+                    Downstream::Reply(v) => {
+                        // Refusal of a server-initiated request: answered
+                        // upstream, nothing reaches the agent.
+                        let mut guard = child_stdin.lock().unwrap();
+                        if let Some(stdin) = guard.as_mut() {
+                            let _ = writeln!(stdin, "{v}");
+                            let _ = stdin.flush();
                         }
-                        Downstream::Drop => continue,
-                    },
-                    // Non-JSON line: relayed as-is rather than breaking a
-                    // protocol we do not understand.
-                    Err(_) => line.clone(),
+                        continue;
+                    }
+                    Downstream::Drop => continue,
                 };
                 let mut lock = stdout.lock();
                 if writeln!(lock, "{out}").is_err() || lock.flush().is_err() {
@@ -628,7 +637,7 @@ fn run_stdio(
 
         let forward = match serde_json::from_str::<Value>(&line) {
             Ok(msg) => handle_from_agent(msg, &state, &ctx, None)?,
-            Err(_) => Forward::Pass(line.clone()),
+            Err(_) => unreadable_from_agent(&line, &state, &ctx)?,
         };
 
         match forward {

@@ -1,5 +1,14 @@
 # Remote attestation — v3 design
 
+> **Superseded by [attestation-v4.md](attestation-v4.md)** (2026-11-22).
+> Read this document as history. Its claims went beyond what this version's
+> code proved: no `MakeCredential`/`ActivateCredential` bound the AK to the
+> EK (§3), certify and quote carried no nonce, the identity key had neither
+> attribute checks nor a PCR policy, and the binary measurement was a value
+> the enroller extended itself. v4 implements the first three and states
+> the fourth precisely. An attestation in the v3 form still verifies, and
+> the report names what it lacks (`attestation_unbound`).
+
 Status: **verification layer AND enrollment signer implemented, exercised
 end-to-end against swtpm** (2026-07-30, branch `los-angeles`, 263 tests).
 The §8-item-3 piece the first landing deferred now exists. `obsign-tpm-enroll`
@@ -50,6 +59,15 @@ through the attestation layer (fixtures prove it), but the rest of the
 system signs ed25519, so on an EdDSA-less TPM the *identity key in the
 bundle* cannot yet be the TPM-resident key; closing that (P-256 session
 certificates, or EdDSA hardware) is a follow-on decision, left open here.
+
+*Update:* the offline verifier now takes the P-256 session-certificate
+side. `obsign verify` accepts an `ecdsa-p256` origin entry as an identity
+key (`DeploymentBundle::active_identity_keys`, `origin::IdentityKey`): it
+verifies a session certificate as raw `r || s` over the SHA-256 of
+`session_cert_signing_bytes`, and refuses a record that names it as its
+signer, since records stay ed25519. The sealing and compiling paths
+(`active_origin_keys`) still refuse P-256, and no gateway signs a
+certificate with a TPM-resident key yet.
 
 *The first-landing status follows.*
 

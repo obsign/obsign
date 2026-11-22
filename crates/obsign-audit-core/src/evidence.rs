@@ -1,8 +1,8 @@
 use crate::checkpoint::{KeyRole, PublicKeyEntry, SignedCheckpoint};
 use crate::deployment::SignedDeploymentBundle;
-use crate::hash::{Hash, GENESIS};
+use crate::hash::Hash;
 use crate::merkle::merkle_root;
-use crate::origin::SignedRecord;
+use crate::origin::{IdentityKey, SignedRecord};
 use crate::record::Record;
 use crate::rfc3161::{parse_timestamp_response, Anchor};
 use ed25519_dalek::VerifyingKey;
@@ -118,6 +118,10 @@ pub struct Report {
     /// signature itself is validated out of band (see `anchor_not_validated`).
     #[serde(default)]
     pub anchors_ok: usize,
+    /// One entry per anchor in the pack, in pack order: what it timestamps
+    /// and when the TSA says it saw it.
+    #[serde(default)]
+    pub anchors: Vec<AnchorReport>,
     /// Records whose origin signature verified against a trusted origin key.
     #[serde(default)]
     pub records_origin_ok: usize,
@@ -128,6 +132,15 @@ pub struct Report {
     pub records_unknown: usize,
     pub first_seq: Option<u64>,
     pub last_seq: Option<u64>,
+    /// The highest `to_seq` a valid checkpoint seals, and that checkpoint's
+    /// hash. Nothing in a pack commits to its own end: drop the last
+    /// checkpoints with their records and what remains verifies. These two
+    /// values are what an auditor compares to an out-of-band record of the
+    /// latest checkpoint (an RFC 3161 anchor, a copy kept elsewhere).
+    #[serde(default)]
+    pub last_sealed_seq: Option<u64>,
+    #[serde(default)]
+    pub last_checkpoint_hash: Option<Hash>,
     /// True when no trusted keys were supplied and verification fell back to
     /// the keys embedded in the pack. A valid report then proves internal
     /// consistency only: a forged pack signed with a made-up key embedded in
@@ -136,6 +149,22 @@ pub struct Report {
     #[serde(default)]
     pub self_referential: bool,
     pub findings: Vec<Finding>,
+}
+
+/// What the verifier read from one RFC 3161 anchor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnchorReport {
+    /// `[from..to]` of the checkpoint it names; `None` when the pack holds
+    /// no such checkpoint (`anchor_orphan`).
+    pub checkpoint: Option<String>,
+    pub checkpoint_hash: Hash,
+    /// The token's `genTime` (GeneralizedTime, UTC), when it parsed.
+    pub gen_time: Option<String>,
+    /// Where the pack says the token came from. Informational only.
+    pub tsa: Option<String>,
+    /// Counted in `anchors_ok`: structurally consistent and bound to a
+    /// checkpoint that itself verified.
+    pub consistent: bool,
 }
 
 /// Knobs the caller sets according to what the deployment claims.
@@ -270,18 +299,24 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     let mut origin_keys = BTreeMap::new();
     let mut ops_keys = BTreeMap::new();
     for entry in key_source {
-        match entry.to_verifying_key() {
-            Ok(vk) => {
-                match entry.role {
-                    KeyRole::Seal => keys.insert(entry.key_id.clone(), vk),
-                    KeyRole::Origin => origin_keys.insert(entry.key_id.clone(), vk),
-                    KeyRole::Ops => ops_keys.insert(entry.key_id.clone(), vk),
-                };
-            }
-            Err(e) => findings.push(Finding::error(
+        // Only an origin entry may be an ECDSA-P256 identity key (see
+        // `IdentityKey`); seal and ops keys stay ed25519.
+        let resolved = match entry.role {
+            KeyRole::Seal => entry.to_verifying_key().map(|vk| {
+                keys.insert(entry.key_id.clone(), vk);
+            }),
+            KeyRole::Origin => IdentityKey::from_entry(entry).map(|k| {
+                origin_keys.insert(entry.key_id.clone(), k);
+            }),
+            KeyRole::Ops => entry.to_verifying_key().map(|vk| {
+                ops_keys.insert(entry.key_id.clone(), vk);
+            }),
+        };
+        if let Err(e) = resolved {
+            findings.push(Finding::error(
                 "invalid_key",
                 format!("key \"{}\" unusable: {e}", entry.key_id),
-            )),
+            ));
         }
     }
 
@@ -290,11 +325,11 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     // Verified here so its keys join the origin set before the origin pass:
     // one artifact and one root (the ops key) instead of hand-listed origin
     // keys. The ops key is resolved from the trusted set by the key id the
-    // bundle names, whatever role it carries: `KeyRole::Ops` is what it
-    // should say, but trusted-key files written before that role existed
-    // declare the ops key `seal` by default, and they must keep meaning what
-    // they meant (as with the policy/identity bundles the gateway already
-    // trusts by key id).
+    // bundle names: `KeyRole::Ops` is what it should say, but trusted-key
+    // files written before that role existed declare the ops key `seal` by
+    // default, and they must keep meaning what they meant (as with the
+    // policy/identity bundles the gateway already trusts by key id). An
+    // `origin` key is refused: it would let a gateway enrol gateways.
     if let Some(sdb) = &ev.deployment {
         resolve_deployment_bundle(sdb, key_source, &mut origin_keys, opts, &mut findings);
     }
@@ -307,7 +342,7 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     // key the identity key vouched for, while a v0/v1 record still verifies
     // against a bundle key directly. The set is the union, which keeps older
     // packs working.
-    resolve_session_certs(&ev.records, &ev.chain_id, &mut origin_keys, opts, &mut findings);
+    resolve_session_certs(&ev.records, &ev.chain_id, &mut origin_keys, &mut findings);
 
     // --- Integrity chain ----------------------------------------------
     // We do not sort the input: an audit tool that silently reorders what it
@@ -421,22 +456,36 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     //
     // Severity is calibrated to what each state proves. An *invalid*
     // signature under a trusted key, or a key used outside its role, is
-    // positive evidence of tampering: always an error. An *absent or
-    // unresolvable* signature is an absence of proof, indistinguishable
-    // from a log written before origin authentication existed, so it is a
-    // warning, upgraded to an error when the caller states the deployment
-    // mandates origin (`require_origin`). Anything softer would let an
-    // attacker strip signatures back into silence.
+    // positive evidence of tampering: always an error. An *absent*
+    // signature is an absence of proof, indistinguishable from a log
+    // written before origin authentication existed, so it is a warning,
+    // upgraded to an error when the caller states the deployment mandates
+    // origin (`require_origin`). Anything softer would let an attacker
+    // strip signatures back into silence. A signature under a key absent
+    // from the trusted set is not an absence: legacy logs carry none, so
+    // the legacy opt-out has nothing to tolerate there, and it stays an
+    // error whatever the options.
     let mut records_origin_ok = 0usize;
     let mut origin_unverified = 0usize;
+    let mut origin_unknown_key = 0usize;
     for sr in &ev.records {
         match (&sr.origin_sig, &sr.origin_key_id) {
             (None, None) => origin_unverified += 1,
-            (Some(_), Some(kid)) => match origin_keys.get(kid) {
-                Some(vk) => match sr.verify_origin(&ev.chain_id, vk) {
+            (Some(_), Some(kid)) => match origin_keys.get(kid).map(|k| (k, k.record_key())) {
+                Some((_, Some(vk))) => match sr.verify_origin(&ev.chain_id, vk) {
                     Ok(()) => records_origin_ok += 1,
                     Err(e) => findings.push(Finding::error("origin_invalid", e.to_string())),
                 },
+                Some((key, None)) => findings.push(Finding::error(
+                    "origin_invalid",
+                    format!(
+                        "record seq={} claims origin key \"{kid}\", an {} \
+                         identity key: such a key certifies session keys, it \
+                         never signs records",
+                        sr.seq,
+                        key.algo()
+                    ),
+                )),
                 None if keys.contains_key(kid) => findings.push(Finding::error(
                     "key_role_mismatch",
                     format!(
@@ -456,7 +505,7 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
                         sr.seq
                     ),
                 )),
-                None => origin_unverified += 1,
+                None => origin_unknown_key += 1,
             },
             _ => findings.push(Finding::error(
                 "origin_invalid",
@@ -471,10 +520,10 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     }
     if origin_unverified > 0 {
         let msg = format!(
-            "{origin_unverified} record(s) have no verifiable origin \
-             signature: nothing proves the gateway wrote them. Expected for \
-             logs written before origin authentication; otherwise supply the \
-             origin keys (--trusted-keys, role \"origin\")."
+            "{origin_unverified} record(s) carry no origin signature: \
+             nothing proves the gateway wrote them. Expected for logs written \
+             before origin authentication; otherwise the signatures were \
+             stripped."
         );
         findings.push(if opts.require_origin {
             Finding::error("origin_unverified", msg)
@@ -482,9 +531,23 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
             Finding::warning("origin_unverified", msg)
         });
     }
+    if origin_unknown_key > 0 {
+        findings.push(Finding::error(
+            "origin_unverified",
+            format!(
+                "{origin_unknown_key} record(s) are signed by an origin key \
+                 absent from the trusted set: a signature nobody can check \
+                 proves nothing, and a log older than origin authentication \
+                 carries none. Supply the deployment bundle or the origin \
+                 keys (--trusted-keys, role \"origin\")."
+            ),
+        ));
+    }
 
     // --- Checkpoints ---------------------------------------------------
     let mut checkpoints_valid = 0usize;
+    let mut valid_checkpoints: BTreeSet<Hash> = BTreeSet::new();
+    let mut last_sealed: Option<(u64, Hash)> = None;
     let mut sealed: Vec<(u64, u64)> = Vec::new();
     let mut prev_cp_hash: Option<Hash> = None;
 
@@ -572,22 +635,24 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
             ));
             cp_ok = false;
         } else {
-            let mut leaves = Vec::new();
-            let mut missing = Vec::new();
-            for seq in cp.from_seq..=cp.to_seq {
-                match hash_by_seq.get(&seq) {
-                    Some(h) => leaves.push(*h),
-                    None => missing.push(seq),
-                }
-            }
+            // The bounds are attacker-chosen and read before anything is
+            // proven: walking `from_seq..=to_seq` would let `[0..u64::MAX]`
+            // spin the verifier for ever. Only the records the pack actually
+            // holds are visited; the width is counted, never iterated, in
+            // u128 so the full u64 range does not overflow.
+            let leaves: Vec<Hash> = hash_by_seq
+                .range(cp.from_seq..=cp.to_seq)
+                .map(|(_, h)| *h)
+                .collect();
+            let width = u128::from(cp.to_seq) - u128::from(cp.from_seq) + 1;
+            let missing = width - leaves.len() as u128;
 
-            if !missing.is_empty() {
+            if missing > 0 {
                 findings.push(Finding::error(
                     "missing_records",
                     format!(
-                        "checkpoint {label}: {} record(s) of the interval are \
-                         absent from the pack, the root cannot be recomputed",
-                        missing.len()
+                        "checkpoint {label}: {missing} record(s) of the interval \
+                         are absent from the pack, the root cannot be recomputed"
                     ),
                 ));
                 cp_ok = false;
@@ -634,6 +699,10 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
 
         if cp_ok {
             checkpoints_valid += 1;
+            valid_checkpoints.insert(cp.hash());
+            if last_sealed.is_none_or(|(seq, _)| cp.to_seq > seq) {
+                last_sealed = Some((cp.to_seq, cp.hash()));
+            }
             sealed.push((cp.from_seq, cp.to_seq));
         }
     }
@@ -655,8 +724,17 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
         .collect();
 
     let mut anchors_ok = 0usize;
+    let mut anchor_reports = Vec::with_capacity(ev.anchors.len());
     for anchor in &ev.anchors {
-        let Some(label) = checkpoint_labels.get(&anchor.checkpoint_hash) else {
+        anchor_reports.push(AnchorReport {
+            checkpoint: checkpoint_labels.get(&anchor.checkpoint_hash).cloned(),
+            checkpoint_hash: anchor.checkpoint_hash,
+            gen_time: None,
+            tsa: anchor.tsa.clone(),
+            consistent: false,
+        });
+        let report = anchor_reports.last_mut().expect("just pushed");
+        let Some(label) = report.checkpoint.clone() else {
             findings.push(Finding::error(
                 "anchor_orphan",
                 format!(
@@ -696,6 +774,7 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
                 ));
             }
             Ok(info) => {
+                report.gen_time = info.gen_time;
                 if info.hashed_message != anchor.checkpoint_hash.as_bytes() {
                     findings.push(Finding::error(
                         "anchor_mismatch",
@@ -705,9 +784,13 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
                              timestamps something else."
                         ),
                     ));
-                } else {
+                } else if valid_checkpoints.contains(&anchor.checkpoint_hash) {
                     anchors_ok += 1;
+                    report.consistent = true;
                 }
+                // Otherwise the token is well formed but dates a checkpoint
+                // that failed above: it is not counted. A timestamp proves
+                // when a seal existed, not that the seal was ever valid.
             }
         }
     }
@@ -728,10 +811,22 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
     // Frequently overlooked property: a record that is present and consistent
     // but covered by no valid seal is not proven. It may have been appended
     // after the fact. The report has to say so.
-    let sealed_count = records_by_seq
-        .keys()
-        .filter(|seq| sealed.iter().any(|(a, b)| *seq >= a && *seq <= b))
-        .count();
+    //
+    // Counted over merged intervals: testing every record against every
+    // checkpoint is records × checkpoints, and a self-referential pack picks
+    // both numbers.
+    sealed.sort_unstable();
+    let mut merged: Vec<(u64, u64)> = Vec::new();
+    for (a, b) in sealed {
+        match merged.last_mut() {
+            Some((_, end)) if a <= end.saturating_add(1) => *end = (*end).max(b),
+            _ => merged.push((a, b)),
+        }
+    }
+    let sealed_count: usize = merged
+        .iter()
+        .map(|(a, b)| records_by_seq.range(*a..=*b).count())
+        .sum();
 
     let unsealed = records_by_seq.len() - sealed_count;
     if unsealed > 0 {
@@ -752,10 +847,13 @@ pub fn verify_with(ev: &Evidence, trusted: &[PublicKeyEntry], opts: &VerifyOptio
         checkpoints_valid,
         anchors_total: ev.anchors.len(),
         anchors_ok,
+        anchors: anchor_reports,
         records_origin_ok,
         records_unknown,
         first_seq: records_by_seq.keys().next().copied(),
         last_seq: records_by_seq.keys().next_back().copied(),
+        last_sealed_seq: last_sealed.map(|(seq, _)| seq),
+        last_checkpoint_hash: last_sealed.map(|(_, h)| h),
         self_referential: trusted.is_empty(),
         findings,
     }
@@ -791,10 +889,10 @@ fn conflicting_key_ids(entries: &[PublicKeyEntry]) -> BTreeSet<String> {
 /// The identity key that certifies a session key is resolved among the keys
 /// already in the origin set (the enrolled identity keys); the session key it
 /// authorizes is then keyed by [`key_id_for`], the id its records name. A
-/// certificate whose identity key is unknown is unverified (a warning, an
-/// error under `require_origin`), the self-referential logic; one whose
-/// signature is *wrong* is invalid (always an error), because only tampering
-/// produces that.
+/// certificate whose identity key is unknown is unverified, one whose
+/// signature is *wrong* is invalid; both are errors whatever the options. A
+/// certificate is a signature, and the legacy opt-out tolerates only its
+/// absence.
 ///
 /// The validity window (`not_before`/`not_after`) is carried but not enforced
 /// here: enforcing it needs trusted time, and the pack's RFC 3161 anchors are
@@ -804,8 +902,7 @@ fn conflicting_key_ids(entries: &[PublicKeyEntry]) -> BTreeSet<String> {
 fn resolve_session_certs(
     records: &[SignedRecord],
     chain_id: &str,
-    origin_keys: &mut BTreeMap<String, VerifyingKey>,
-    opts: &VerifyOptions,
+    origin_keys: &mut BTreeMap<String, IdentityKey>,
     findings: &mut Vec<Finding>,
 ) {
     // Certificates name identity keys, never each other: resolve against the
@@ -818,10 +915,30 @@ fn resolve_session_certs(
         };
         match identity_keys.get(&cert.identity_key_id) {
             None => unverified += 1,
-            Some(identity_vk) => {
-                match crate::origin::verify_session_cert(chain_id, cert, identity_vk) {
+            Some(identity_key) => {
+                match crate::origin::verify_session_cert_with(chain_id, cert, identity_key) {
                     Ok(session_vk) => {
-                        origin_keys.insert(crate::key_id_for(&session_vk), session_vk);
+                        // The deployment path's rule: an id already bound
+                        // keeps its key. Overwriting it would let one
+                        // certificate silently take over the records of
+                        // another signer. Re-certifying the same key is fine.
+                        let kid = crate::key_id_for(&session_vk);
+                        let key = IdentityKey::Ed25519(session_vk);
+                        match origin_keys.get(&kid) {
+                            Some(existing) if *existing != key => findings.push(Finding::error(
+                                "session_cert_invalid",
+                                format!(
+                                    "session certificate at seq={}: session key id \
+                                     \"{kid}\" is already bound to a different key \
+                                     elsewhere in the pack",
+                                    sr.record.seq
+                                ),
+                            )),
+                            Some(_) => {}
+                            None => {
+                                origin_keys.insert(kid, key);
+                            }
+                        }
                     }
                     Err(e) => findings.push(Finding::error(
                         "session_cert_invalid",
@@ -832,16 +949,15 @@ fn resolve_session_certs(
         }
     }
     if unverified > 0 {
-        let msg = format!(
-            "{unverified} session certificate(s) are signed by an identity key \
-             absent from the trusted set: the session keys they authorize prove \
-             nothing. Supply the deployment bundle enrolling that identity key."
-        );
-        findings.push(if opts.require_origin {
-            Finding::error("session_cert_unverified", msg)
-        } else {
-            Finding::warning("session_cert_unverified", msg)
-        });
+        findings.push(Finding::error(
+            "session_cert_unverified",
+            format!(
+                "{unverified} session certificate(s) are signed by an identity \
+                 key absent from the trusted set: the session keys they \
+                 authorize prove nothing. Supply the deployment bundle \
+                 enrolling that identity key."
+            ),
+        ));
     }
 }
 
@@ -856,15 +972,32 @@ fn resolve_session_certs(
 fn resolve_deployment_bundle(
     sdb: &SignedDeploymentBundle,
     key_source: &[PublicKeyEntry],
-    origin_keys: &mut BTreeMap<String, VerifyingKey>,
+    origin_keys: &mut BTreeMap<String, IdentityKey>,
     opts: &VerifyOptions,
     findings: &mut Vec<Finding>,
 ) {
-    let ops_vk: Option<VerifyingKey> = key_source
+    // `ops`, or `seal` for trusted-key files written before the ops role
+    // existed (see the call site). Never `origin`: a gateway key signing the
+    // bundle would let a gateway enrol more gateways, minting the very
+    // authority the bundle exists to grant.
+    let named: Vec<&PublicKeyEntry> = key_source.iter().filter(|k| k.key_id == sdb.key_id).collect();
+    let ops_vk: Option<VerifyingKey> = named
         .iter()
-        .find(|k| k.key_id == sdb.key_id)
+        .find(|k| k.role != KeyRole::Origin)
         .and_then(|k| k.to_verifying_key().ok());
 
+    if ops_vk.is_none() && !named.is_empty() {
+        findings.push(Finding::error(
+            "key_role_mismatch",
+            format!(
+                "the deployment bundle is signed with key \"{}\", which is an \
+                 origin key. A gateway key enrolling gateways would mint origin \
+                 authority on its own.",
+                sdb.key_id
+            ),
+        ));
+        return;
+    }
     let Some(ops_vk) = ops_vk else {
         findings.push(Finding::warning(
             "deployment_bundle_unverified",
@@ -883,7 +1016,7 @@ fn resolve_deployment_bundle(
             "deployment_bundle_invalid",
             format!("deployment bundle \"{}\": {e}", sdb.bundle.version),
         )),
-        Ok(bundle) => match bundle.active_origin_keys() {
+        Ok(bundle) => match bundle.active_identity_keys() {
             Err(e) => findings.push(Finding::error(
                 "deployment_bundle_invalid",
                 format!("deployment bundle \"{}\": {e}", bundle.version),
@@ -892,9 +1025,9 @@ fn resolve_deployment_bundle(
                 // The bundle's keys join those listed directly. A key id that
                 // appears in both must not disagree: same id, same material,
                 // or the pack is self-contradictory about who a gateway is.
-                for (kid, vk) in active {
+                for (kid, key) in active {
                     if let Some(existing) = origin_keys.get(&kid) {
-                        if existing.to_bytes() != vk.to_bytes() {
+                        if *existing != key {
                             findings.push(Finding::error(
                                 "deployment_bundle_invalid",
                                 format!(
@@ -906,7 +1039,7 @@ fn resolve_deployment_bundle(
                             ));
                         }
                     } else {
-                        origin_keys.insert(kid, vk);
+                        origin_keys.insert(kid, key);
                     }
                 }
                 resolve_attestations(bundle, opts, findings);
@@ -930,12 +1063,18 @@ fn resolve_attestations(
     findings: &mut Vec<Finding>,
 ) {
     let mut attested = 0usize;
+    let mut unbound = 0usize;
     let mut unattested = 0usize;
     for entry in &bundle.origin_keys {
         match bundle.attestations.iter().find(|a| a.key_id == entry.key_id) {
             None => unattested += 1,
             Some(att) => match crate::attestation::verify_attestation(entry, att) {
-                Ok(()) => attested += 1,
+                Ok(()) => {
+                    attested += 1;
+                    if att.activation.is_none() {
+                        unbound += 1;
+                    }
+                }
                 Err(e) => findings.push(Finding::error(
                     "attestation_invalid",
                     format!(
@@ -959,6 +1098,22 @@ fn resolve_attestations(
             ),
         ));
     }
+    if unbound > 0 {
+        // Structurally valid, but in the pre-v4 form: what it lacks is named,
+        // and under --require-attestation it does not count as attested.
+        let msg = format!(
+            "{unbound} identity key(s) carry an attestation without credential \
+             activation: nothing binds their AK to the TPM's EK, the quote and \
+             certify carry no enrollment nonce, and nothing shows the identity \
+             key is gated by a PCR policy. Re-enroll with obsign-tpm-enroll's \
+             challenge exchange."
+        );
+        findings.push(if opts.require_attestation {
+            Finding::error("attestation_unbound", msg)
+        } else {
+            Finding::warning("attestation_unbound", msg)
+        });
+    }
     if unattested > 0 {
         let msg = format!(
             "{unattested} enrolled identity key(s) carry no attestation: nothing \
@@ -971,11 +1126,6 @@ fn resolve_attestations(
             Finding::warning("identity_not_attested", msg)
         });
     }
-}
-
-/// Expected hash for the first record of a chain.
-pub fn genesis() -> Hash {
-    GENESIS
 }
 
 #[cfg(test)]
@@ -1089,6 +1239,52 @@ mod tests {
     }
 
     #[test]
+    fn the_report_carries_each_anchors_gen_time() {
+        let (mut ev, entry) = sealed_pack();
+        let hash = ev.checkpoints[0].checkpoint.hash();
+        ev.anchors.push(anchor_over(&ev, hash.as_bytes()));
+
+        let r = verify(&ev, &[entry]);
+        assert_eq!(r.anchors.len(), 1);
+        let a = &r.anchors[0];
+        assert_eq!(a.checkpoint.as_deref(), Some("[0..2]"));
+        assert_eq!(a.gen_time.as_deref(), Some("20260728120000Z"));
+        assert_eq!(a.tsa.as_deref(), Some("demo-tsa"));
+        assert!(a.consistent);
+    }
+
+    #[test]
+    fn an_anchor_on_a_failed_checkpoint_is_not_counted() {
+        // A well-formed token over the hash of a checkpoint whose signature
+        // does not verify. The timestamp says when that seal existed, not
+        // that it was ever valid: it used to count in `anchors_ok`.
+        let (mut ev, entry) = sealed_pack();
+        ev.checkpoints[0].signature = hex::encode([7u8; 64]);
+        let hash = ev.checkpoints[0].checkpoint.hash();
+        ev.anchors.push(anchor_over(&ev, hash.as_bytes()));
+
+        let r = verify(&ev, &[entry]);
+        assert!(!r.is_valid());
+        assert_eq!((r.anchors_total, r.anchors_ok), (1, 0));
+        assert!(!r.anchors[0].consistent);
+        assert!(!r.caveats().any(|f| f.code == "anchor_not_validated"));
+    }
+
+    #[test]
+    fn an_anchor_with_trailing_bytes_is_unreadable() {
+        let (mut ev, entry) = sealed_pack();
+        let hash = ev.checkpoints[0].checkpoint.hash();
+        let mut a = anchor_over(&ev, hash.as_bytes());
+        a.token_hex.push_str("00");
+        ev.anchors.push(a);
+
+        let r = verify(&ev, &[entry]);
+        assert!(!r.is_valid());
+        assert!(r.errors().any(|f| f.code == "anchor_unreadable"));
+        assert_eq!(r.anchors_ok, 0);
+    }
+
+    #[test]
     fn unknown_fields_in_a_pack_are_refused() {
         // A field nobody defined is not ignorable noise in a proof format:
         // two parsers that disagree on what a pack contains is exactly the
@@ -1147,7 +1343,7 @@ mod tests {
                 index: 7,
                 digest: hex::encode(crate::hash::sha256(b"gateway-binary").as_bytes()),
             }];
-            vec![att_testutil::attestation(
+            vec![att_testutil::attestation_activated(
                 "id-gw",
                 &origin.verifying_key(),
                 &ak,
@@ -1157,7 +1353,7 @@ mod tests {
             Vec::new()
         };
         let bundle = DeploymentBundle {
-            format: DFMT.into(),
+            format: crate::deployment::format_for(&attestations).into(),
             version: "deployment@v3".into(),
             origin_keys: vec![origin_entry.clone()],
             attestations,
@@ -1222,6 +1418,31 @@ mod tests {
         let r = verify_with(&ev, &[ops_entry], &VerifyOptions::default());
         assert!(!r.is_valid());
         assert!(r.errors().any(|f| f.code == "attestation_invalid"));
+    }
+
+    #[test]
+    fn an_attestation_without_activation_is_named_and_fails_when_required() {
+        // A v1 bundle carrying a pre-v4 attestation: it still verifies (it
+        // was valid when published), but what it does not prove is said,
+        // and it does not satisfy --require-attestation.
+        let origin = SigningKey::from_bytes(&[40u8; 32]);
+        let (mut bundle, ops_entry, ops) = ops_and_bundle(&origin, true);
+        bundle.bundle.attestations[0].activation = None;
+        bundle.bundle.format = DFMT.into();
+        let bundle = bundle.bundle.sign("ops-1", &ops);
+        let ev = pack_with_bundle(bundle, &ops_entry);
+
+        let permissive = verify_with(&ev, std::slice::from_ref(&ops_entry), &VerifyOptions::default());
+        assert!(!permissive.errors().any(|f| f.code.starts_with("attestation")));
+        assert!(permissive.warnings().any(|f| f.code == "attestation_unbound"));
+
+        let strict = verify_with(
+            &ev,
+            &[ops_entry],
+            &VerifyOptions { require_origin: false, require_attestation: true },
+        );
+        assert!(!strict.is_valid());
+        assert!(strict.errors().any(|f| f.code == "attestation_unbound"));
     }
 
     #[test]

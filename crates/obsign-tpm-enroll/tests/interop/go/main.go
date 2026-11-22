@@ -17,6 +17,10 @@
 //	          against the swtpm at -tpm, and emits the raw material as JSON.
 //	          The Rust side assembles a KeyAttestation from it and runs
 //	          obsign-audit-core's verifier: a foreign encoder, our decoder.
+//	makecred — TPM2_MakeCredential in software by go-tpm's credactivation
+//	          package, for the EK public area -ek and the AK Name -name: the
+//	          Rust side activates it through its own TPM path, which only
+//	          works if both implementations agree on the credential format.
 package main
 
 import (
@@ -29,6 +33,7 @@ import (
 	"os"
 
 	"github.com/google/go-tpm/tpm2"
+	"github.com/google/go-tpm/tpm2/credactivation"
 	"github.com/google/go-tpm/tpmutil"
 )
 
@@ -46,6 +51,8 @@ func main() {
 		decodeMode()
 	case "enroll":
 		enrollMode(os.Args[2:])
+	case "makecred":
+		makecredMode(os.Args[2:])
 	default:
 		fatal("unknown mode %q", os.Args[1])
 	}
@@ -74,6 +81,7 @@ type decodedAttest struct {
 	QuoteBank   uint16 `json:"quote_bank,omitempty"`
 	QuotePCRs   []int  `json:"quote_pcrs,omitempty"`
 	PCRDigest   string `json:"pcr_digest,omitempty"`
+	ExtraData   string `json:"extra_data"`
 }
 
 func nameHex(n tpm2.Name) string {
@@ -142,6 +150,7 @@ func decodeMode() {
 			Reencoded: hex.EncodeToString(re),
 			Magic:     fmt.Sprintf("0x%08X", ad.Magic),
 			Type:      fmt.Sprintf("0x%04X", uint16(ad.Type)),
+			ExtraData: hex.EncodeToString(ad.ExtraData),
 		}
 		if ad.AttestedCertifyInfo != nil {
 			d.CertifyName = nameHex(ad.AttestedCertifyInfo.Name)
@@ -296,6 +305,50 @@ func enrollMode(args []string) {
 		Quote:         hex.EncodeToString(append(quoteAttest, quoteSig64...)),
 		PCRValue:      hex.EncodeToString(pcrValue),
 	}
+	if err := json.NewEncoder(os.Stdout).Encode(out); err != nil {
+		fatal("writing output: %v", err)
+	}
+}
+
+// -------------------------------------------------------------- makecred --
+
+func makecredMode(args []string) {
+	fs := flag.NewFlagSet("makecred", flag.ExitOnError)
+	ekHex := fs.String("ek", "", "EK TPMT_PUBLIC, hex")
+	nameHex := fs.String("name", "", "AK Name (alg || digest), hex")
+	secretHex := fs.String("secret", "", "credential, hex")
+	fs.Parse(args)
+	ekRaw, err := hex.DecodeString(*ekHex)
+	if err != nil {
+		fatal("-ek: %v", err)
+	}
+	name, err := hex.DecodeString(*nameHex)
+	if err != nil || len(name) != 34 {
+		fatal("-name must be a SHA-256 Name")
+	}
+	secret, err := hex.DecodeString(*secretHex)
+	if err != nil {
+		fatal("-secret: %v", err)
+	}
+	ek, err := tpm2.DecodePublic(ekRaw)
+	if err != nil {
+		fatal("go-tpm rejects the EK TPMT_PUBLIC: %v", err)
+	}
+	pub, err := ek.Key()
+	if err != nil {
+		fatal("EK key: %v", err)
+	}
+	aik := &tpm2.HashValue{Alg: tpm2.AlgSHA256, Value: name[2:]}
+	// 16: the EK's AES-128 block, go-tpm's seed size for template L-1.
+	blob, encSecret, err := credactivation.Generate(aik, pub, 16, secret)
+	if err != nil {
+		fatal("Generate: %v", err)
+	}
+	// Both come back as TPM2B; the Rust side wants their contents.
+	out := struct {
+		CredentialBlob  string `json:"credential_blob"`
+		EncryptedSecret string `json:"encrypted_secret"`
+	}{hex.EncodeToString(blob[2:]), hex.EncodeToString(encSecret[2:])}
 	if err := json.NewEncoder(os.Stdout).Encode(out); err != nil {
 		fatal("writing output: %v", err)
 	}

@@ -30,7 +30,8 @@ pub use deployment::{DeploymentBundle, SignedDeploymentBundle};
 pub use error::Error;
 pub use hash::{Hash, GENESIS};
 pub use origin::{
-    key_id_for, origin_signing_bytes, session_cert_signing_bytes, verify_session_cert, SignedRecord,
+    key_id_for, origin_signing_bytes, session_cert_signing_bytes, verify_session_cert,
+    verify_session_cert_with, IdentityKey, SignedRecord,
 };
 pub use record::{
     Actor, AgentSession, ApprovalMode, Decision, Delegation, Effect, EffectStatus, LlmTurn,
@@ -152,6 +153,22 @@ impl ChainWriter {
         self.pending_from = self.next_seq;
         Some(cp)
     }
+}
+
+/// Reads a hex signature, 64 bytes and nothing else: the one decoder for
+/// every signature a pack carries (checkpoint, record, certificate, bundle).
+pub(crate) fn signature_from_hex(sig_hex: &str) -> Result<[u8; 64], Error> {
+    let raw = hex::decode(sig_hex).map_err(|_| Error::BadHex(sig_hex.to_string()))?;
+    raw.try_into().map_err(|_| Error::BadSignatureLength)
+}
+
+/// Ed25519 verification, strict: `verify` accepts a small-order public key
+/// and signatures that are not the canonical encoding (with the identity
+/// point as key and as `R`, `s = 0` "signs" every message). Every Ed25519
+/// check in the proof goes through here.
+pub(crate) fn ed25519_verify(key: &ed25519_dalek::VerifyingKey, msg: &[u8], sig: &[u8; 64]) -> bool {
+    key.verify_strict(msg, &ed25519_dalek::Signature::from_bytes(sig))
+        .is_ok()
 }
 
 /// Hash of application content (prompt, arguments, result).
